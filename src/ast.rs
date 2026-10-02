@@ -81,6 +81,8 @@ pub enum Statement {
         names: Vec<String>,
     },
 
+    Discard(Expression),
+
     Return(Expression),
 
     Exit(Expression),
@@ -135,6 +137,8 @@ pub enum Expression {
     },
 
     AddressOf(Box<Expression>),
+
+    Decay(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

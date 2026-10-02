@@ -283,6 +283,16 @@ impl Parser {
                 Ok(Statement::Exit(expression))
             }
 
+            Token::Underscore => {
+                self.advance();
+
+                let expression = self.parse_expression()?;
+
+                self.consume_optional_newline();
+
+                Ok(Statement::Discard(expression))
+            }
+
             Token::Unsafe => self.parse_unsafe_block(),
 
             _ => {
@@ -433,6 +443,11 @@ impl Parser {
 
         loop {
             match self.peek() {
+                Token::Caret => {
+                    self.advance();
+                    expression = Expression::Decay(Box::new(expression));
+                }
+
                 Token::LBracket => {
                     self.advance();
 

@@ -309,6 +309,11 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(())
             }
 
+            Statement::Discard(expression) => {
+                self.codegen_expression(expression)?;
+                Ok(())
+            }
+
             Statement::Return(expression) => {
                 let binding = self.codegen_expression(expression)?;
                 self.build_return(&binding)
@@ -403,7 +408,39 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Index { expression, index } => self.codegen_index(expression, index),
 
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
+
+            Expression::Decay(expression) => self.codegen_decay(expression),
         }
+    }
+
+    fn codegen_decay(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
+        let binding = self.codegen_expression(expression)?;
+        let (element_type, size) = match self.binding_type(&binding)? {
+            Type::Array { element, size } => (*element, size),
+            other => return Err(format!("cannot decay non-array type {:?}", other)),
+        };
+
+        let storage = self.array_storage(binding, &element_type, size)?;
+        let llvm_array_type = self
+            .llvm_type(&Type::Array {
+                element: Box::new(element_type.clone()),
+                size,
+            })?
+            .into_array_type();
+
+        let zero = self.context.i32_type().const_zero();
+        let pointer = unsafe {
+            self.builder
+                .build_gep(llvm_array_type, storage, &[zero, zero], "decayptr")
+                .map_err(|error| error.to_string())?
+        };
+
+        Ok(Binding::Pointer {
+            ty: Type::Pointer {
+                element: Box::new(element_type),
+            },
+            value: pointer,
+        })
     }
 
     fn codegen_array_literal(&mut self, elements: &[Expression]) -> Result<Binding<'ctx>, String> {

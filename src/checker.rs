@@ -566,6 +566,18 @@ impl Checker {
 
                 _ => Err("address-of requires a variable or array index".to_string()),
             },
+
+            Expression::Decay(expression) => {
+                let inner_type = self.type_of_expression(expression, locals)?;
+
+                match inner_type {
+                    Type::Array { element, .. } => Ok(Type::Pointer { element }),
+                    other => Err(format!(
+                        "decay operator '^' expects an array type, found {:?}",
+                        other
+                    )),
+                }
+            }
         }
     }
 
@@ -634,6 +646,13 @@ impl Checker {
                     expression: resolved_expr,
                     names: names.clone(),
                 })
+            }
+
+            Statement::Discard(expression) => {
+                let resolved_expr = self.resolve_expression(expression, locals)?;
+                self.type_of_expression(&resolved_expr, locals)?;
+
+                Ok(Statement::Discard(resolved_expr))
             }
 
             Statement::Return(expression) => Ok(Statement::Return(
@@ -786,6 +805,14 @@ impl Checker {
                 self.type_of_expression(expression, locals)?;
 
                 Ok(Expression::AddressOf(Box::new(resolved_expression)))
+            }
+
+            Expression::Decay(expression) => {
+                let resolved_expression = self.resolve_expression(expression, locals)?;
+
+                self.type_of_expression(expression, locals)?;
+
+                Ok(Expression::Decay(Box::new(resolved_expression)))
             }
         }
     }

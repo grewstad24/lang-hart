@@ -1,6 +1,3 @@
-data:
-        s32 result
-
 main:
-        print_s32(42 * 2 + 4 / 2) -> result
+        _ print_s32(42 * 2 + 4 / 2)
         exit 0

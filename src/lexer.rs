@@ -36,6 +36,8 @@ pub enum Token {
     Percent,
     Ampersand,
     Hash,
+    Caret,
+    Underscore,
 
     EqualEqual,
     NotEqual,
@@ -164,6 +166,11 @@ impl Lexer {
                 '#' => {
                     self.position += 1;
                     tokens.push(Token::Hash);
+                }
+
+                '^' => {
+                    self.position += 1;
+                    tokens.push(Token::Caret);
                 }
 
                 '=' => {
@@ -396,6 +403,7 @@ impl Lexer {
         let text: String = self.chars[start..self.position].iter().collect();
 
         match text.as_str() {
+            "_" => Token::Underscore,
             "data" => Token::Data,
             "extern" => Token::Extern,
             "main" => Token::Main,
