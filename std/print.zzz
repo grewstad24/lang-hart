@@ -1,0 +1,5 @@
+extern puts: (*u8) to s32
+
+impure print(*u8 ptr) to s32:
+        unsafe:
+                return puts(ptr)
