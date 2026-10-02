@@ -1,14 +1,13 @@
 extern printf: (*u8)++ to s32
-extern puts: (*u8) to s32
 
 impure print_string(*u8 ptr) to s32:
         unsafe:
-                return printf(&"%s\0"[0], ptr)
+                return printf("%s\0"^, ptr)
 
 impure print_s32(s32 num) to s32:
         unsafe:
-                return printf(&"%d\0"[0], num)
+                return printf("%d\0"^, num)
 
 impure print_newline() to s32:
         unsafe:
-                return printf(&"\n\0"[0])
+                return printf("\n\0"^)
