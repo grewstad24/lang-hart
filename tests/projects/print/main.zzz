@@ -1,0 +1,10 @@
+data:
+        s32 res1
+        s32 res2
+        s32 res3
+main:
+        print_string(&"42 x 4 = \0"[0]) -> res1
+        print_s32(42 * 4) -> res2
+
+        print_newline() -> res3
+        exit 0

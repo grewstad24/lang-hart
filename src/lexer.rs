@@ -29,6 +29,7 @@ pub enum Token {
     String(Vec<u8>),
 
     Plus,
+    PlusPlus,
     Minus,
     Star,
     Slash,
@@ -121,8 +122,13 @@ impl Lexer {
                 }
 
                 '+' => {
-                    self.position += 1;
-                    tokens.push(Token::Plus);
+                    if self.peek_char(1) == Some('+') {
+                        self.position += 2;
+                        tokens.push(Token::PlusPlus);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Plus);
+                    }
                 }
 
                 '-' => {

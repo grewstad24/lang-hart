@@ -69,14 +69,14 @@ impl<'ctx> Codegen<'ctx> {
 
     pub fn generate(mut self, program: &Program) -> Result<Module<'ctx>, String> {
         let mut checker = Checker::new(program);
-        let program = checker.check(program)?;
+        let resolved_program = checker.check(program)?;
 
-        self.collect_declarations(&program)?;
+        self.collect_declarations(&resolved_program)?;
 
-        self.codegen_globals(&program.variables)?;
-        self.codegen_externals(&program.extern_functions)?;
-        self.codegen_functions(&program.functions)?;
-        self.codegen_main(&program.main)?;
+        self.codegen_globals(&resolved_program.variables)?;
+        self.codegen_externals(&resolved_program.extern_functions)?;
+        self.codegen_functions(&resolved_program.functions)?;
+        self.codegen_main(&resolved_program.main)?;
 
         Ok(self.module)
     }
@@ -100,6 +100,7 @@ impl<'ctx> Codegen<'ctx> {
                     .map(|parameter| parameter.ty.clone())
                     .collect(),
                 return_type: function.return_type.clone(),
+                is_variadic: false,
             };
 
             self.functions.insert(function.name.clone(), signature);
@@ -125,10 +126,28 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_externals(&mut self, extern_functions: &[ExternalFunction]) -> Result<(), String> {
         for external in extern_functions {
-            let function_type = self.function_type(&external.signature)?;
+            let param_types: Vec<BasicMetadataTypeEnum> = external
+                .signature
+                .parameters
+                .iter()
+                .map(|param| {
+                    let ty = Checker::concrete_type(param)?;
+                    let llvm_ty = self.llvm_type(&ty)?;
+                    Ok(llvm_ty.into())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
 
-            self.module
-                .add_function(&external.name, function_type, None);
+            let ret_type = Checker::concrete_type(&external.signature.return_type)?;
+
+            let fn_type = match self.llvm_type(&ret_type) {
+                Ok(basic_ty) => basic_ty.fn_type(&param_types, external.signature.is_variadic),
+                Err(_) => self
+                    .context
+                    .void_type()
+                    .fn_type(&param_types, external.signature.is_variadic),
+            };
+
+            self.module.add_function(&external.name, fn_type, None);
         }
 
         Ok(())
@@ -150,6 +169,7 @@ impl<'ctx> Codegen<'ctx> {
                 .map(|parameter| parameter.ty.clone())
                 .collect(),
             return_type: function.return_type.clone(),
+            is_variadic: false,
         };
 
         let function_type = self.function_type(&signature)?;
@@ -224,18 +244,66 @@ impl<'ctx> Codegen<'ctx> {
             Statement::Bind { expression, names } => {
                 let binding = self.codegen_expression(expression)?;
 
-                if names.len() != 1 {
-                    return Err(
-                        "multiple bindings are not supported by this code generator".to_string()
-                    );
-                }
-
-                let name = &names[0];
-
-                if self.variables.contains_key(name) {
-                    self.store_global(name, &binding)?;
+                if names.len() == 1 {
+                    let name = &names[0];
+                    if self.variables.contains_key(name) {
+                        self.store_global(name, &binding)?;
+                    } else {
+                        self.locals.insert(name.clone(), binding);
+                    }
                 } else {
-                    self.locals.insert(name.clone(), binding);
+                    let (element_type, size) = match self.binding_type(&binding)? {
+                        Type::Array { element, size } => (*element, size),
+                        other => {
+                            return Err(format!(
+                                "cannot unpack non-array type {:?} into multiple bindings",
+                                other
+                            ));
+                        }
+                    };
+
+                    if size != names.len() {
+                        return Err(format!(
+                            "unpack size mismatch: expected {} bindings, found {}",
+                            size,
+                            names.len()
+                        ));
+                    }
+
+                    let storage = self.array_storage(binding, &element_type, size)?;
+                    let llvm_array_type = self
+                        .llvm_type(&Type::Array {
+                            element: Box::new(element_type.clone()),
+                            size,
+                        })?
+                        .into_array_type();
+
+                    for (i, name) in names.iter().enumerate() {
+                        let idx = self.context.i32_type().const_int(i as u64, false);
+                        let ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    llvm_array_type,
+                                    storage,
+                                    &[self.context.i32_type().const_zero(), idx],
+                                    "unpackptr",
+                                )
+                                .map_err(|e| e.to_string())?
+                        };
+
+                        let val = self
+                            .builder
+                            .build_load(self.llvm_type(&element_type)?, ptr, "unpackval")
+                            .map_err(|e| e.to_string())?;
+
+                        let unpacked_binding = self.binding_from_basic_value(&element_type, val)?;
+
+                        if self.variables.contains_key(name) {
+                            self.store_global(name, &unpacked_binding)?;
+                        } else {
+                            self.locals.insert(name.clone(), unpacked_binding);
+                        }
+                    }
                 }
 
                 Ok(())
@@ -387,7 +455,6 @@ impl<'ctx> Codegen<'ctx> {
                     .iter()
                     .map(|binding| match binding {
                         Binding::Array { value, .. } => Ok(*value),
-
                         _ => Err("expected array element".to_string()),
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -634,7 +701,16 @@ impl<'ctx> Codegen<'ctx> {
             return Err(format!("unknown function '{}'", name));
         };
 
-        if arguments.len() != signature.parameters.len() {
+        if signature.is_variadic {
+            if arguments.len() < signature.parameters.len() {
+                return Err(format!(
+                    "variadic function '{}' expects at least {} arguments, found {}",
+                    name,
+                    signature.parameters.len(),
+                    arguments.len()
+                ));
+            }
+        } else if arguments.len() != signature.parameters.len() {
             return Err(format!(
                 "function '{}' expects {} arguments, found {}",
                 name,
@@ -718,23 +794,50 @@ impl<'ctx> Codegen<'ctx> {
     fn codegen_address_of(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         match expression {
             Expression::Identifier(name) => {
-                let global = self
-                    .module
-                    .get_global(name)
-                    .ok_or_else(|| format!("unknown global '{}'", name))?;
+                if let Some(global) = self.module.get_global(name) {
+                    let ty = self
+                        .variables
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("unknown variable '{}'", name))?;
 
-                let ty = self
-                    .variables
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("unknown variable '{}'", name))?;
+                    return Ok(Binding::Pointer {
+                        ty: Type::Pointer {
+                            element: Box::new(ty),
+                        },
+                        value: global.as_pointer_value(),
+                    });
+                }
 
-                Ok(Binding::Pointer {
-                    ty: Type::Pointer {
-                        element: Box::new(ty),
-                    },
-                    value: global.as_pointer_value(),
-                })
+                let local_binding = self.locals.get(name).cloned();
+
+                if let Some(binding) = local_binding {
+                    match binding {
+                        Binding::Array {
+                            ty: Type::Array { ref element, size },
+                            ..
+                        } => {
+                            let storage = self.array_storage(binding.clone(), element, size)?;
+                            return Ok(Binding::Pointer {
+                                ty: Type::Pointer {
+                                    element: Box::new(Type::Array {
+                                        element: (*element).clone(),
+                                        size,
+                                    }),
+                                },
+                                value: storage,
+                            });
+                        }
+                        _ => {
+                            return Err(format!(
+                                "cannot take address of non-addressable local identifier '{}'",
+                                name
+                            ));
+                        }
+                    }
+                }
+
+                Err(format!("unknown identifier '{}'", name))
             }
 
             Expression::Index { expression, index } => {

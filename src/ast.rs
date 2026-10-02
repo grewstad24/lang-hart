@@ -43,6 +43,7 @@ pub struct Parameter {
 pub struct FunctionSignature {
     pub parameters: Vec<TypeExpression>,
     pub return_type: TypeExpression,
+    pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

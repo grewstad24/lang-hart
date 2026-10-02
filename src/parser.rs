@@ -135,6 +135,14 @@ impl Parser {
         }
 
         self.expect(Token::RParen)?;
+
+        let is_variadic = if self.is(Token::PlusPlus) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         self.expect(Token::To)?;
 
         let return_type = self.parse_type_expression()?;
@@ -146,6 +154,7 @@ impl Parser {
             signature: FunctionSignature {
                 parameters,
                 return_type,
+                is_variadic,
             },
         })
     }

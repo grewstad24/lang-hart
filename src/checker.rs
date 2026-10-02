@@ -122,11 +122,12 @@ impl Checker {
 
         self.unsafe_context = false;
 
+        let mut main_locals = HashMap::new();
         let mut main_assigned = HashSet::new();
         let main = Main {
             body: self.resolve_statements(
                 &program.main.body,
-                &HashMap::new(),
+                &mut main_locals,
                 &mut main_assigned,
             )?,
         };
@@ -159,15 +160,18 @@ impl Checker {
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            self.unsafe_context = false;
+            self.unsafe_context = function.kind == FunctionKind::Unsafe;
 
-            let body = self.resolve_statements(&function.body, &locals, &mut assigned_in_scope)?;
+            let body =
+                self.resolve_statements(&function.body, &mut locals, &mut assigned_in_scope)?;
+
+            self.unsafe_context = false;
 
             functions.push(Function {
                 kind: function.kind.clone(),
                 name: function.name.clone(),
                 parameters,
-                return_type: TypeExpression::Concrete(Self::concrete_type(&signature.return_type)?),
+                return_type: signature.return_type.clone(),
                 body,
             });
         }
@@ -253,6 +257,7 @@ impl Checker {
             Ok(FunctionSignature {
                 parameters,
                 return_type,
+                is_variadic: raw.is_variadic,
             })
         })();
 
@@ -309,6 +314,7 @@ impl Checker {
             Ok(FunctionSignature {
                 parameters: resolved_parameters,
                 return_type: resolved_return_type,
+                is_variadic: false,
             })
         })();
 
@@ -459,7 +465,7 @@ impl Checker {
             }
 
             Expression::Call { name, arguments } => {
-                let (signature, is_extern) = if self.extern_functions.contains_key(name) {
+                let (signature, is_unsafe) = if self.extern_functions.contains_key(name) {
                     (self.resolve_external_function(name)?, true)
                 } else {
                     let function_kind = self
@@ -474,40 +480,36 @@ impl Checker {
                     )
                 };
 
-                if is_extern && !self.unsafe_context {
+                if is_unsafe && !self.unsafe_context {
                     return Err(format!(
-                        "external function '{}' may only be called from unsafe code",
+                        "function '{}' is unsafe and may only be called from unsafe code",
                         name
                     ));
                 }
 
-                if !is_extern
-                    && self
-                        .functions
-                        .get(name)
-                        .map(|function| function.kind == FunctionKind::Unsafe)
-                        .unwrap_or(false)
-                    && !self.unsafe_context
-                {
-                    return Err(format!(
-                        "unsafe function '{}' may only be called from unsafe code",
-                        name
-                    ));
-                }
-
-                if arguments.len() != signature.parameters.len() {
-                    return Err(format!(
-                        "function '{}' expects {} arguments, found {}",
-                        name,
-                        signature.parameters.len(),
-                        arguments.len()
-                    ));
+                if signature.is_variadic {
+                    if arguments.len() < signature.parameters.len() {
+                        return Err(format!(
+                            "variadic function '{}' expects at least {} arguments, found {}",
+                            name,
+                            signature.parameters.len(),
+                            arguments.len()
+                        ));
+                    }
+                } else {
+                    if arguments.len() != signature.parameters.len() {
+                        return Err(format!(
+                            "function '{}' expects {} arguments, found {}",
+                            name,
+                            signature.parameters.len(),
+                            arguments.len()
+                        ));
+                    }
                 }
 
                 for (argument, parameter_type) in arguments.iter().zip(signature.parameters.iter())
                 {
                     let argument_type = self.type_of_expression(argument, locals)?;
-
                     let parameter_type = Self::concrete_type(parameter_type)?;
 
                     if argument_type != parameter_type {
@@ -516,6 +518,10 @@ impl Checker {
                             name, parameter_type, argument_type
                         ));
                     }
+                }
+
+                for argument in arguments.iter().skip(signature.parameters.len()) {
+                    let _var_type = self.type_of_expression(argument, locals)?;
                 }
 
                 Self::concrete_type(&signature.return_type)
@@ -566,24 +572,26 @@ impl Checker {
     fn resolve_statements(
         &mut self,
         statements: &[Statement],
-        locals: &HashMap<String, Type>,
+        locals: &mut HashMap<String, Type>,
         assigned_names: &mut HashSet<String>,
     ) -> Result<Vec<Statement>, String> {
-        statements
-            .iter()
-            .map(|statement| self.resolve_statement(statement, locals, assigned_names))
-            .collect()
+        let mut resolved = Vec::new();
+        for statement in statements {
+            resolved.push(self.resolve_statement(statement, locals, assigned_names)?);
+        }
+        Ok(resolved)
     }
 
     fn resolve_statement(
         &mut self,
         statement: &Statement,
-        locals: &HashMap<String, Type>,
+        locals: &mut HashMap<String, Type>,
         assigned_names: &mut HashSet<String>,
     ) -> Result<Statement, String> {
         match statement {
             Statement::Bind { expression, names } => {
                 let resolved_expr = self.resolve_expression(expression, locals)?;
+                let expr_type = self.type_of_expression(&resolved_expr, locals)?;
 
                 for name in names {
                     if assigned_names.contains(name) {
@@ -592,7 +600,34 @@ impl Checker {
                             name
                         ));
                     }
+                }
+
+                if names.len() == 1 {
+                    let name = &names[0];
                     assigned_names.insert(name.clone());
+                    locals.insert(name.clone(), expr_type);
+                } else {
+                    match expr_type {
+                        Type::Array { element, size } => {
+                            if size != names.len() {
+                                return Err(format!(
+                                    "cannot unpack array of size {} into {} bindings",
+                                    size,
+                                    names.len()
+                                ));
+                            }
+                            for name in names {
+                                assigned_names.insert(name.clone());
+                                locals.insert(name.clone(), *element.clone());
+                            }
+                        }
+                        other => {
+                            return Err(format!(
+                                "cannot unpack value of non-array type {:?} into multiple bindings",
+                                other
+                            ));
+                        }
+                    }
                 }
 
                 Ok(Statement::Bind {
@@ -617,9 +652,12 @@ impl Checker {
                 let previous_context = self.unsafe_context;
                 self.unsafe_context = true;
 
-                let result = self.resolve_statements(statements, locals, assigned_names);
+                let mut inner_locals = locals.clone();
+                let result = self.resolve_statements(statements, &mut inner_locals, assigned_names);
 
                 self.unsafe_context = previous_context;
+
+                *locals = inner_locals;
 
                 Ok(Statement::Unsafe(result?))
             }
