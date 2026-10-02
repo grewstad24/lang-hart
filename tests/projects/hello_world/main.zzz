@@ -1,0 +1,12 @@
+data:
+        *u8 ptr_my_string
+        s32 result
+        #"Hello World!\0" my_string
+
+main:
+        "Hello World!\0" -> my_string
+        &my_string[0] -> ptr_my_string
+        print(ptr_my_string) ; printing hello ; -> result
+        exit 0
+
+; I am commenting on my code

@@ -5,20 +5,26 @@ use std::process::Command;
 
 use inkwell::context::Context;
 
-mod ast;
-mod checker;
-mod codegen;
-mod lexer;
-mod parser;
+use snore::codegen::Codegen;
+use snore::lexer::Lexer;
+use snore::parser::Parser;
 
-use crate::codegen::Codegen;
-use crate::lexer::Lexer;
-use crate::parser::Parser;
+/// Helper function to locate the `~/.snore` directory.
+fn get_snore_home_dir() -> Option<PathBuf> {
+    // Tries HOME on Unix/Linux/macOS or USERPROFILE on Windows
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".snore"))
+}
 
-fn collect_sources(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+fn collect_sources(dirs: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     fn visit(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -33,9 +39,13 @@ fn collect_sources(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         Ok(())
     }
 
-    visit(dir, &mut files)?;
+    for dir in dirs {
+        visit(dir, &mut files)?;
+    }
 
     files.sort();
+    // Remove duplicates in case ~/.snore and project_dir point to overlapping locations
+    files.dedup();
 
     Ok(files)
 }
@@ -55,17 +65,24 @@ fn main() {
         std::process::exit(1);
     }
 
-    let source_files = collect_sources(&project_dir).unwrap_or_else(|error| {
-        eprintln!(
-            "failed to read project directory '{}': {}",
-            project_dir.display(),
-            error
-        );
+    // Collect search directories: ~/.snore (if present) and the target project_dir
+    let mut search_dirs = Vec::new();
+
+    if let Some(snore_home) = get_snore_home_dir() {
+        if snore_home.is_dir() {
+            search_dirs.push(snore_home);
+        }
+    }
+
+    search_dirs.push(project_dir.clone());
+
+    let source_files = collect_sources(&search_dirs).unwrap_or_else(|error| {
+        eprintln!("failed to read source directories: {}", error);
         std::process::exit(1);
     });
 
     if source_files.is_empty() {
-        eprintln!("no .zzz files found in '{}'", project_dir.display());
+        eprintln!("no .zzz files found in project or ~/.snore");
         std::process::exit(1);
     }
 
