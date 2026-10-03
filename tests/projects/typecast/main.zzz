@@ -1,0 +1,4 @@
+main:
+        _ print_s32(false as s32)
+        _ print_newline()
+        exit 0

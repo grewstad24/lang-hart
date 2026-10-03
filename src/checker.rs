@@ -839,6 +839,10 @@ impl Checker {
             return true;
         }
 
+        if matches!((source, target), (Type::Bool, Type::S32)) {
+            return true;
+        }
+
         Self::is_integer_type(source) && Self::is_integer_type(target)
     }
 }

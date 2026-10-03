@@ -695,7 +695,8 @@ impl<'ctx> Codegen<'ctx> {
         let casted = if target_bits == source_bits {
             value
         } else if target_bits > source_bits {
-            if self.is_signed(&source_type) {
+            // Booleans (i1) must always zero-extend to avoid turning 1 (true) into -1
+            if source_type != Type::Bool && self.is_signed(&source_type) {
                 self.builder
                     .build_int_s_extend(value, target_llvm_type, "sexttmp")
                     .map_err(|error| error.to_string())?
