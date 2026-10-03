@@ -686,39 +686,81 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        let value = self.binding_int_value(&binding)?;
-        let target_llvm_type = self.llvm_type(&target_type)?.into_int_type();
+        // 1. Integer -> Pointer (inttoptr)
+        if Checker::is_integer_type(&source_type) && matches!(target_type, Type::Pointer { .. }) {
+            let int_val = self.binding_int_value(&binding)?;
+            let ptr_type = self.llvm_type(&target_type)?.into_pointer_type();
+            let ptr_val = self
+                .builder
+                .build_int_to_ptr(int_val, ptr_type, "inttoptr")
+                .map_err(|e| e.to_string())?;
 
+            return Ok(Binding::Pointer {
+                ty: target_type,
+                value: ptr_val,
+            });
+        }
+
+        // 2. Pointer -> Integer (ptrtoint)
+        if matches!(source_type, Type::Pointer { .. }) && Checker::is_integer_type(&target_type) {
+            let ptr_val = match binding {
+                Binding::Pointer { value, .. } => value,
+                _ => return Err("expected pointer binding".to_string()),
+            };
+            let int_type = self.llvm_type(&target_type)?.into_int_type();
+            let int_val = self
+                .builder
+                .build_ptr_to_int(ptr_val, int_type, "ptrtoint")
+                .map_err(|e| e.to_string())?;
+
+            return Ok(Binding::Integer {
+                ty: target_type,
+                value: int_val,
+            });
+        }
+
+        // 3. Integer/Bool conversions
+        let value = self.binding_int_value(&binding)?;
+
+        // Integer -> Bool: compare value != 0 so non-zero ints map to true (1)
+        if target_type == Type::Bool {
+            let zero = value.get_type().const_zero();
+            let bool_val = self
+                .builder
+                .build_int_compare(IntPredicate::NE, value, zero, "tobool")
+                .map_err(|e| e.to_string())?;
+
+            return Ok(Binding::Boolean { value: bool_val });
+        }
+
+        // Bool -> Integer or Integer -> Integer width adjustments
+        let target_llvm_type = self.llvm_type(&target_type)?.into_int_type();
         let source_bits = value.get_type().get_bit_width();
         let target_bits = target_llvm_type.get_bit_width();
 
         let casted = if target_bits == source_bits {
             value
         } else if target_bits > source_bits {
-            // Booleans (i1) must always zero-extend to avoid turning 1 (true) into -1
+            // Booleans (i1) must always zero-extend; signed ints sign-extend
             if source_type != Type::Bool && self.is_signed(&source_type) {
                 self.builder
                     .build_int_s_extend(value, target_llvm_type, "sexttmp")
-                    .map_err(|error| error.to_string())?
+                    .map_err(|e| e.to_string())?
             } else {
                 self.builder
                     .build_int_z_extend(value, target_llvm_type, "zexttmp")
-                    .map_err(|error| error.to_string())?
+                    .map_err(|e| e.to_string())?
             }
         } else {
             self.builder
                 .build_int_truncate(value, target_llvm_type, "trunctmp")
-                .map_err(|error| error.to_string())?
+                .map_err(|e| e.to_string())?
         };
 
-        if target_type == Type::Bool {
-            Ok(Binding::Boolean { value: casted })
-        } else {
-            Ok(Binding::Integer {
-                ty: target_type,
-                value: casted,
-            })
-        }
+        Ok(Binding::Integer {
+            ty: target_type,
+            value: casted,
+        })
     }
 
     fn codegen_call(

@@ -839,10 +839,25 @@ impl Checker {
             return true;
         }
 
-        if matches!((source, target), (Type::Bool, Type::S32)) {
+        // 1. Bool <-> Integer
+        if (*source == Type::Bool && Self::is_integer_type(target))
+            || (Self::is_integer_type(source) && *target == Type::Bool)
+        {
             return true;
         }
 
-        Self::is_integer_type(source) && Self::is_integer_type(target)
+        // 2. Pointer <-> Integer
+        if (matches!(source, Type::Pointer { .. }) && Self::is_integer_type(target))
+            || (Self::is_integer_type(source) && matches!(target, Type::Pointer { .. }))
+        {
+            return true;
+        }
+
+        // 3. Integer <-> Integer
+        if Self::is_integer_type(source) && Self::is_integer_type(target) {
+            return true;
+        }
+
+        false
     }
 }
