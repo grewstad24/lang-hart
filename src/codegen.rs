@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType};
-use inkwell::values::{ArrayValue, BasicValueEnum, FunctionValue, IntValue, PointerValue};
+use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::values::{
+    ArrayValue, BasicValueEnum, FunctionValue, IntValue, PointerValue, StructValue,
+};
 use inkwell::{AddressSpace, IntPredicate};
 
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, Expression, ExternalFunction, Function, FunctionSignature,
-    Main, Program, Statement, Type, UnaryOperator, Variable,
+    BinaryOperator, ComparisonOperator, ConditionalBranch, Expression, ExternalFunction, Function,
+    FunctionSignature, Main, Program, Statement, Type, UnaryOperator, Variable,
 };
 use crate::checker::Checker;
 
@@ -34,6 +36,12 @@ enum Binding<'ctx> {
         ty: Type,
         value: PointerValue<'ctx>,
     },
+
+    Slice {
+        ty: Type,
+        value: StructValue<'ctx>,
+        storage: Option<PointerValue<'ctx>>,
+    },
 }
 
 pub struct Codegen<'ctx> {
@@ -48,6 +56,7 @@ pub struct Codegen<'ctx> {
     extern_functions: HashMap<String, FunctionSignature>,
 
     string_counter: usize,
+    branch_counter: usize,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -64,6 +73,7 @@ impl<'ctx> Codegen<'ctx> {
             extern_functions: HashMap::new(),
 
             string_counter: 0,
+            branch_counter: 0,
         }
     }
 
@@ -234,6 +244,12 @@ impl<'ctx> Codegen<'ctx> {
     fn codegen_statements(&mut self, statements: &[Statement]) -> Result<(), String> {
         for statement in statements {
             self.codegen_statement(statement)?;
+
+            if let Some(current_block) = self.builder.get_insert_block() {
+                if current_block.get_terminator().is_some() {
+                    break;
+                }
+            }
         }
 
         Ok(())
@@ -331,7 +347,106 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             Statement::Unsafe(statements) => self.codegen_statements(statements),
+
+            Statement::If {
+                branches,
+                else_body,
+            } => self.codegen_if_statement(branches, else_body),
         }
+    }
+
+    fn codegen_if_statement(
+        &mut self,
+        branches: &[ConditionalBranch],
+        else_body: &Option<Vec<Statement>>,
+    ) -> Result<(), String> {
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "cannot generate if statement outside basic block".to_string())?;
+
+        let current_fn = current_block
+            .get_parent()
+            .ok_or_else(|| "current block has no parent function".to_string())?;
+
+        let id = self.branch_counter;
+        self.branch_counter += 1;
+
+        let end_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("if.end.{}", id));
+
+        let first_cond_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("if.test.0.{}", id));
+
+        self.builder
+            .build_unconditional_branch(first_cond_bb)
+            .map_err(|e| e.to_string())?;
+
+        let mut next_cond_bb = first_cond_bb;
+
+        for (i, branch) in branches.iter().enumerate() {
+            self.builder.position_at_end(next_cond_bb);
+
+            let cond_binding = self.codegen_expression(&branch.condition)?;
+            let cond_value = match cond_binding {
+                Binding::Boolean { value } => value,
+                _ => return Err("if condition must evaluate to a boolean".to_string()),
+            };
+
+            let then_bb = self
+                .context
+                .append_basic_block(current_fn, &format!("if.then.{}.{}", i, id));
+
+            let false_bb = if i + 1 < branches.len() {
+                self.context
+                    .append_basic_block(current_fn, &format!("if.test.{}.{}", i + 1, id))
+            } else if else_body.is_some() {
+                self.context
+                    .append_basic_block(current_fn, &format!("if.else.{}", id))
+            } else {
+                end_bb
+            };
+
+            self.builder
+                .build_conditional_branch(cond_value, then_bb, false_bb)
+                .map_err(|e| e.to_string())?;
+
+            self.builder.position_at_end(then_bb);
+            let saved_locals = self.locals.clone();
+            self.codegen_statements(&branch.body)?;
+            self.locals = saved_locals;
+
+            if let Some(insert_bb) = self.builder.get_insert_block() {
+                if insert_bb.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(end_bb)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+
+            next_cond_bb = false_bb;
+        }
+
+        if let Some(else_stmts) = else_body {
+            self.builder.position_at_end(next_cond_bb);
+            let saved_locals = self.locals.clone();
+            self.codegen_statements(else_stmts)?;
+            self.locals = saved_locals;
+
+            if let Some(insert_bb) = self.builder.get_insert_block() {
+                if insert_bb.get_terminator().is_none() {
+                    self.builder
+                        .build_unconditional_branch(end_bb)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+
+        self.builder.position_at_end(end_bb);
+
+        Ok(())
     }
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
@@ -407,40 +522,149 @@ impl<'ctx> Codegen<'ctx> {
 
             Expression::Index { expression, index } => self.codegen_index(expression, index),
 
+            Expression::Member { expression, field } => self.codegen_member(expression, field),
+
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
 
             Expression::Decay(expression) => self.codegen_decay(expression),
         }
     }
 
+    fn codegen_member(
+        &mut self,
+        expression: &Expression,
+        field: &str,
+    ) -> Result<Binding<'ctx>, String> {
+        let binding = self.codegen_expression(expression)?;
+
+        match binding {
+            Binding::Slice {
+                ty: Type::Slice { element },
+                value,
+                ..
+            } => match field {
+                "ptr" => {
+                    let ptr_val = self
+                        .builder
+                        .build_extract_value(value, 0, "sliceptr")
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value();
+
+                    Ok(Binding::Pointer {
+                        ty: Type::Pointer { element },
+                        value: ptr_val,
+                    })
+                }
+                "len" => {
+                    let len_val = self
+                        .builder
+                        .build_extract_value(value, 1, "slicelen")
+                        .map_err(|e| e.to_string())?
+                        .into_int_value();
+
+                    Ok(Binding::Integer {
+                        ty: Type::U64,
+                        value: len_val,
+                    })
+                }
+                _ => Err(format!("unknown slice member '.{}'", field)),
+            },
+
+            Binding::Array {
+                ty: Type::Array { ref element, size },
+                ..
+            } => match field {
+                "ptr" => {
+                    let elem_clone = (*element).clone();
+                    let storage = self.array_storage(binding, &elem_clone, size)?;
+                    let zero = self.context.i32_type().const_zero();
+                    let llvm_array_type = self
+                        .llvm_type(&Type::Array {
+                            element: elem_clone.clone(),
+                            size,
+                        })?
+                        .into_array_type();
+
+                    let pointer = unsafe {
+                        self.builder
+                            .build_gep(llvm_array_type, storage, &[zero, zero], "arrayptr")
+                            .map_err(|e| e.to_string())?
+                    };
+
+                    Ok(Binding::Pointer {
+                        ty: Type::Pointer {
+                            element: elem_clone,
+                        },
+                        value: pointer,
+                    })
+                }
+                "len" => Ok(Binding::Integer {
+                    ty: Type::U64,
+                    value: self.context.i64_type().const_int(size as u64, false),
+                }),
+                _ => Err(format!("unknown array member '.{}'", field)),
+            },
+
+            other => Err(format!(
+                "member access '.{}' unsupported on {:?}",
+                field, other
+            )),
+        }
+    }
+
     fn codegen_decay(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         let binding = self.codegen_expression(expression)?;
-        let (element_type, size) = match self.binding_type(&binding)? {
-            Type::Array { element, size } => (*element, size),
-            other => return Err(format!("cannot decay non-array type {:?}", other)),
-        };
 
-        let storage = self.array_storage(binding, &element_type, size)?;
-        let llvm_array_type = self
-            .llvm_type(&Type::Array {
-                element: Box::new(element_type.clone()),
-                size,
-            })?
-            .into_array_type();
+        match binding {
+            Binding::Slice {
+                ty: Type::Slice { element },
+                value,
+                ..
+            } => {
+                let ptr_val = self
+                    .builder
+                    .build_extract_value(value, 0, "decay_slice_ptr")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
 
-        let zero = self.context.i32_type().const_zero();
-        let pointer = unsafe {
-            self.builder
-                .build_gep(llvm_array_type, storage, &[zero, zero], "decayptr")
-                .map_err(|error| error.to_string())?
-        };
+                Ok(Binding::Pointer {
+                    ty: Type::Pointer { element },
+                    value: ptr_val,
+                })
+            }
 
-        Ok(Binding::Pointer {
-            ty: Type::Pointer {
-                element: Box::new(element_type),
-            },
-            value: pointer,
-        })
+            Binding::Array {
+                ty: Type::Array { ref element, size },
+                ..
+            } => {
+                let elem_clone = (*element).clone();
+                let storage = self.array_storage(binding, &elem_clone, size)?;
+                let llvm_array_type = self
+                    .llvm_type(&Type::Array {
+                        element: elem_clone.clone(),
+                        size,
+                    })?
+                    .into_array_type();
+
+                let zero = self.context.i32_type().const_zero();
+                let pointer = unsafe {
+                    self.builder
+                        .build_gep(llvm_array_type, storage, &[zero, zero], "decayptr")
+                        .map_err(|error| error.to_string())?
+                };
+
+                Ok(Binding::Pointer {
+                    ty: Type::Pointer {
+                        element: elem_clone,
+                    },
+                    value: pointer,
+                })
+            }
+
+            Binding::Pointer { .. } => Ok(binding),
+
+            other => Err(format!("cannot decay non-array/slice binding: {:?}", other)),
+        }
     }
 
     fn codegen_array_literal(&mut self, elements: &[Expression]) -> Result<Binding<'ctx>, String> {
@@ -479,7 +703,7 @@ impl<'ctx> Codegen<'ctx> {
             | Type::Bool => {
                 let values = bindings
                     .iter()
-                    .map(|binding| self.binding_int_value(binding))
+                    .map(|b| self.binding_int_value(b))
                     .collect::<Result<Vec<_>, _>>()?;
 
                 self.llvm_type(&element_type)?
@@ -490,7 +714,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::Array { .. } => {
                 let values = bindings
                     .iter()
-                    .map(|binding| match binding {
+                    .map(|b| match b {
                         Binding::Array { value, .. } => Ok(*value),
                         _ => Err("expected array element".to_string()),
                     })
@@ -501,8 +725,8 @@ impl<'ctx> Codegen<'ctx> {
                     .const_array(&values)
             }
 
-            Type::Pointer { .. } => {
-                return Err("array literals of pointers are not supported".to_string());
+            Type::Pointer { .. } | Type::Slice { .. } => {
+                return Err("array literals of pointers or slices are not supported".to_string());
             }
         };
 
@@ -686,7 +910,6 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        // 1. Integer -> Pointer (inttoptr)
         if Checker::is_integer_type(&source_type) && matches!(target_type, Type::Pointer { .. }) {
             let int_val = self.binding_int_value(&binding)?;
             let ptr_type = self.llvm_type(&target_type)?.into_pointer_type();
@@ -701,7 +924,6 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        // 2. Pointer -> Integer (ptrtoint)
         if matches!(source_type, Type::Pointer { .. }) && Checker::is_integer_type(&target_type) {
             let ptr_val = match binding {
                 Binding::Pointer { value, .. } => value,
@@ -719,10 +941,8 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        // 3. Integer/Bool conversions
         let value = self.binding_int_value(&binding)?;
 
-        // Integer -> Bool: compare value != 0 so non-zero ints map to true (1)
         if target_type == Type::Bool {
             let zero = value.get_type().const_zero();
             let bool_val = self
@@ -733,7 +953,6 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(Binding::Boolean { value: bool_val });
         }
 
-        // Bool -> Integer or Integer -> Integer width adjustments
         let target_llvm_type = self.llvm_type(&target_type)?.into_int_type();
         let source_bits = value.get_type().get_bit_width();
         let target_bits = target_llvm_type.get_bit_width();
@@ -741,7 +960,6 @@ impl<'ctx> Codegen<'ctx> {
         let casted = if target_bits == source_bits {
             value
         } else if target_bits > source_bits {
-            // Booleans (i1) must always zero-extend; signed ints sign-extend
             if source_type != Type::Bool && self.is_signed(&source_type) {
                 self.builder
                     .build_int_s_extend(value, target_llvm_type, "sexttmp")
@@ -831,44 +1049,69 @@ impl<'ctx> Codegen<'ctx> {
 
         let index_value = self.binding_int_value(&index_binding)?;
 
-        let (element_type, size) = match self.binding_type(&binding)? {
-            Type::Array { element, size } => (*element, size),
+        match self.binding_type(&binding)? {
+            Type::Array { element, size } => {
+                if size == 0 {
+                    return Err("cannot index empty array".to_string());
+                }
 
-            other => {
-                return Err(format!("cannot index value of type {:?}", other));
+                let storage = self.array_storage(binding, &element, size)?;
+                let llvm_array_type = self
+                    .llvm_type(&Type::Array {
+                        element: Box::new((*element).clone()),
+                        size,
+                    })?
+                    .into_array_type();
+
+                let pointer = unsafe {
+                    self.builder
+                        .build_gep(
+                            llvm_array_type,
+                            storage,
+                            &[self.context.i32_type().const_zero(), index_value],
+                            "indexptr",
+                        )
+                        .map_err(|error| error.to_string())?
+                };
+
+                let loaded = self
+                    .builder
+                    .build_load(self.llvm_type(&element)?, pointer, "indextmp")
+                    .map_err(|error| error.to_string())?;
+
+                self.binding_from_basic_value(&element, loaded)
             }
-        };
 
-        if size == 0 {
-            return Err("cannot index empty array".to_string());
+            Type::Slice { element } => {
+                let slice_struct = match binding {
+                    Binding::Slice { value, .. } => value,
+                    _ => return Err("expected slice binding".to_string()),
+                };
+
+                let ptr_val = self
+                    .builder
+                    .build_extract_value(slice_struct, 0, "sliceptr")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+
+                let elem_llvm_type = self.llvm_type(&element)?;
+
+                let gep = unsafe {
+                    self.builder
+                        .build_gep(elem_llvm_type, ptr_val, &[index_value], "sliceidx")
+                        .map_err(|e| e.to_string())?
+                };
+
+                let loaded = self
+                    .builder
+                    .build_load(elem_llvm_type, gep, "sliceload")
+                    .map_err(|e| e.to_string())?;
+
+                self.binding_from_basic_value(&element, loaded)
+            }
+
+            other => Err(format!("cannot index value of type {:?}", other)),
         }
-
-        let storage = self.array_storage(binding, &element_type, size)?;
-
-        let llvm_array_type = self
-            .llvm_type(&Type::Array {
-                element: Box::new(element_type.clone()),
-                size,
-            })?
-            .into_array_type();
-
-        let pointer = unsafe {
-            self.builder
-                .build_gep(
-                    llvm_array_type,
-                    storage,
-                    &[self.context.i32_type().const_zero(), index_value],
-                    "indexptr",
-                )
-                .map_err(|error| error.to_string())?
-        };
-
-        let loaded = self
-            .builder
-            .build_load(self.llvm_type(&element_type)?, pointer, "indextmp")
-            .map_err(|error| error.to_string())?;
-
-        self.binding_from_basic_value(&element_type, loaded)
     }
 
     fn codegen_address_of(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
@@ -897,11 +1140,12 @@ impl<'ctx> Codegen<'ctx> {
                             ty: Type::Array { ref element, size },
                             ..
                         } => {
-                            let storage = self.array_storage(binding.clone(), element, size)?;
+                            let elem_clone = (*element).clone();
+                            let storage = self.array_storage(binding.clone(), &elem_clone, size)?;
                             return Ok(Binding::Pointer {
                                 ty: Type::Pointer {
                                     element: Box::new(Type::Array {
-                                        element: (*element).clone(),
+                                        element: elem_clone,
                                         size,
                                     }),
                                 },
@@ -923,47 +1167,67 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Index { expression, index } => {
                 let binding = self.codegen_expression(expression)?;
                 let index_binding = self.codegen_expression(index)?;
-
                 let index_value = self.binding_int_value(&index_binding)?;
 
-                let (element_type, size) = match self.binding_type(&binding)? {
-                    Type::Array { element, size } => (*element, size),
+                match self.binding_type(&binding)? {
+                    Type::Array { element, size } => {
+                        if size == 0 {
+                            return Err("cannot index empty array".to_string());
+                        }
 
-                    other => {
-                        return Err(format!("cannot take address of value of type {:?}", other));
+                        let storage = self.array_storage(binding, &element, size)?;
+                        let llvm_array_type = self
+                            .llvm_type(&Type::Array {
+                                element: Box::new((*element).clone()),
+                                size,
+                            })?
+                            .into_array_type();
+
+                        let pointer = unsafe {
+                            self.builder
+                                .build_gep(
+                                    llvm_array_type,
+                                    storage,
+                                    &[self.context.i32_type().const_zero(), index_value],
+                                    "addressptr",
+                                )
+                                .map_err(|error| error.to_string())?
+                        };
+
+                        Ok(Binding::Pointer {
+                            ty: Type::Pointer { element },
+                            value: pointer,
+                        })
                     }
-                };
 
-                if size == 0 {
-                    return Err("cannot index empty array".to_string());
+                    Type::Slice { element } => {
+                        let slice_struct = match binding {
+                            Binding::Slice { value, .. } => value,
+                            _ => return Err("expected slice binding".to_string()),
+                        };
+
+                        let ptr_val = self
+                            .builder
+                            .build_extract_value(slice_struct, 0, "sliceptr")
+                            .map_err(|e| e.to_string())?
+                            .into_pointer_value();
+
+                        let elem_llvm_type = self.llvm_type(&element)?;
+
+                        let pointer = unsafe {
+                            self.builder
+                                .build_gep(elem_llvm_type, ptr_val, &[index_value], "sliceaddr")
+                                .map_err(|e| e.to_string())?
+                        };
+
+                        Ok(Binding::Pointer {
+                            ty: Type::Pointer { element },
+                            value: pointer,
+                        })
+                    }
+
+                    other => Err(format!("cannot take address of value of type {:?}", other)),
                 }
-
-                let storage = self.array_storage(binding, &element_type, size)?;
-
-                let llvm_array_type = self
-                    .llvm_type(&Type::Array {
-                        element: Box::new(element_type.clone()),
-                        size,
-                    })?
-                    .into_array_type();
-
-                let pointer = unsafe {
-                    self.builder
-                        .build_gep(
-                            llvm_array_type,
-                            storage,
-                            &[self.context.i32_type().const_zero(), index_value],
-                            "addressptr",
-                        )
-                        .map_err(|error| error.to_string())?
-                };
-
-                Ok(Binding::Pointer {
-                    ty: Type::Pointer {
-                        element: Box::new(element_type),
-                    },
-                    value: pointer,
-                })
             }
 
             _ => Err("address-of requires a variable or array index".to_string()),
@@ -1010,9 +1274,16 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    fn slice_type(&self) -> StructType<'ctx> {
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let len_type = self.context.i64_type();
+        self.context
+            .struct_type(&[ptr_type.into(), len_type.into()], false)
+    }
+
     fn codegen_string_literal(&mut self, value: &[u8]) -> Result<Binding<'ctx>, String> {
         let element_type = self.context.i8_type();
-        let array_type = element_type.array_type(value.len() as u32);
+        let array_type = element_type.array_type((value.len() + 1) as u32);
 
         let name = format!(".str.{}", self.string_counter);
         self.string_counter += 1;
@@ -1021,23 +1292,29 @@ impl<'ctx> Codegen<'ctx> {
             .module
             .add_global(array_type, Some(AddressSpace::default()), &name);
 
-        let bytes = value
+        let mut bytes: Vec<_> = value
             .iter()
             .map(|byte| element_type.const_int(*byte as u64, false))
-            .collect::<Vec<_>>();
+            .collect();
+
+        bytes.push(element_type.const_zero());
 
         let initializer = element_type.const_array(&bytes);
-
         global.set_initializer(&initializer);
         global.set_constant(true);
 
-        Ok(Binding::Array {
-            ty: Type::Array {
+        let slice_llvm_type = self.slice_type();
+        let ptr = global.as_pointer_value();
+        let len = self.context.i64_type().const_int(value.len() as u64, false);
+
+        let slice_val = slice_llvm_type.const_named_struct(&[ptr.into(), len.into()]);
+
+        Ok(Binding::Slice {
+            ty: Type::Slice {
                 element: Box::new(Type::U8),
-                size: value.len(),
             },
-            value: initializer,
-            storage: Some(global.as_pointer_value()),
+            value: slice_val,
+            storage: None,
         })
     }
 
@@ -1068,6 +1345,12 @@ impl<'ctx> Codegen<'ctx> {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
             }),
+
+            Type::Slice { .. } => Ok(Binding::Slice {
+                ty: ty.clone(),
+                value: value.into_struct_value(),
+                storage: None,
+            }),
         }
     }
 
@@ -1084,6 +1367,8 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Array { ty, .. } => Ok(ty.clone()),
 
             Binding::Pointer { ty, .. } => Ok(ty.clone()),
+
+            Binding::Slice { ty, .. } => Ok(ty.clone()),
         }
     }
 
@@ -1096,6 +1381,8 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Array { value, .. } => Ok((*value).into()),
 
             Binding::Pointer { value, .. } => Ok((*value).into()),
+
+            Binding::Slice { value, .. } => Ok((*value).into()),
         }
     }
 
@@ -1143,6 +1430,12 @@ impl<'ctx> Codegen<'ctx> {
             Type::Pointer { .. } => Some(Binding::Pointer {
                 ty: ty.clone(),
                 value: loaded.into_pointer_value(),
+            }),
+
+            Type::Slice { .. } => Some(Binding::Slice {
+                ty: ty.clone(),
+                value: loaded.into_struct_value(),
+                storage: Some(global.as_pointer_value()),
             }),
         }
     }
@@ -1208,6 +1501,8 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             Type::Pointer { .. } => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+
+            Type::Slice { .. } => Ok(self.slice_type().into()),
         }
     }
 
@@ -1239,6 +1534,8 @@ impl<'ctx> Codegen<'ctx> {
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
+
+            Type::Slice { .. } => Ok(self.slice_type().const_zero().into()),
         }
     }
 

@@ -1,6 +1,0 @@
-main:
-        _ print_string("42 x 4 = \0"^)
-        _ print_s32(42 * 4)
-
-        _ print_newline()
-        exit 0

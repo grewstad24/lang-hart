@@ -1,7 +1,7 @@
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, Expression, ExternalFunction, Function, FunctionKind,
-    FunctionSignature, Main, Parameter, Program, Statement, Type, TypeExpression, UnaryOperator,
-    Variable,
+    BinaryOperator, ComparisonOperator, ConditionalBranch, Expression, ExternalFunction, Function,
+    FunctionKind, FunctionSignature, Main, Parameter, Program, Statement, Type, TypeExpression,
+    UnaryOperator, Variable,
 };
 use crate::lexer::Token;
 
@@ -49,7 +49,7 @@ impl Parser {
                     main = Some(self.parse_main()?);
                 }
 
-                Token::Pure | Token::Impure => {
+                Token::Pure | Token::Impure | Token::Unsafe => {
                     functions.push(self.parse_function()?);
                 }
 
@@ -182,6 +182,11 @@ impl Parser {
                 FunctionKind::Impure
             }
 
+            Token::Unsafe => {
+                self.advance();
+                FunctionKind::Unsafe
+            }
+
             token => {
                 return Err(format!("expected function kind, found {:?}", token));
             }
@@ -249,6 +254,8 @@ impl Parser {
             && !self.is(Token::Main)
             && !self.is(Token::Pure)
             && !self.is(Token::Impure)
+            && !self.is(Token::Elif)
+            && !self.is(Token::Else)
         {
             statements.push(self.parse_statement()?);
             self.skip_newlines();
@@ -263,6 +270,8 @@ impl Parser {
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.peek() {
+            Token::If => self.parse_if_statement(),
+
             Token::Return => {
                 self.advance();
 
@@ -316,6 +325,47 @@ impl Parser {
         }
     }
 
+    fn parse_if_statement(&mut self) -> Result<Statement, String> {
+        self.expect(Token::If)?;
+        let condition = self.parse_expression()?;
+        self.expect(Token::Colon)?;
+        self.consume_optional_newline();
+        let body = self.parse_block(true)?;
+
+        let mut branches = vec![ConditionalBranch { condition, body }];
+
+        self.skip_newlines();
+
+        while self.is(Token::Elif) {
+            self.advance();
+            let elif_condition = self.parse_expression()?;
+            self.expect(Token::Colon)?;
+            self.consume_optional_newline();
+            let elif_body = self.parse_block(true)?;
+
+            branches.push(ConditionalBranch {
+                condition: elif_condition,
+                body: elif_body,
+            });
+
+            self.skip_newlines();
+        }
+
+        let else_body = if self.is(Token::Else) {
+            self.advance();
+            self.expect(Token::Colon)?;
+            self.consume_optional_newline();
+            Some(self.parse_block(true)?)
+        } else {
+            None
+        };
+
+        Ok(Statement::If {
+            branches,
+            else_body,
+        })
+    }
+
     fn parse_unsafe_block(&mut self) -> Result<Statement, String> {
         self.expect(Token::Unsafe)?;
         self.expect(Token::Colon)?;
@@ -336,7 +386,7 @@ impl Parser {
 
         loop {
             let operator = match self.peek() {
-                Token::EqualEqual => ComparisonOperator::Equal,
+                Token::Equal => ComparisonOperator::Equal,
                 Token::NotEqual => ComparisonOperator::NotEqual,
                 Token::Less => ComparisonOperator::Less,
                 Token::LessEqual => ComparisonOperator::LessEqual,
@@ -446,6 +496,15 @@ impl Parser {
                 Token::Caret => {
                     self.advance();
                     expression = Expression::Decay(Box::new(expression));
+                }
+
+                Token::Dot => {
+                    self.advance();
+                    let field = self.expect_identifier()?;
+                    expression = Expression::Member {
+                        expression: Box::new(expression),
+                        field,
+                    };
                 }
 
                 Token::LBracket => {
@@ -597,6 +656,11 @@ impl Parser {
                 Ok(Type::S64)
             }
 
+            Token::TypeU8 => {
+                self.advance();
+                Ok(Type::U8)
+            }
+
             Token::TypeU16 => {
                 self.advance();
                 Ok(Type::U16)
@@ -610,11 +674,6 @@ impl Parser {
             Token::TypeU64 => {
                 self.advance();
                 Ok(Type::U64)
-            }
-
-            Token::TypeU8 => {
-                self.advance();
-                Ok(Type::U8)
             }
 
             Token::TypeBool => {
@@ -634,6 +693,14 @@ impl Parser {
 
             Token::LBracket => {
                 self.advance();
+
+                if self.is(Token::RBracket) {
+                    self.advance();
+                    let element = self.parse_concrete_type()?;
+                    return Ok(Type::Slice {
+                        element: Box::new(element),
+                    });
+                }
 
                 let size = match self.peek().clone() {
                     Token::Integer(value) if value >= 0 => {

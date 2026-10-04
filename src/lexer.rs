@@ -11,6 +11,10 @@ pub enum Token {
     Return,
     Exit,
 
+    If,
+    Elif,
+    Else,
+
     To,
     As,
 
@@ -39,7 +43,7 @@ pub enum Token {
     Caret,
     Underscore,
 
-    EqualEqual,
+    Equal,
     NotEqual,
     Less,
     LessEqual,
@@ -50,6 +54,7 @@ pub enum Token {
 
     Colon,
     Comma,
+    Dot,
 
     LParen,
     RParen,
@@ -173,13 +178,14 @@ impl Lexer {
                     tokens.push(Token::Caret);
                 }
 
+                '.' => {
+                    self.position += 1;
+                    tokens.push(Token::Dot);
+                }
+
                 '=' => {
-                    if self.peek_char(1) == Some('=') {
-                        self.position += 2;
-                        tokens.push(Token::EqualEqual);
-                    } else {
-                        return Err("unexpected '='; use '==' for comparison".to_string());
-                    }
+                    self.position += 1;
+                    tokens.push(Token::Equal);
                 }
 
                 '!' => {
@@ -414,6 +420,10 @@ impl Lexer {
 
             "return" => Token::Return,
             "exit" => Token::Exit,
+
+            "if" => Token::If,
+            "elif" => Token::Elif,
+            "else" => Token::Else,
 
             "to" => Token::To,
             "as" => Token::As,

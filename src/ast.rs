@@ -8,10 +8,9 @@ pub enum Type {
     U32,
     U64,
     Bool,
-
     Array { element: Box<Type>, size: usize },
-
     Pointer { element: Box<Type> },
+    Slice { element: Box<Type> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,69 +74,66 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ConditionalBranch {
+    pub condition: Expression,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Bind {
         expression: Expression,
         names: Vec<String>,
     },
-
     Discard(Expression),
-
     Return(Expression),
-
     Exit(Expression),
-
     Unsafe(Vec<Statement>),
+    If {
+        branches: Vec<ConditionalBranch>,
+        else_body: Option<Vec<Statement>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     Integer(i64),
-
     Boolean(bool),
-
     String(Vec<u8>),
-
     Identifier(String),
-
     Array(Vec<Expression>),
-
     TypeOf(Box<Expression>),
-
     Unary {
         operator: UnaryOperator,
         operand: Box<Expression>,
     },
-
     Binary {
         left: Box<Expression>,
         operator: BinaryOperator,
         right: Box<Expression>,
     },
-
     Comparison {
         left: Box<Expression>,
         operator: ComparisonOperator,
         right: Box<Expression>,
     },
-
     Cast {
         expression: Box<Expression>,
         ty: TypeExpression,
     },
-
     Call {
         name: String,
         arguments: Vec<Expression>,
     },
-
     Index {
         expression: Box<Expression>,
         index: Box<Expression>,
     },
-
+    Member {
+        expression: Box<Expression>,
+        field: String,
+    },
     AddressOf(Box<Expression>),
-
     Decay(Box<Expression>),
 }
 

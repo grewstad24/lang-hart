@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Expression, ExternalFunction, Function, FunctionKind, FunctionSignature, Main, Parameter,
-    Program, Statement, Type, TypeExpression, Variable,
+    ConditionalBranch, Expression, ExternalFunction, Function, FunctionKind, FunctionSignature,
+    Main, Parameter, Program, Statement, Type, TypeExpression, Variable,
 };
 
 struct FunctionInfo {
@@ -82,20 +82,20 @@ impl Checker {
     fn resolve_program(&mut self, program: &Program) -> Result<Program, String> {
         let variable_names: Vec<String> = self.variables.keys().cloned().collect();
 
-        for name in variable_names {
-            self.resolve_variable(&name)?;
+        for name in &variable_names {
+            self.resolve_variable(name)?;
         }
 
         let extern_names: Vec<String> = self.extern_functions.keys().cloned().collect();
 
-        for name in extern_names {
-            self.resolve_external_function(&name)?;
+        for name in &extern_names {
+            self.resolve_external_function(name)?;
         }
 
         let function_names: Vec<String> = self.functions.keys().cloned().collect();
 
-        for name in function_names {
-            self.resolve_function(&name)?;
+        for name in &function_names {
+            self.resolve_function(name)?;
         }
 
         let variables = program
@@ -350,9 +350,8 @@ impl Checker {
 
             Expression::Boolean(_) => Ok(Type::Bool),
 
-            Expression::String(value) => Ok(Type::Array {
+            Expression::String(_) => Ok(Type::Slice {
                 element: Box::new(Type::U8),
-                size: value.len(),
             }),
 
             Expression::Identifier(name) => {
@@ -538,8 +537,28 @@ impl Checker {
 
                 match expression_type {
                     Type::Array { element, .. } => Ok(*element),
-
+                    Type::Slice { element } => Ok(*element),
                     other => Err(format!("cannot index value of type {:?}", other)),
+                }
+            }
+
+            Expression::Member { expression, field } => {
+                let expr_type = self.type_of_expression(expression, locals)?;
+                match expr_type {
+                    Type::Slice { element } => match field.as_str() {
+                        "ptr" => Ok(Type::Pointer { element }),
+                        "len" => Ok(Type::U64),
+                        _ => Err(format!("unknown slice member '.{}'", field)),
+                    },
+                    Type::Array { element, .. } => match field.as_str() {
+                        "ptr" => Ok(Type::Pointer { element }),
+                        "len" => Ok(Type::U64),
+                        _ => Err(format!("unknown array member '.{}'", field)),
+                    },
+                    other => Err(format!(
+                        "member access '.{}' unsupported on type {:?}",
+                        field, other
+                    )),
                 }
             }
 
@@ -572,8 +591,10 @@ impl Checker {
 
                 match inner_type {
                     Type::Array { element, .. } => Ok(Type::Pointer { element }),
+                    Type::Slice { element } => Ok(Type::Pointer { element }),
+                    Type::Pointer { .. } => Ok(inner_type),
                     other => Err(format!(
-                        "decay operator '^' expects an array type, found {:?}",
+                        "decay operator '^' expects an array or slice type, found {:?}",
                         other
                     )),
                 }
@@ -679,6 +700,53 @@ impl Checker {
                 *locals = inner_locals;
 
                 Ok(Statement::Unsafe(result?))
+            }
+
+            Statement::If {
+                branches,
+                else_body,
+            } => {
+                let mut resolved_branches = Vec::new();
+
+                for branch in branches {
+                    let resolved_condition = self.resolve_expression(&branch.condition, locals)?;
+                    let cond_type = self.type_of_expression(&resolved_condition, locals)?;
+
+                    if cond_type != Type::Bool {
+                        return Err(format!(
+                            "if condition must be of type Bool, found {:?}",
+                            cond_type
+                        ));
+                    }
+
+                    let mut branch_locals = locals.clone();
+                    let mut branch_assigned = assigned_names.clone();
+
+                    let resolved_body = self.resolve_statements(
+                        &branch.body,
+                        &mut branch_locals,
+                        &mut branch_assigned,
+                    )?;
+
+                    resolved_branches.push(ConditionalBranch {
+                        condition: resolved_condition,
+                        body: resolved_body,
+                    });
+                }
+
+                let resolved_else_body = if let Some(body) = else_body {
+                    let mut else_locals = locals.clone();
+                    let mut else_assigned = assigned_names.clone();
+
+                    Some(self.resolve_statements(body, &mut else_locals, &mut else_assigned)?)
+                } else {
+                    None
+                };
+
+                Ok(Statement::If {
+                    branches: resolved_branches,
+                    else_body: resolved_else_body,
+                })
             }
         }
     }
@@ -799,6 +867,16 @@ impl Checker {
                 })
             }
 
+            Expression::Member { expression, field } => {
+                let resolved_expression = self.resolve_expression(expression, locals)?;
+                self.type_of_expression(expression, locals)?;
+
+                Ok(Expression::Member {
+                    expression: Box::new(resolved_expression),
+                    field: field.clone(),
+                })
+            }
+
             Expression::AddressOf(expression) => {
                 let resolved_expression = self.resolve_expression(expression, locals)?;
 
@@ -839,21 +917,18 @@ impl Checker {
             return true;
         }
 
-        // 1. Bool <-> Integer
         if (*source == Type::Bool && Self::is_integer_type(target))
             || (Self::is_integer_type(source) && *target == Type::Bool)
         {
             return true;
         }
 
-        // 2. Pointer <-> Integer
         if (matches!(source, Type::Pointer { .. }) && Self::is_integer_type(target))
             || (Self::is_integer_type(source) && matches!(target, Type::Pointer { .. }))
         {
             return true;
         }
 
-        // 3. Integer <-> Integer
         if Self::is_integer_type(source) && Self::is_integer_type(target) {
             return true;
         }
