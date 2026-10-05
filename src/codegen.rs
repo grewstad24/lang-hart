@@ -50,7 +50,7 @@ pub struct Codegen<'ctx> {
     builder: Builder<'ctx>,
 
     variables: HashMap<String, Type>,
-    locals: HashMap<String, Binding<'ctx>>,
+    params: HashMap<String, Binding<'ctx>>,
 
     functions: HashMap<String, FunctionSignature>,
     extern_functions: HashMap<String, FunctionSignature>,
@@ -67,7 +67,7 @@ impl<'ctx> Codegen<'ctx> {
             builder: context.create_builder(),
 
             variables: HashMap::new(),
-            locals: HashMap::new(),
+            params: HashMap::new(),
 
             functions: HashMap::new(),
             extern_functions: HashMap::new(),
@@ -191,7 +191,7 @@ impl<'ctx> Codegen<'ctx> {
         let entry = self.context.append_basic_block(llvm_function, "entry");
 
         self.builder.position_at_end(entry);
-        self.locals.clear();
+        self.params.clear();
 
         for (index, parameter) in function.parameters.iter().enumerate() {
             let ty = Checker::concrete_type(&parameter.ty)?;
@@ -202,7 +202,7 @@ impl<'ctx> Codegen<'ctx> {
 
             let binding = self.binding_from_basic_value(&ty, value)?;
 
-            self.locals.insert(parameter.name.clone(), binding);
+            self.params.insert(parameter.name.clone(), binding);
         }
 
         self.codegen_statements(&function.body)?;
@@ -228,7 +228,7 @@ impl<'ctx> Codegen<'ctx> {
         let entry = self.context.append_basic_block(function, "entry");
 
         self.builder.position_at_end(entry);
-        self.locals.clear();
+        self.params.clear();
 
         self.codegen_statements(&main.body)?;
 
@@ -262,11 +262,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 if names.len() == 1 {
                     let name = &names[0];
-                    if self.variables.contains_key(name) {
-                        self.store_global(name, &binding)?;
-                    } else {
-                        self.locals.insert(name.clone(), binding);
-                    }
+                    self.store_global(name, &binding)?;
                 } else {
                     let (element_type, size) = match self.binding_type(&binding)? {
                         Type::Array { element, size } => (*element, size),
@@ -314,11 +310,7 @@ impl<'ctx> Codegen<'ctx> {
 
                         let unpacked_binding = self.binding_from_basic_value(&element_type, val)?;
 
-                        if self.variables.contains_key(name) {
-                            self.store_global(name, &unpacked_binding)?;
-                        } else {
-                            self.locals.insert(name.clone(), unpacked_binding);
-                        }
+                        self.store_global(name, &unpacked_binding)?;
                     }
                 }
 
@@ -414,9 +406,7 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(then_bb);
-            let saved_locals = self.locals.clone();
             self.codegen_statements(&branch.body)?;
-            self.locals = saved_locals;
 
             if let Some(insert_bb) = self.builder.get_insert_block() {
                 if insert_bb.get_terminator().is_none() {
@@ -431,9 +421,7 @@ impl<'ctx> Codegen<'ctx> {
 
         if let Some(else_stmts) = else_body {
             self.builder.position_at_end(next_cond_bb);
-            let saved_locals = self.locals.clone();
             self.codegen_statements(else_stmts)?;
-            self.locals = saved_locals;
 
             if let Some(insert_bb) = self.builder.get_insert_block() {
                 if insert_bb.get_terminator().is_none() {
@@ -466,7 +454,7 @@ impl<'ctx> Codegen<'ctx> {
             Expression::String(value) => self.codegen_string_literal(value),
 
             Expression::Identifier(name) => {
-                if let Some(binding) = self.locals.get(name) {
+                if let Some(binding) = self.params.get(name) {
                     let binding = binding.clone();
                     return self.clone_binding(&binding);
                 }
@@ -1130,35 +1118,6 @@ impl<'ctx> Codegen<'ctx> {
                         },
                         value: global.as_pointer_value(),
                     });
-                }
-
-                let local_binding = self.locals.get(name).cloned();
-
-                if let Some(binding) = local_binding {
-                    match binding {
-                        Binding::Array {
-                            ty: Type::Array { ref element, size },
-                            ..
-                        } => {
-                            let elem_clone = (*element).clone();
-                            let storage = self.array_storage(binding.clone(), &elem_clone, size)?;
-                            return Ok(Binding::Pointer {
-                                ty: Type::Pointer {
-                                    element: Box::new(Type::Array {
-                                        element: elem_clone,
-                                        size,
-                                    }),
-                                },
-                                value: storage,
-                            });
-                        }
-                        _ => {
-                            return Err(format!(
-                                "cannot take address of non-addressable local identifier '{}'",
-                                name
-                            ));
-                        }
-                    }
                 }
 
                 Err(format!("unknown identifier '{}'", name))

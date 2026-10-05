@@ -25,6 +25,7 @@ pub struct Checker {
     resolved_functions: HashMap<String, FunctionSignature>,
     resolving_functions: HashSet<String>,
 
+    initialized_globals: HashSet<String>,
     unsafe_context: bool,
 }
 
@@ -71,6 +72,7 @@ impl Checker {
             resolved_functions: HashMap::new(),
             resolving_functions: HashSet::new(),
 
+            initialized_globals: HashSet::new(),
             unsafe_context: false,
         }
     }
@@ -122,14 +124,8 @@ impl Checker {
 
         self.unsafe_context = false;
 
-        let mut main_locals = HashMap::new();
-        let mut main_assigned = HashSet::new();
         let main = Main {
-            body: self.resolve_statements(
-                &program.main.body,
-                &mut main_locals,
-                &mut main_assigned,
-            )?,
+            body: self.resolve_statements(&program.main.body, &HashMap::new())?,
         };
 
         let mut functions = Vec::new();
@@ -137,15 +133,13 @@ impl Checker {
         for function in &program.functions {
             let signature = self.resolve_function(&function.name)?;
 
-            let mut locals = HashMap::new();
-            let mut assigned_in_scope = HashSet::new();
+            let mut params_map = HashMap::new();
 
             for (parameter, parameter_type) in
                 function.parameters.iter().zip(signature.parameters.iter())
             {
                 let ty = Self::concrete_type(parameter_type)?;
-                locals.insert(parameter.name.clone(), ty);
-                assigned_in_scope.insert(parameter.name.clone());
+                params_map.insert(parameter.name.clone(), ty);
             }
 
             let parameters = function
@@ -162,8 +156,7 @@ impl Checker {
 
             self.unsafe_context = function.kind == FunctionKind::Unsafe;
 
-            let body =
-                self.resolve_statements(&function.body, &mut locals, &mut assigned_in_scope)?;
+            let body = self.resolve_statements(&function.body, &params_map)?;
 
             self.unsafe_context = false;
 
@@ -297,19 +290,19 @@ impl Checker {
         };
 
         let result: Result<FunctionSignature, String> = (|| {
-            let mut locals = HashMap::new();
+            let mut params_map = HashMap::new();
             let mut resolved_parameters = Vec::new();
 
             for parameter in &parameters {
-                let ty = self.resolve_type_expression(&parameter.ty, &locals)?;
+                let ty = self.resolve_type_expression(&parameter.ty, &params_map)?;
 
-                locals.insert(parameter.name.clone(), ty.clone());
+                params_map.insert(parameter.name.clone(), ty.clone());
 
                 resolved_parameters.push(TypeExpression::Concrete(ty));
             }
 
             let resolved_return_type =
-                TypeExpression::Concrete(self.resolve_type_expression(&return_type, &locals)?);
+                TypeExpression::Concrete(self.resolve_type_expression(&return_type, &params_map)?);
 
             Ok(FunctionSignature {
                 parameters: resolved_parameters,
@@ -331,19 +324,19 @@ impl Checker {
     fn resolve_type_expression(
         &mut self,
         type_expression: &TypeExpression,
-        locals: &HashMap<String, Type>,
+        params: &HashMap<String, Type>,
     ) -> Result<Type, String> {
         match type_expression {
             TypeExpression::Concrete(ty) => Ok(ty.clone()),
 
-            TypeExpression::Of(expression) => self.type_of_expression(expression, locals),
+            TypeExpression::Of(expression) => self.type_of_expression(expression, params),
         }
     }
 
     fn type_of_expression(
         &mut self,
         expression: &Expression,
-        locals: &HashMap<String, Type>,
+        params: &HashMap<String, Type>,
     ) -> Result<Type, String> {
         match expression {
             Expression::Integer(_) => Ok(Type::S32),
@@ -355,7 +348,7 @@ impl Checker {
             }),
 
             Expression::Identifier(name) => {
-                if let Some(ty) = locals.get(name) {
+                if let Some(ty) = params.get(name) {
                     return Ok(ty.clone());
                 }
 
@@ -367,10 +360,10 @@ impl Checker {
                     return Err("cannot infer type of empty array".to_string());
                 }
 
-                let element_type = self.type_of_expression(&elements[0], locals)?;
+                let element_type = self.type_of_expression(&elements[0], params)?;
 
                 for element in &elements[1..] {
-                    let ty = self.type_of_expression(element, locals)?;
+                    let ty = self.type_of_expression(element, params)?;
 
                     if ty != element_type {
                         return Err(format!(
@@ -391,7 +384,7 @@ impl Checker {
             }
 
             Expression::Unary { operator, operand } => {
-                let ty = self.type_of_expression(operand, locals)?;
+                let ty = self.type_of_expression(operand, params)?;
 
                 if !Self::is_integer_type(&ty) {
                     return Err(format!(
@@ -408,9 +401,9 @@ impl Checker {
                 operator,
                 right,
             } => {
-                let left_type = self.type_of_expression(left, locals)?;
+                let left_type = self.type_of_expression(left, params)?;
 
-                let right_type = self.type_of_expression(right, locals)?;
+                let right_type = self.type_of_expression(right, params)?;
 
                 if !Self::is_integer_type(&left_type) || !Self::is_integer_type(&right_type) {
                     return Err(format!(
@@ -434,9 +427,9 @@ impl Checker {
                 operator: _,
                 right,
             } => {
-                let left_type = self.type_of_expression(left, locals)?;
+                let left_type = self.type_of_expression(left, params)?;
 
-                let right_type = self.type_of_expression(right, locals)?;
+                let right_type = self.type_of_expression(right, params)?;
 
                 if left_type != right_type {
                     return Err(format!(
@@ -449,9 +442,9 @@ impl Checker {
             }
 
             Expression::Cast { expression, ty } => {
-                let source_type = self.type_of_expression(expression, locals)?;
+                let source_type = self.type_of_expression(expression, params)?;
 
-                let target_type = self.resolve_type_expression(ty, locals)?;
+                let target_type = self.resolve_type_expression(ty, params)?;
 
                 if !Self::is_supported_cast(&source_type, &target_type) {
                     return Err(format!(
@@ -508,7 +501,7 @@ impl Checker {
 
                 for (argument, parameter_type) in arguments.iter().zip(signature.parameters.iter())
                 {
-                    let argument_type = self.type_of_expression(argument, locals)?;
+                    let argument_type = self.type_of_expression(argument, params)?;
                     let parameter_type = Self::concrete_type(parameter_type)?;
 
                     if argument_type != parameter_type {
@@ -520,16 +513,16 @@ impl Checker {
                 }
 
                 for argument in arguments.iter().skip(signature.parameters.len()) {
-                    let _var_type = self.type_of_expression(argument, locals)?;
+                    let _var_type = self.type_of_expression(argument, params)?;
                 }
 
                 Self::concrete_type(&signature.return_type)
             }
 
             Expression::Index { expression, index } => {
-                let expression_type = self.type_of_expression(expression, locals)?;
+                let expression_type = self.type_of_expression(expression, params)?;
 
-                let index_type = self.type_of_expression(index, locals)?;
+                let index_type = self.type_of_expression(index, params)?;
 
                 if !Self::is_integer_type(&index_type) {
                     return Err("array index must be an integer".to_string());
@@ -543,7 +536,7 @@ impl Checker {
             }
 
             Expression::Member { expression, field } => {
-                let expr_type = self.type_of_expression(expression, locals)?;
+                let expr_type = self.type_of_expression(expression, params)?;
                 match expr_type {
                     Type::Slice { element } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer { element }),
@@ -564,7 +557,7 @@ impl Checker {
 
             Expression::AddressOf(expression) => match expression.as_ref() {
                 Expression::Index { .. } => {
-                    let element_type = self.type_of_expression(expression, locals)?;
+                    let element_type = self.type_of_expression(expression, params)?;
 
                     Ok(Type::Pointer {
                         element: Box::new(element_type),
@@ -572,7 +565,7 @@ impl Checker {
                 }
 
                 Expression::Identifier(name) => {
-                    let expression_type = if let Some(ty) = locals.get(name) {
+                    let expression_type = if let Some(ty) = params.get(name) {
                         ty.clone()
                     } else {
                         self.resolve_variable(name)?
@@ -587,7 +580,7 @@ impl Checker {
             },
 
             Expression::Decay(expression) => {
-                let inner_type = self.type_of_expression(expression, locals)?;
+                let inner_type = self.type_of_expression(expression, params)?;
 
                 match inner_type {
                     Type::Array { element, .. } => Ok(Type::Pointer { element }),
@@ -605,12 +598,11 @@ impl Checker {
     fn resolve_statements(
         &mut self,
         statements: &[Statement],
-        locals: &mut HashMap<String, Type>,
-        assigned_names: &mut HashSet<String>,
+        params: &HashMap<String, Type>,
     ) -> Result<Vec<Statement>, String> {
         let mut resolved = Vec::new();
         for statement in statements {
-            resolved.push(self.resolve_statement(statement, locals, assigned_names)?);
+            resolved.push(self.resolve_statement(statement, params)?);
         }
         Ok(resolved)
     }
@@ -618,18 +610,24 @@ impl Checker {
     fn resolve_statement(
         &mut self,
         statement: &Statement,
-        locals: &mut HashMap<String, Type>,
-        assigned_names: &mut HashSet<String>,
+        params: &HashMap<String, Type>,
     ) -> Result<Statement, String> {
         match statement {
             Statement::Bind { expression, names } => {
-                let resolved_expr = self.resolve_expression(expression, locals)?;
-                let expr_type = self.type_of_expression(&resolved_expr, locals)?;
+                let resolved_expr = self.resolve_expression(expression, params)?;
+                let expr_type = self.type_of_expression(&resolved_expr, params)?;
 
                 for name in names {
-                    if assigned_names.contains(name) {
+                    if !self.variables.contains_key(name) {
                         return Err(format!(
-                            "cannot reassign to variable '{}': reassignments are prohibited",
+                            "unknown variable '{}': only declared globals may be bound",
+                            name
+                        ));
+                    }
+
+                    if self.initialized_globals.contains(name) {
+                        return Err(format!(
+                            "cannot reassign to global variable '{}': globals may only be written once",
                             name
                         ));
                     }
@@ -637,8 +635,16 @@ impl Checker {
 
                 if names.len() == 1 {
                     let name = &names[0];
-                    assigned_names.insert(name.clone());
-                    locals.insert(name.clone(), expr_type);
+                    let var_type = self.resolve_variable(name)?;
+
+                    if expr_type != var_type {
+                        return Err(format!(
+                            "type mismatch binding to global '{}': expected {:?}, found {:?}",
+                            name, var_type, expr_type
+                        ));
+                    }
+
+                    self.initialized_globals.insert(name.clone());
                 } else {
                     match expr_type {
                         Type::Array { element, size } => {
@@ -649,9 +655,16 @@ impl Checker {
                                     names.len()
                                 ));
                             }
+
                             for name in names {
-                                assigned_names.insert(name.clone());
-                                locals.insert(name.clone(), *element.clone());
+                                let var_type = self.resolve_variable(name)?;
+                                if *element != var_type {
+                                    return Err(format!(
+                                        "type mismatch unpacking into global '{}': expected {:?}, found {:?}",
+                                        name, var_type, *element
+                                    ));
+                                }
+                                self.initialized_globals.insert(name.clone());
                             }
                         }
                         other => {
@@ -670,18 +683,18 @@ impl Checker {
             }
 
             Statement::Discard(expression) => {
-                let resolved_expr = self.resolve_expression(expression, locals)?;
-                self.type_of_expression(&resolved_expr, locals)?;
+                let resolved_expr = self.resolve_expression(expression, params)?;
+                self.type_of_expression(&resolved_expr, params)?;
 
                 Ok(Statement::Discard(resolved_expr))
             }
 
             Statement::Return(expression) => Ok(Statement::Return(
-                self.resolve_expression(expression, locals)?,
+                self.resolve_expression(expression, params)?,
             )),
 
             Statement::Exit(expression) => Ok(Statement::Exit(
-                self.resolve_expression(expression, locals)?,
+                self.resolve_expression(expression, params)?,
             )),
 
             Statement::Unsafe(statements) => {
@@ -692,12 +705,9 @@ impl Checker {
                 let previous_context = self.unsafe_context;
                 self.unsafe_context = true;
 
-                let mut inner_locals = locals.clone();
-                let result = self.resolve_statements(statements, &mut inner_locals, assigned_names);
+                let result = self.resolve_statements(statements, params);
 
                 self.unsafe_context = previous_context;
-
-                *locals = inner_locals;
 
                 Ok(Statement::Unsafe(result?))
             }
@@ -707,10 +717,12 @@ impl Checker {
                 else_body,
             } => {
                 let mut resolved_branches = Vec::new();
+                let mut branch_initialized_sets = Vec::new();
+                let initial_state = self.initialized_globals.clone();
 
                 for branch in branches {
-                    let resolved_condition = self.resolve_expression(&branch.condition, locals)?;
-                    let cond_type = self.type_of_expression(&resolved_condition, locals)?;
+                    let resolved_condition = self.resolve_expression(&branch.condition, params)?;
+                    let cond_type = self.type_of_expression(&resolved_condition, params)?;
 
                     if cond_type != Type::Bool {
                         return Err(format!(
@@ -719,14 +731,9 @@ impl Checker {
                         ));
                     }
 
-                    let mut branch_locals = locals.clone();
-                    let mut branch_assigned = assigned_names.clone();
-
-                    let resolved_body = self.resolve_statements(
-                        &branch.body,
-                        &mut branch_locals,
-                        &mut branch_assigned,
-                    )?;
+                    self.initialized_globals = initial_state.clone();
+                    let resolved_body = self.resolve_statements(&branch.body, params)?;
+                    branch_initialized_sets.push(self.initialized_globals.clone());
 
                     resolved_branches.push(ConditionalBranch {
                         condition: resolved_condition,
@@ -735,13 +742,23 @@ impl Checker {
                 }
 
                 let resolved_else_body = if let Some(body) = else_body {
-                    let mut else_locals = locals.clone();
-                    let mut else_assigned = assigned_names.clone();
-
-                    Some(self.resolve_statements(body, &mut else_locals, &mut else_assigned)?)
+                    self.initialized_globals = initial_state.clone();
+                    let resolved = self.resolve_statements(body, params)?;
+                    branch_initialized_sets.push(self.initialized_globals.clone());
+                    Some(resolved)
                 } else {
                     None
                 };
+
+                if else_body.is_some() && !branch_initialized_sets.is_empty() {
+                    let mut common = branch_initialized_sets[0].clone();
+                    for s in &branch_initialized_sets[1..] {
+                        common.retain(|k| s.contains(k));
+                    }
+                    self.initialized_globals = common;
+                } else {
+                    self.initialized_globals = initial_state;
+                }
 
                 Ok(Statement::If {
                     branches: resolved_branches,
@@ -754,7 +771,7 @@ impl Checker {
     fn resolve_expression(
         &mut self,
         expression: &Expression,
-        locals: &HashMap<String, Type>,
+        params: &HashMap<String, Type>,
     ) -> Result<Expression, String> {
         match expression {
             Expression::Integer(value) => Ok(Expression::Integer(*value)),
@@ -764,7 +781,7 @@ impl Checker {
             Expression::String(value) => Ok(Expression::String(value.clone())),
 
             Expression::Identifier(name) => {
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Identifier(name.clone()))
             }
@@ -772,7 +789,7 @@ impl Checker {
             Expression::Array(elements) => Ok(Expression::Array(
                 elements
                     .iter()
-                    .map(|element| self.resolve_expression(element, locals))
+                    .map(|element| self.resolve_expression(element, params))
                     .collect::<Result<Vec<_>, _>>()?,
             )),
 
@@ -781,9 +798,9 @@ impl Checker {
             }
 
             Expression::Unary { operator, operand } => {
-                let resolved_operand = self.resolve_expression(operand, locals)?;
+                let resolved_operand = self.resolve_expression(operand, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Unary {
                     operator: operator.clone(),
@@ -796,11 +813,11 @@ impl Checker {
                 operator,
                 right,
             } => {
-                let resolved_left = self.resolve_expression(left, locals)?;
+                let resolved_left = self.resolve_expression(left, params)?;
 
-                let resolved_right = self.resolve_expression(right, locals)?;
+                let resolved_right = self.resolve_expression(right, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Binary {
                     left: Box::new(resolved_left),
@@ -814,11 +831,11 @@ impl Checker {
                 operator,
                 right,
             } => {
-                let resolved_left = self.resolve_expression(left, locals)?;
+                let resolved_left = self.resolve_expression(left, params)?;
 
-                let resolved_right = self.resolve_expression(right, locals)?;
+                let resolved_right = self.resolve_expression(right, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Comparison {
                     left: Box::new(resolved_left),
@@ -828,11 +845,11 @@ impl Checker {
             }
 
             Expression::Cast { expression, ty } => {
-                let resolved_expression = self.resolve_expression(expression, locals)?;
+                let resolved_expression = self.resolve_expression(expression, params)?;
 
-                let resolved_type = self.resolve_type_expression(ty, locals)?;
+                let resolved_type = self.resolve_type_expression(ty, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Cast {
                     expression: Box::new(resolved_expression),
@@ -843,10 +860,10 @@ impl Checker {
             Expression::Call { name, arguments } => {
                 let resolved_arguments = arguments
                     .iter()
-                    .map(|argument| self.resolve_expression(argument, locals))
+                    .map(|argument| self.resolve_expression(argument, params))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let _call_type = self.type_of_expression(expression, locals)?;
+                let _call_type = self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Call {
                     name: name.clone(),
@@ -855,11 +872,11 @@ impl Checker {
             }
 
             Expression::Index { expression, index } => {
-                let resolved_expression = self.resolve_expression(expression, locals)?;
+                let resolved_expression = self.resolve_expression(expression, params)?;
 
-                let resolved_index = self.resolve_expression(index, locals)?;
+                let resolved_index = self.resolve_expression(index, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Index {
                     expression: Box::new(resolved_expression),
@@ -868,8 +885,8 @@ impl Checker {
             }
 
             Expression::Member { expression, field } => {
-                let resolved_expression = self.resolve_expression(expression, locals)?;
-                self.type_of_expression(expression, locals)?;
+                let resolved_expression = self.resolve_expression(expression, params)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Member {
                     expression: Box::new(resolved_expression),
@@ -878,17 +895,17 @@ impl Checker {
             }
 
             Expression::AddressOf(expression) => {
-                let resolved_expression = self.resolve_expression(expression, locals)?;
+                let resolved_expression = self.resolve_expression(expression, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::AddressOf(Box::new(resolved_expression)))
             }
 
             Expression::Decay(expression) => {
-                let resolved_expression = self.resolve_expression(expression, locals)?;
+                let resolved_expression = self.resolve_expression(expression, params)?;
 
-                self.type_of_expression(expression, locals)?;
+                self.type_of_expression(expression, params)?;
 
                 Ok(Expression::Decay(Box::new(resolved_expression)))
             }
