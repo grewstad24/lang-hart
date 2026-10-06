@@ -81,7 +81,7 @@ impl Parser {
 
         let mut variables = Vec::new();
 
-        while !self.is(Token::Eof) && !self.is(Token::Dot) {
+        while !self.is(Token::Eof) && !self.is(Token::Pipe) {
             let ty = self.parse_type_expression()?;
             let name = self.expect_identifier()?;
             self.consume_optional_newline();
@@ -90,7 +90,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        self.expect(Token::Dot)?;
+        self.expect(Token::Pipe)?;
 
         Ok(variables)
     }
@@ -130,7 +130,7 @@ impl Parser {
 
         let return_type = self.parse_type_expression()?;
 
-        self.expect(Token::Dot)?;
+        // extern declarations terminate on newline, with no trailing '.' or '|'
         self.consume_optional_newline();
 
         Ok(ExternalFunction {
@@ -148,7 +148,16 @@ impl Parser {
         self.expect(Token::Colon)?;
         self.skip_newlines();
 
-        let body = self.parse_block()?;
+        let mut body = self.parse_block()?;
+
+        let needs_exit = match body.last() {
+            Some(Statement::Exit(_)) => false,
+            _ => true,
+        };
+
+        if needs_exit {
+            body.push(Statement::Exit(Expression::Integer(0)));
+        }
 
         Ok(Main { body })
     }
@@ -221,7 +230,7 @@ impl Parser {
         self.skip_newlines();
 
         while !self.is(Token::Eof)
-            && !self.is(Token::Dot)
+            && !self.is(Token::Pipe)
             && !self.is(Token::Elif)
             && !self.is(Token::Else)
         {
@@ -230,7 +239,7 @@ impl Parser {
         }
 
         if !self.is(Token::Elif) && !self.is(Token::Else) {
-            self.expect(Token::Dot)?;
+            self.expect(Token::Pipe)?;
         }
 
         Ok(statements)
@@ -328,7 +337,7 @@ impl Parser {
             None
         };
 
-        self.expect(Token::Dot)?;
+        self.expect(Token::Pipe)?;
 
         Ok(Statement::If {
             branches,
@@ -467,13 +476,38 @@ impl Parser {
                     expression = Expression::Decay(Box::new(expression));
                 }
 
-                Token::Backtick => {
+                Token::Dot => {
                     self.advance();
-                    let field = self.expect_identifier()?;
-                    expression = Expression::Member {
-                        expression: Box::new(expression),
-                        field,
-                    };
+                    let name = self.expect_identifier()?;
+
+                    // UFCS call: target.fn(...)
+                    if self.is(Token::LParen) {
+                        self.advance();
+
+                        let mut arguments = vec![expression];
+
+                        if !self.is(Token::RParen) {
+                            loop {
+                                arguments.push(self.parse_expression()?);
+
+                                if self.is(Token::Comma) {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        self.expect(Token::RParen)?;
+
+                        expression = Expression::Call { name, arguments };
+                    } else {
+                        // Struct/Slice field access: target.ptr, target.len
+                        expression = Expression::Member {
+                            expression: Box::new(expression),
+                            field: name,
+                        };
+                    }
                 }
 
                 Token::LBracket => {

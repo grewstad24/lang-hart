@@ -55,7 +55,7 @@ pub enum Token {
     Colon,
     Comma,
     Dot,
-    Backtick,
+    Pipe,
 
     LParen,
     RParen,
@@ -166,9 +166,9 @@ impl Lexer {
                     tokens.push(Token::Dot);
                 }
 
-                '`' => {
+                '|' => {
                     self.position += 1;
-                    tokens.push(Token::Backtick);
+                    tokens.push(Token::Pipe);
                 }
 
                 '=' => {
