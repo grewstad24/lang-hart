@@ -1,5 +1,7 @@
-extern read: (s32, *u8, u64) to s64
+extern read: (s32, *u8, u64) to s64 .
 
 impure read_fd(s32 fd, *u8 ptr, u64 count) to s64:
         unsafe:
                 return read(fd, ptr, count)
+        .
+.

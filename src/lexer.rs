@@ -55,6 +55,7 @@ pub enum Token {
     Colon,
     Comma,
     Dot,
+    Backtick,
 
     LParen,
     RParen,
@@ -62,17 +63,12 @@ pub enum Token {
     RBracket,
 
     Newline,
-    Indent,
-    Dedent,
-
     Eof,
 }
 
 pub struct Lexer {
     chars: Vec<char>,
     position: usize,
-    at_line_start: bool,
-    indent_stack: Vec<usize>,
 }
 
 impl Lexer {
@@ -80,8 +76,6 @@ impl Lexer {
         Self {
             chars: source.chars().collect(),
             position: 0,
-            at_line_start: true,
-            indent_stack: vec![0],
         }
     }
 
@@ -89,16 +83,6 @@ impl Lexer {
         let mut tokens = Vec::new();
 
         while self.position < self.chars.len() {
-            if self.at_line_start {
-                if self.handle_indentation(&mut tokens)? {
-                    continue;
-                }
-            }
-
-            if self.position >= self.chars.len() {
-                break;
-            }
-
             let character = self.chars[self.position];
 
             match character {
@@ -108,7 +92,6 @@ impl Lexer {
 
                 '\n' => {
                     self.position += 1;
-                    self.at_line_start = true;
                     tokens.push(Token::Newline);
                 }
 
@@ -181,6 +164,11 @@ impl Lexer {
                 '.' => {
                     self.position += 1;
                     tokens.push(Token::Dot);
+                }
+
+                '`' => {
+                    self.position += 1;
+                    tokens.push(Token::Backtick);
                 }
 
                 '=' => {
@@ -256,117 +244,25 @@ impl Lexer {
             }
         }
 
-        if !self.at_line_start {
-            tokens.push(Token::Newline);
-        }
-
-        while self.indent_stack.len() > 1 {
-            self.indent_stack.pop();
-            tokens.push(Token::Dedent);
-        }
-
         tokens.push(Token::Eof);
-
         Ok(tokens)
-    }
-
-    fn handle_indentation(&mut self, tokens: &mut Vec<Token>) -> Result<bool, String> {
-        let start = self.position;
-        let mut indentation = 0usize;
-
-        while self.position < self.chars.len() {
-            match self.chars[self.position] {
-                ' ' => {
-                    indentation += 1;
-                    self.position += 1;
-                }
-
-                '\t' => {
-                    indentation += 4;
-                    self.position += 1;
-                }
-
-                _ => break,
-            }
-        }
-
-        if self.position >= self.chars.len() {
-            self.at_line_start = false;
-            return Ok(false);
-        }
-
-        if self.chars[self.position] == '\n' {
-            self.position += 1;
-            self.at_line_start = true;
-            tokens.push(Token::Newline);
-            return Ok(true);
-        }
-
-        if self.chars[self.position] == ';' {
-            self.skip_comment(tokens);
-            return Ok(true);
-        }
-
-        let current = *self
-            .indent_stack
-            .last()
-            .expect("indentation stack must never be empty");
-
-        if indentation > current {
-            self.indent_stack.push(indentation);
-            tokens.push(Token::Indent);
-        } else if indentation < current {
-            while indentation
-                < *self
-                    .indent_stack
-                    .last()
-                    .expect("indentation stack must never be empty")
-            {
-                self.indent_stack.pop();
-                tokens.push(Token::Dedent);
-
-                if self.indent_stack.is_empty() {
-                    return Err("invalid indentation".to_string());
-                }
-            }
-
-            let final_level = *self
-                .indent_stack
-                .last()
-                .expect("indentation stack must never be empty");
-
-            if indentation != final_level {
-                return Err(format!(
-                    "indentation does not match an outer indentation level at position {}",
-                    start
-                ));
-            }
-        }
-
-        self.at_line_start = false;
-
-        Ok(false)
     }
 
     fn skip_comment(&mut self, tokens: &mut Vec<Token>) {
         debug_assert_eq!(self.chars[self.position], ';');
-
         self.position += 1;
 
         while self.position < self.chars.len() {
             match self.chars[self.position] {
                 '\n' => {
                     self.position += 1;
-                    self.at_line_start = true;
                     tokens.push(Token::Newline);
                     return;
                 }
-
                 ';' => {
                     self.position += 1;
                     return;
                 }
-
                 _ => {
                     self.position += 1;
                 }
@@ -401,7 +297,6 @@ impl Lexer {
                 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
                     self.position += 1;
                 }
-
                 _ => break,
             }
         }

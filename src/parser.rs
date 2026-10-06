@@ -45,7 +45,6 @@ impl Parser {
                     if main.is_some() {
                         return Err("duplicate main block".to_string());
                     }
-
                     main = Some(self.parse_main()?);
                 }
 
@@ -55,13 +54,6 @@ impl Parser {
 
                 Token::Newline => {
                     self.skip_newlines();
-                }
-
-                Token::Dedent | Token::Indent => {
-                    return Err(format!(
-                        "unexpected indentation at top level: {:?}",
-                        self.peek()
-                    ));
                 }
 
                 _ => {
@@ -85,20 +77,11 @@ impl Parser {
     fn parse_data_block(&mut self) -> Result<Vec<Variable>, String> {
         self.expect(Token::Data)?;
         self.expect(Token::Colon)?;
-        self.consume_optional_newline();
-        self.expect(Token::Indent)?;
-
-        let mut variables = Vec::new();
         self.skip_newlines();
 
-        while !self.is(Token::Eof)
-            && !self.is(Token::Dedent)
-            && !self.is(Token::Extern)
-            && !self.is(Token::Main)
-            && !self.is(Token::Pure)
-            && !self.is(Token::Impure)
-            && !self.is(Token::Data)
-        {
+        let mut variables = Vec::new();
+
+        while !self.is(Token::Eof) && !self.is(Token::Dot) {
             let ty = self.parse_type_expression()?;
             let name = self.expect_identifier()?;
             self.consume_optional_newline();
@@ -107,7 +90,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        self.expect(Token::Dedent)?;
+        self.expect(Token::Dot)?;
 
         Ok(variables)
     }
@@ -147,6 +130,7 @@ impl Parser {
 
         let return_type = self.parse_type_expression()?;
 
+        self.expect(Token::Dot)?;
         self.consume_optional_newline();
 
         Ok(ExternalFunction {
@@ -162,10 +146,9 @@ impl Parser {
     fn parse_main(&mut self) -> Result<Main, String> {
         self.expect(Token::Main)?;
         self.expect(Token::Colon)?;
+        self.skip_newlines();
 
-        self.consume_optional_newline();
-
-        let body = self.parse_block(true)?;
+        let body = self.parse_block()?;
 
         Ok(Main { body })
     }
@@ -219,9 +202,9 @@ impl Parser {
         let return_type = self.parse_type_expression()?;
 
         self.expect(Token::Colon)?;
-        self.consume_optional_newline();
+        self.skip_newlines();
 
-        let body = self.parse_block(true)?;
+        let body = self.parse_block()?;
 
         Ok(Function {
             kind,
@@ -232,28 +215,13 @@ impl Parser {
         })
     }
 
-    fn parse_block(&mut self, require_indent: bool) -> Result<Vec<Statement>, String> {
-        let has_indent = self.is(Token::Indent);
-
-        if require_indent && !has_indent {
-            return Err("expected an indented block".to_string());
-        }
-
-        if has_indent {
-            self.advance();
-        }
-
+    fn parse_block(&mut self) -> Result<Vec<Statement>, String> {
         let mut statements = Vec::new();
 
         self.skip_newlines();
 
         while !self.is(Token::Eof)
-            && !self.is(Token::Dedent)
-            && !self.is(Token::Data)
-            && !self.is(Token::Extern)
-            && !self.is(Token::Main)
-            && !self.is(Token::Pure)
-            && !self.is(Token::Impure)
+            && !self.is(Token::Dot)
             && !self.is(Token::Elif)
             && !self.is(Token::Else)
         {
@@ -261,8 +229,8 @@ impl Parser {
             self.skip_newlines();
         }
 
-        if has_indent {
-            self.expect(Token::Dedent)?;
+        if !self.is(Token::Elif) && !self.is(Token::Else) {
+            self.expect(Token::Dot)?;
         }
 
         Ok(statements)
@@ -329,8 +297,8 @@ impl Parser {
         self.expect(Token::If)?;
         let condition = self.parse_expression()?;
         self.expect(Token::Colon)?;
-        self.consume_optional_newline();
-        let body = self.parse_block(true)?;
+        self.skip_newlines();
+        let body = self.parse_block()?;
 
         let mut branches = vec![ConditionalBranch { condition, body }];
 
@@ -340,8 +308,8 @@ impl Parser {
             self.advance();
             let elif_condition = self.parse_expression()?;
             self.expect(Token::Colon)?;
-            self.consume_optional_newline();
-            let elif_body = self.parse_block(true)?;
+            self.skip_newlines();
+            let elif_body = self.parse_block()?;
 
             branches.push(ConditionalBranch {
                 condition: elif_condition,
@@ -354,11 +322,13 @@ impl Parser {
         let else_body = if self.is(Token::Else) {
             self.advance();
             self.expect(Token::Colon)?;
-            self.consume_optional_newline();
-            Some(self.parse_block(true)?)
+            self.skip_newlines();
+            Some(self.parse_block()?)
         } else {
             None
         };
+
+        self.expect(Token::Dot)?;
 
         Ok(Statement::If {
             branches,
@@ -369,10 +339,9 @@ impl Parser {
     fn parse_unsafe_block(&mut self) -> Result<Statement, String> {
         self.expect(Token::Unsafe)?;
         self.expect(Token::Colon)?;
+        self.skip_newlines();
 
-        self.consume_optional_newline();
-
-        let body = self.parse_block(true)?;
+        let body = self.parse_block()?;
 
         Ok(Statement::Unsafe(body))
     }
@@ -498,7 +467,7 @@ impl Parser {
                     expression = Expression::Decay(Box::new(expression));
                 }
 
-                Token::Dot => {
+                Token::Backtick => {
                     self.advance();
                     let field = self.expect_identifier()?;
                     expression = Expression::Member {

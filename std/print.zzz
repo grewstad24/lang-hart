@@ -1,15 +1,21 @@
-extern printf: (*u8)++ to s32
+extern printf: (*u8)++ to s32 .
 
 impure print_string([]u8 s) to s32:
         unsafe:
                 _ printf("%s"^, s^)
-        pr_nl()
+        .
+        _ pr_nl()
         return 0
+.
 
 impure print_s32(s32 num) to s32:
         unsafe:
                 return printf("%d"^, num)
+        .
+.
 
 impure pr_nl() to s32:
         unsafe:
                 return printf("\n"^)
+        .
+.

@@ -164,29 +164,31 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn codegen_functions(&mut self, functions: &[Function]) -> Result<(), String> {
+        // Pass 1: Declare prototypes for all functions to resolve forward references
         for function in functions {
-            self.codegen_function(function)?;
+            let signature = self
+                .functions
+                .get(&function.name)
+                .ok_or_else(|| format!("missing signature for function '{}'", function.name))?;
+
+            let function_type = self.function_type(signature)?;
+            self.module
+                .add_function(&function.name, function_type, None);
+        }
+
+        // Pass 2: Emit the basic blocks and bodies
+        for function in functions {
+            self.codegen_function_body(function)?;
         }
 
         Ok(())
     }
 
-    fn codegen_function(&mut self, function: &Function) -> Result<(), String> {
-        let signature = FunctionSignature {
-            parameters: function
-                .parameters
-                .iter()
-                .map(|parameter| parameter.ty.clone())
-                .collect(),
-            return_type: function.return_type.clone(),
-            is_variadic: false,
-        };
-
-        let function_type = self.function_type(&signature)?;
-
+    fn codegen_function_body(&mut self, function: &Function) -> Result<(), String> {
         let llvm_function = self
             .module
-            .add_function(&function.name, function_type, None);
+            .get_function(&function.name)
+            .ok_or_else(|| format!("missing declared function '{}'", function.name))?;
 
         let entry = self.context.append_basic_block(llvm_function, "entry");
 
@@ -555,7 +557,7 @@ impl<'ctx> Codegen<'ctx> {
                         value: len_val,
                     })
                 }
-                _ => Err(format!("unknown slice member '.{}'", field)),
+                _ => Err(format!("unknown slice member '`{}'", field)),
             },
 
             Binding::Array {
@@ -590,11 +592,11 @@ impl<'ctx> Codegen<'ctx> {
                     ty: Type::U64,
                     value: self.context.i64_type().const_int(size as u64, false),
                 }),
-                _ => Err(format!("unknown array member '.{}'", field)),
+                _ => Err(format!("unknown array member '`{}'", field)),
             },
 
             other => Err(format!(
-                "member access '.{}' unsupported on {:?}",
+                "member access '`{}' unsupported on {:?}",
                 field, other
             )),
         }
