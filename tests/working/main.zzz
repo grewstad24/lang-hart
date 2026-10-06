@@ -1,5 +1,4 @@
 main:
         _ print_string("Hello")
-        _ pr_nl()
-
         exit 0
+.
