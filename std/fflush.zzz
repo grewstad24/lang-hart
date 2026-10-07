@@ -1,7 +1,7 @@
-extern fflush: (*u8) to s32
+@extern fflush
+(ptr: *u8) to s32
 
-impure flush_file (*u8 ptr) to s32:
-        unsafe:
-                return fflush (ptr)
-        |
-|
+@fn flush_file
+do (ptr: *u8) to s32
+        return fflush(ptr)
+done

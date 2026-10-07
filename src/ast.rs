@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
+    Void,
     S16,
     S32,
     S64,
@@ -8,22 +9,27 @@ pub enum Type {
     U32,
     U64,
     Bool,
-    Array { element: Box<Type>, size: usize },
-    Pointer { element: Box<Type> },
-    Slice { element: Box<Type> },
+    Function {
+        parameters: Vec<Type>,
+        return_type: Box<Type>,
+        is_variadic: bool,
+    },
+    Array {
+        element: Box<Type>,
+        size: usize,
+    },
+    Pointer {
+        element: Box<Type>,
+    },
+    Slice {
+        element: Box<Type>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpression {
     Concrete(Type),
     Of(Box<Expression>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FunctionKind {
-    Pure,
-    Impure,
-    Unsafe,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,38 +45,29 @@ pub struct Parameter {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionSignature {
-    pub parameters: Vec<TypeExpression>,
-    pub return_type: TypeExpression,
+pub struct Signature {
+    pub parameters: Vec<Parameter>,
+    pub return_type: Box<TypeExpression>,
     pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExternalFunction {
     pub name: String,
-    pub signature: FunctionSignature,
+    pub signature: Signature,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Function {
-    pub kind: FunctionKind,
+pub struct Definition {
     pub name: String,
-    pub parameters: Vec<Parameter>,
-    pub return_type: TypeExpression,
-    pub body: Vec<Statement>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Main {
-    pub body: Vec<Statement>,
+    pub value: Expression,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub variables: Vec<Variable>,
     pub extern_functions: Vec<ExternalFunction>,
-    pub main: Main,
-    pub functions: Vec<Function>,
+    pub definitions: Vec<Definition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +85,6 @@ pub enum Statement {
     Discard(Expression),
     Return(Expression),
     Exit(Expression),
-    Unsafe(Vec<Statement>),
     If {
         branches: Vec<ConditionalBranch>,
         else_body: Option<Vec<Statement>>,
@@ -103,6 +99,11 @@ pub enum Expression {
     Identifier(String),
     Array(Vec<Expression>),
     TypeOf(Box<Expression>),
+    Signature(Signature),
+    Block {
+        signature: Option<Signature>,
+        body: Vec<Statement>,
+    },
     Unary {
         operator: UnaryOperator,
         operand: Box<Expression>,
@@ -122,7 +123,7 @@ pub enum Expression {
         ty: TypeExpression,
     },
     Call {
-        name: String,
+        target: Box<Expression>,
         arguments: Vec<Expression>,
     },
     Index {

@@ -4,3 +4,6 @@
 *.ll
 *.o
 main
+
+# test and experimentation directory
+tests/testing/*

@@ -1,12 +1,10 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Data,
-    Extern,
-    Main,
+    At,
 
-    Pure,
-    Impure,
-    Unsafe,
+    Do,
+    Done,
 
     Return,
     Exit,
@@ -97,6 +95,11 @@ impl Lexer {
 
                 ';' => {
                     self.skip_comment(&mut tokens);
+                }
+
+                '@' => {
+                    self.position += 1;
+                    tokens.push(Token::At);
                 }
 
                 '0'..='9' => {
@@ -259,10 +262,6 @@ impl Lexer {
                     tokens.push(Token::Newline);
                     return;
                 }
-                ';' => {
-                    self.position += 1;
-                    return;
-                }
                 _ => {
                     self.position += 1;
                 }
@@ -306,12 +305,9 @@ impl Lexer {
         match text.as_str() {
             "_" => Token::Underscore,
             "data" => Token::Data,
-            "extern" => Token::Extern,
-            "main" => Token::Main,
 
-            "pure" => Token::Pure,
-            "impure" => Token::Impure,
-            "unsafe" => Token::Unsafe,
+            "do" => Token::Do,
+            "done" => Token::Done,
 
             "return" => Token::Return,
             "exit" => Token::Exit,

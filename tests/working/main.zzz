@@ -1,3 +1,9 @@
-main:
-        _ "Hello, World!".print_string()
-|
+@main
+do
+        _ mul(42, 45).print_s32()
+done
+
+@fn mul
+do (x: s32, y: s32) to s32
+        x * y
+done
