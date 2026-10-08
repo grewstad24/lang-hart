@@ -1,9 +1,31 @@
-@main
-do
-        _ mul(42, 45).print_s32()
+@fn double_it
+do (x: s32) to s32
+        return x * 2
 done
 
-@fn mul
-do (x: s32, y: s32) to s32
-        x * y
+@fn apply_and_print
+do (op: *(x: s32) to s32, val: s32) to s32
+        const res: s32
+        op(val) -> res
+        print_s32(res)
+        pr_nl()
+        return res
+done
+
+@main
+do () to s32
+        const count: s32
+        10 -> count
+
+        "Testing standard library IO and closures:"   .print_string()
+
+        "Initial value:"                              .print_string()
+        count                                         .print_s32()
+
+        pr_nl()
+
+        "Doubled via function pointer:"               .print_string()
+        apply_and_print(double_it, count)
+
+        return 0
 done

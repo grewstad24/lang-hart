@@ -1,17 +1,9 @@
 default:
-    @just --list
+    @just run
 
-test:
-    cargo test
-
-run *ARGS="":
-    cargo run {{ ARGS }}
-
-build:
-    cargo build --release
-
-clean:
-    cargo clean
+run:
+    cargo run -- tests/working
+    ./main
 
 install:
     cargo install --path .

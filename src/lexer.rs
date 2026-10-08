@@ -1,7 +1,9 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    Data,
     At,
+
+    Const,
+    Var,
 
     Do,
     Done,
@@ -304,7 +306,8 @@ impl Lexer {
 
         match text.as_str() {
             "_" => Token::Underscore,
-            "data" => Token::Data,
+            "const" => Token::Const,
+            "var" => Token::Var,
 
             "do" => Token::Do,
             "done" => Token::Done,

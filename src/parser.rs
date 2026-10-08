@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOperator, ComparisonOperator, ConditionalBranch, Definition, Expression,
     ExternalFunction, Parameter, Program, Signature, Statement, Type, TypeExpression,
-    UnaryOperator, Variable,
+    UnaryOperator,
 };
 use crate::lexer::Token;
 
@@ -19,35 +19,33 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> Result<Program, String> {
-        let mut variables = Vec::new();
         let mut extern_functions = Vec::new();
         let mut definitions = Vec::new();
-        let mut has_data = false;
 
         self.skip_newlines();
 
         while !self.is(Token::Eof) {
             match self.peek() {
-                Token::Data => {
-                    if has_data {
-                        return Err("duplicate data block".to_string());
-                    }
-                    has_data = true;
-                    variables = self.parse_data_block()?;
-                }
-
                 Token::At => {
                     self.advance();
-                    let directive_or_name = self.expect_identifier()?;
+                    let directive = self.expect_identifier()?;
 
-                    match directive_or_name.as_str() {
+                    match directive.as_str() {
                         "extern" => {
                             self.skip_newlines();
                             let name = self.expect_identifier()?;
                             self.skip_newlines();
-                            let signature = self.parse_signature()?;
+                            let expr = self.parse_expression()?;
                             self.consume_optional_newline();
-                            extern_functions.push(ExternalFunction { name, signature });
+
+                            if let Expression::Signature(signature) = expr {
+                                extern_functions.push(ExternalFunction { name, signature });
+                            } else {
+                                return Err(format!(
+                                    "expected signature expression for @extern '{}', found {:?}",
+                                    name, expr
+                                ));
+                            }
                         }
                         "fn" => {
                             self.skip_newlines();
@@ -66,14 +64,11 @@ impl Parser {
                                 value,
                             });
                         }
-                        _ => {
-                            self.skip_newlines();
-                            let value = self.parse_expression()?;
-                            self.consume_optional_newline();
-                            definitions.push(Definition {
-                                name: directive_or_name,
-                                value,
-                            });
+                        other => {
+                            return Err(format!(
+                                "unknown top-level decorator '@{}', expected @fn, @extern, or @main",
+                                other
+                            ));
                         }
                     }
                 }
@@ -91,36 +86,14 @@ impl Parser {
         }
 
         if !definitions.iter().any(|d| d.name == "main") {
-            return Err("missing '@main' definition".to_string());
+            return Err("missing required '@main' definition".to_string());
         }
 
         Ok(Program {
-            variables,
+            variables: Vec::new(),
             extern_functions,
             definitions,
         })
-    }
-
-    fn parse_data_block(&mut self) -> Result<Vec<Variable>, String> {
-        self.expect(Token::Data)?;
-        self.skip_newlines();
-        self.expect(Token::Do)?;
-        self.skip_newlines();
-
-        let mut variables = Vec::new();
-
-        while !self.is(Token::Eof) && !self.is(Token::Done) {
-            let name = self.expect_identifier()?;
-            self.expect(Token::Colon)?;
-            let ty = self.parse_type_expression()?;
-            self.consume_optional_newline();
-
-            variables.push(Variable { name, ty });
-            self.skip_newlines();
-        }
-
-        self.expect(Token::Done)?;
-        Ok(variables)
     }
 
     pub fn parse_signature(&mut self) -> Result<Signature, String> {
@@ -172,6 +145,14 @@ impl Parser {
 
         let signature = if self.is(Token::LParen) {
             Some(self.parse_signature()?)
+        } else if self.is(Token::To) {
+            self.advance();
+            let return_type = self.parse_type_expression()?;
+            Some(Signature {
+                parameters: Vec::new(),
+                return_type: Box::new(return_type),
+                is_variadic: false,
+            })
         } else {
             None
         };
@@ -204,6 +185,32 @@ impl Parser {
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.peek() {
+            Token::Const => {
+                self.advance();
+                let name = self.expect_identifier()?;
+                self.expect(Token::Colon)?;
+                let ty = self.parse_type_expression()?;
+                self.consume_optional_newline();
+                Ok(Statement::Declare {
+                    is_mutable: false,
+                    name,
+                    ty,
+                })
+            }
+
+            Token::Var => {
+                self.advance();
+                let name = self.expect_identifier()?;
+                self.expect(Token::Colon)?;
+                let ty = self.parse_type_expression()?;
+                self.consume_optional_newline();
+                Ok(Statement::Declare {
+                    is_mutable: true,
+                    name,
+                    ty,
+                })
+            }
+
             Token::If => self.parse_if_statement(),
 
             Token::Return => {
@@ -231,20 +238,19 @@ impl Parser {
                 let expression = self.parse_expression()?;
 
                 if self.is(Token::Arrow) {
-                    self.advance();
-                    let mut names = Vec::new();
-                    names.push(self.expect_identifier()?);
-
+                    let mut targets = Vec::new();
                     while self.is(Token::Arrow) {
                         self.advance();
-                        names.push(self.expect_identifier()?);
+                        targets.push(self.expect_identifier()?);
                     }
-
                     self.consume_optional_newline();
-                    Ok(Statement::Bind { expression, names })
+                    Ok(Statement::Assign {
+                        expression,
+                        targets,
+                    })
                 } else {
                     self.consume_optional_newline();
-                    Ok(Statement::Return(expression))
+                    Ok(Statement::Discard(expression))
                 }
             }
         }
@@ -646,6 +652,35 @@ impl Parser {
                 Ok(Type::Array {
                     element: Box::new(element),
                     size,
+                })
+            }
+            Token::LParen => {
+                let sig = self.parse_signature()?;
+                let mut param_types = Vec::new();
+                for param in sig.parameters {
+                    match param.ty {
+                        TypeExpression::Concrete(t) => param_types.push(t),
+                        TypeExpression::Of(_) => {
+                            return Err(
+                                "type-of expressions in function signatures are unsupported"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+
+                let return_type = match *sig.return_type {
+                    TypeExpression::Concrete(t) => t,
+                    TypeExpression::Of(_) => {
+                        return Err("type-of expressions in function signatures are unsupported"
+                            .to_string());
+                    }
+                };
+
+                Ok(Type::Function {
+                    parameters: param_types,
+                    return_type: Box::new(return_type),
+                    is_variadic: sig.is_variadic,
                 })
             }
             token => Err(format!("expected type, found {:?}", token)),

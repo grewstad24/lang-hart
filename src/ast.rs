@@ -33,12 +33,6 @@ pub enum TypeExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Variable {
-    pub name: String,
-    pub ty: TypeExpression,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
     pub ty: TypeExpression,
@@ -65,7 +59,7 @@ pub struct Definition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
-    pub variables: Vec<Variable>,
+    pub variables: Vec<()>,
     pub extern_functions: Vec<ExternalFunction>,
     pub definitions: Vec<Definition>,
 }
@@ -78,9 +72,14 @@ pub struct ConditionalBranch {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    Bind {
+    Declare {
+        is_mutable: bool,
+        name: String,
+        ty: TypeExpression,
+    },
+    Assign {
         expression: Expression,
-        names: Vec<String>,
+        targets: Vec<String>,
     },
     Discard(Expression),
     Return(Expression),
