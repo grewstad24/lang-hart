@@ -227,13 +227,6 @@ impl Parser {
                 Ok(Statement::Exit(expression))
             }
 
-            Token::Underscore => {
-                self.advance();
-                let expression = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Discard(expression))
-            }
-
             _ => {
                 let expression = self.parse_expression()?;
 

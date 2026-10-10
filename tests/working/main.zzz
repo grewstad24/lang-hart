@@ -1,10 +1,6 @@
 @main
 do
-    const my_block: (x: s32) to s32
-
-    do (x: s32) to s32
-        return print_s32(x)
-    done -> my_block
-
-    my_block(67)
+        do
+                print_s32(67)
+        done()
 done

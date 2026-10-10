@@ -255,21 +255,13 @@ impl Checker {
     }
 
     fn lookup_binding(&self, name: &str) -> Option<BindingInfo> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(info) = scope.get(name) {
-                return Some(info.clone());
-            }
-        }
-        None
+        self.scopes
+            .last()
+            .and_then(|scope| scope.get(name).cloned())
     }
 
     fn lookup_binding_mut(&mut self, name: &str) -> Option<&mut BindingInfo> {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(name) {
-                return scope.get_mut(name);
-            }
-        }
-        None
+        self.scopes.last_mut().and_then(|scope| scope.get_mut(name))
     }
 
     fn type_of_expression(&mut self, expression: &Expression) -> Result<Type, String> {
@@ -351,45 +343,41 @@ impl Checker {
 
                 self.scopes.push(HashMap::new());
 
-                let result: Result<Type, String> = (|| {
-                    if let Some(sig) = signature {
-                        let mut seen_params = HashSet::new();
-                        for p in &sig.parameters {
-                            if !seen_params.insert(p.name.clone()) {
-                                return Err(format!(
-                                    "duplicate parameter name '{}' in block",
-                                    p.name
-                                ));
-                            }
-                            let p_ty = self.resolve_type_expression(&p.ty)?;
-                            if p_ty == Type::Void {
-                                return Err(format!("block parameter '{}' cannot be void", p.name));
-                            }
-                            self.scopes.last_mut().unwrap().insert(
-                                p.name.clone(),
-                                BindingInfo {
-                                    ty: p_ty.clone(),
-                                    is_mutable: false,
-                                    is_initialized: true,
-                                },
-                            );
-                            param_types.push(p_ty);
+                if let Some(sig) = signature {
+                    let mut seen_params = HashSet::new();
+                    for p in &sig.parameters {
+                        if !seen_params.insert(p.name.clone()) {
+                            self.scopes.pop();
+                            return Err(format!("duplicate parameter name '{}' in block", p.name));
                         }
-                        expected_return = self.resolve_type_expression(&sig.return_type)?;
-                        is_variadic = sig.is_variadic;
+                        let p_ty = self.resolve_type_expression(&p.ty)?;
+                        if p_ty == Type::Void {
+                            self.scopes.pop();
+                            return Err(format!("block parameter '{}' cannot be void", p.name));
+                        }
+                        self.scopes.last_mut().unwrap().insert(
+                            p.name.clone(),
+                            BindingInfo {
+                                ty: p_ty.clone(),
+                                is_mutable: false,
+                                is_initialized: true,
+                            },
+                        );
+                        param_types.push(p_ty);
                     }
+                    expected_return = self.resolve_type_expression(&sig.return_type)?;
+                    is_variadic = sig.is_variadic;
+                }
 
-                    self.validate_block(body, &expected_return)?;
-
-                    Ok(Type::Function {
-                        parameters: param_types,
-                        return_type: Box::new(expected_return),
-                        is_variadic,
-                    })
-                })();
-
+                let validate_res = self.validate_block(body, &expected_return);
                 self.scopes.pop();
-                result
+                validate_res?;
+
+                Ok(Type::Function {
+                    parameters: param_types,
+                    return_type: Box::new(expected_return),
+                    is_variadic,
+                })
             }
 
             Expression::Array(elements) => {
@@ -628,9 +616,9 @@ impl Checker {
                             name
                         ));
                     }
-                    if self.lookup_binding(name).is_some() {
+                    if self.scopes.last().unwrap().contains_key(name) {
                         return Err(format!(
-                            "variable '{}' already declared and shadowing is disallowed",
+                            "variable '{}' already declared in this scope",
                             name
                         ));
                     }
@@ -779,7 +767,8 @@ impl Checker {
             }
 
             Statement::Exit(expression) => {
-                Ok(Statement::Exit(self.resolve_expression(expression)?))
+                let resolved_expr = self.resolve_expression(expression)?;
+                Ok(Statement::Exit(resolved_expr))
             }
 
             Statement::If {

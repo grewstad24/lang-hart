@@ -3,8 +3,8 @@
 
 @fn print_string
 do (s: []u8) to s32
-        _ printf ("%s"^, s^)
-        _ pr_nl()
+        printf ("%s"^, s^)
+        pr_nl()
         return 0
 done
 

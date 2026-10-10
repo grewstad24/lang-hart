@@ -41,7 +41,6 @@ pub enum Token {
     Ampersand,
     Hash,
     Caret,
-    Underscore,
 
     Equal,
     NotEqual,
@@ -305,7 +304,6 @@ impl Lexer {
         let text: String = self.chars[start..self.position].iter().collect();
 
         match text.as_str() {
-            "_" => Token::Underscore,
             "const" => Token::Const,
             "var" => Token::Var,
 
