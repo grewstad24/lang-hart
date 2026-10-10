@@ -105,6 +105,55 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
+    fn get_stacksave_intrinsic(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("llvm.stacksave") {
+            func
+        } else {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let fn_type = ptr_type.fn_type(&[], false);
+            self.module.add_function("llvm.stacksave", fn_type, None)
+        }
+    }
+
+    fn get_stackrestore_intrinsic(&self) -> FunctionValue<'ctx> {
+        if let Some(func) = self.module.get_function("llvm.stackrestore") {
+            func
+        } else {
+            let ptr_type = self.context.ptr_type(AddressSpace::default());
+            let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
+            self.module.add_function("llvm.stackrestore", fn_type, None)
+        }
+    }
+
+    fn enter_scope(&mut self) -> Result<PointerValue<'ctx>, String> {
+        let stacksave = self.get_stacksave_intrinsic();
+        let stack_ptr = self
+            .builder
+            .build_call(stacksave, &[], "saved_stack")
+            .map_err(|e| e.to_string())?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| "llvm.stacksave must yield a basic value".to_string())?
+            .into_pointer_value();
+
+        self.local_scopes.push(HashMap::new());
+        Ok(stack_ptr)
+    }
+
+    fn exit_scope(&mut self, stack_ptr: PointerValue<'ctx>) -> Result<(), String> {
+        self.local_scopes.pop();
+
+        if let Some(bb) = self.builder.get_insert_block() {
+            if bb.get_terminator().is_none() {
+                let stackrestore = self.get_stackrestore_intrinsic();
+                self.builder
+                    .build_call(stackrestore, &[stack_ptr.into()], "")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     fn codegen_externals(&mut self, extern_functions: &[ExternalFunction]) -> Result<(), String> {
         for external in extern_functions {
             let param_types: Vec<BasicMetadataTypeEnum> = external
@@ -196,12 +245,9 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn lookup_local(&self, name: &str) -> Option<LocalVar<'ctx>> {
-        for scope in self.local_scopes.iter().rev() {
-            if let Some(var) = scope.get(name) {
-                return Some(var.clone());
-            }
-        }
-        None
+        self.local_scopes
+            .last()
+            .and_then(|scope| scope.get(name).cloned())
     }
 
     fn codegen_named_function(
@@ -218,8 +264,8 @@ impl<'ctx> Codegen<'ctx> {
         let entry = self.context.append_basic_block(llvm_function, "entry");
         self.builder.position_at_end(entry);
 
-        self.local_scopes.clear();
-        self.local_scopes.push(HashMap::new());
+        let previous_scopes = std::mem::take(&mut self.local_scopes);
+        let stack_ptr = self.enter_scope()?;
 
         if let Some(sig) = signature {
             for (index, parameter) in sig.parameters.iter().enumerate() {
@@ -254,6 +300,8 @@ impl<'ctx> Codegen<'ctx> {
                 Type::Void
             };
 
+            self.exit_scope(stack_ptr)?;
+
             if ret_ty == Type::Void {
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             } else {
@@ -262,9 +310,11 @@ impl<'ctx> Codegen<'ctx> {
                     .build_return(Some(&zero))
                     .map_err(|e| e.to_string())?;
             }
+        } else {
+            self.local_scopes.pop();
         }
 
-        self.local_scopes.pop();
+        self.local_scopes = previous_scopes;
         Ok(())
     }
 
@@ -276,8 +326,8 @@ impl<'ctx> Codegen<'ctx> {
         let entry = self.context.append_basic_block(function, "entry");
 
         self.builder.position_at_end(entry);
-        self.local_scopes.clear();
-        self.local_scopes.push(HashMap::new());
+        let previous_scopes = std::mem::take(&mut self.local_scopes);
+        let stack_ptr = self.enter_scope()?;
 
         match &main_def.value {
             Expression::Block { body, .. } => {
@@ -289,12 +339,15 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         if !self.has_terminator(function) {
+            self.exit_scope(stack_ptr)?;
             self.builder
                 .build_return(Some(&i32_type.const_zero()))
                 .map_err(|error| error.to_string())?;
+        } else {
+            self.local_scopes.pop();
         }
 
-        self.local_scopes.pop();
+        self.local_scopes = previous_scopes;
         Ok(())
     }
 
@@ -446,9 +499,9 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(then_bb);
-            self.local_scopes.push(HashMap::new());
+            let then_stack = self.enter_scope()?;
             self.codegen_statements(&branch.body)?;
-            self.local_scopes.pop();
+            self.exit_scope(then_stack)?;
 
             if let Some(insert_bb) = self.builder.get_insert_block() {
                 if insert_bb.get_terminator().is_none() {
@@ -463,9 +516,9 @@ impl<'ctx> Codegen<'ctx> {
 
         if let Some(else_stmts) = else_body {
             self.builder.position_at_end(next_cond_bb);
-            self.local_scopes.push(HashMap::new());
+            let else_stack = self.enter_scope()?;
             self.codegen_statements(else_stmts)?;
-            self.local_scopes.pop();
+            self.exit_scope(else_stack)?;
 
             if let Some(insert_bb) = self.builder.get_insert_block() {
                 if insert_bb.get_terminator().is_none() {

@@ -351,41 +351,45 @@ impl Checker {
 
                 self.scopes.push(HashMap::new());
 
-                if let Some(sig) = signature {
-                    let mut seen_params = HashSet::new();
-                    for p in &sig.parameters {
-                        if !seen_params.insert(p.name.clone()) {
-                            self.scopes.pop();
-                            return Err(format!("duplicate parameter name '{}' in block", p.name));
+                let result: Result<Type, String> = (|| {
+                    if let Some(sig) = signature {
+                        let mut seen_params = HashSet::new();
+                        for p in &sig.parameters {
+                            if !seen_params.insert(p.name.clone()) {
+                                return Err(format!(
+                                    "duplicate parameter name '{}' in block",
+                                    p.name
+                                ));
+                            }
+                            let p_ty = self.resolve_type_expression(&p.ty)?;
+                            if p_ty == Type::Void {
+                                return Err(format!("block parameter '{}' cannot be void", p.name));
+                            }
+                            self.scopes.last_mut().unwrap().insert(
+                                p.name.clone(),
+                                BindingInfo {
+                                    ty: p_ty.clone(),
+                                    is_mutable: false,
+                                    is_initialized: true,
+                                },
+                            );
+                            param_types.push(p_ty);
                         }
-                        let p_ty = self.resolve_type_expression(&p.ty)?;
-                        if p_ty == Type::Void {
-                            self.scopes.pop();
-                            return Err(format!("block parameter '{}' cannot be void", p.name));
-                        }
-                        self.scopes.last_mut().unwrap().insert(
-                            p.name.clone(),
-                            BindingInfo {
-                                ty: p_ty.clone(),
-                                is_mutable: false,
-                                is_initialized: true,
-                            },
-                        );
-                        param_types.push(p_ty);
+                        expected_return = self.resolve_type_expression(&sig.return_type)?;
+                        is_variadic = sig.is_variadic;
                     }
-                    expected_return = self.resolve_type_expression(&sig.return_type)?;
-                    is_variadic = sig.is_variadic;
-                }
 
-                let validate_res = self.validate_block(body, &expected_return);
+                    self.validate_block(body, &expected_return)?;
+
+                    Ok(Type::Function {
+                        parameters: param_types,
+                        return_type: Box::new(expected_return),
+                        is_variadic,
+                    })
+                })();
+
                 self.scopes.pop();
-                validate_res?;
-
-                Ok(Type::Function {
-                    parameters: param_types,
-                    return_type: Box::new(expected_return),
-                    is_variadic,
-                })
+                result
             }
 
             Expression::Array(elements) => {
@@ -624,9 +628,9 @@ impl Checker {
                             name
                         ));
                     }
-                    if self.scopes.last().unwrap().contains_key(name) {
+                    if self.lookup_binding(name).is_some() {
                         return Err(format!(
-                            "variable '{}' already declared in this scope",
+                            "variable '{}' already declared and shadowing is disallowed",
                             name
                         ));
                     }
@@ -775,8 +779,7 @@ impl Checker {
             }
 
             Statement::Exit(expression) => {
-                let resolved_expr = self.resolve_expression(expression)?;
-                Ok(Statement::Exit(resolved_expr))
+                Ok(Statement::Exit(self.resolve_expression(expression)?))
             }
 
             Statement::If {
