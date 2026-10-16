@@ -95,66 +95,74 @@ impl Parser {
         })
     }
 
+    /// Parses a function signature in any of the 3 canonical forms:
+    /// 1. Full form: `(params...) [++] [to T]`
+    /// 2. Return-only form: `to T`
+    /// 3. Omitted form: defaults to `() to void`
     pub fn parse_signature(&mut self) -> Result<Signature, String> {
-        self.expect(Token::LParen)?;
+        if self.is(Token::LParen) {
+            self.advance();
+            let mut parameters = Vec::new();
 
-        let mut parameters = Vec::new();
+            if !self.is(Token::RParen) {
+                loop {
+                    let name = self.expect_identifier()?;
+                    self.expect(Token::Colon)?;
+                    let ty = self.parse_type()?;
 
-        if !self.is(Token::RParen) {
-            loop {
-                let name = self.expect_identifier()?;
-                self.expect(Token::Colon)?;
-                let ty = self.parse_type()?;
+                    parameters.push(Parameter { name, ty });
 
-                parameters.push(Parameter { name, ty });
-
-                if self.is(Token::Comma) {
-                    self.advance();
-                } else {
-                    break;
+                    if self.is(Token::Comma) {
+                        self.advance();
+                    } else {
+                        break;
+                    }
                 }
             }
-        }
 
-        self.expect(Token::RParen)?;
+            self.expect(Token::RParen)?;
 
-        let is_variadic = if self.is(Token::PlusPlus) {
-            self.advance();
-            true
-        } else {
-            false
-        };
+            let is_variadic = if self.is(Token::PlusPlus) {
+                self.advance();
+                true
+            } else {
+                false
+            };
 
-        let return_type = if self.is(Token::To) {
-            self.advance();
-            self.parse_type()?
-        } else {
-            Type::Void
-        };
+            let return_type = if self.is(Token::To) {
+                self.advance();
+                self.parse_type()?
+            } else {
+                Type::Void
+            };
 
-        Ok(Signature {
-            parameters,
-            return_type: Box::new(return_type),
-            is_variadic,
-        })
-    }
-
-    fn parse_block_expression(&mut self) -> Result<Expression, String> {
-        self.expect(Token::Do)?;
-
-        let signature = if self.is(Token::LParen) {
-            Some(self.parse_signature()?)
+            Ok(Signature {
+                parameters,
+                return_type: Box::new(return_type),
+                is_variadic,
+            })
         } else if self.is(Token::To) {
             self.advance();
             let return_type = self.parse_type()?;
-            Some(Signature {
+            Ok(Signature {
                 parameters: Vec::new(),
                 return_type: Box::new(return_type),
                 is_variadic: false,
             })
         } else {
-            None
-        };
+            Ok(Signature {
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Void),
+                is_variadic: false,
+            })
+        }
+    }
+
+    fn parse_block_expression(&mut self) -> Result<Expression, String> {
+        self.expect(Token::Do)?;
+
+        // Canonicalizes omitted, `to T`, or `(params) [to T]` signatures into a uniform Signature
+        let signature = Some(self.parse_signature()?);
 
         self.skip_newlines();
         let body = self.parse_statements_until_done()?;
@@ -217,13 +225,6 @@ impl Parser {
                 let expression = self.parse_expression()?;
                 self.consume_optional_newline();
                 Ok(Statement::Return(expression))
-            }
-
-            Token::Exit => {
-                self.advance();
-                let expression = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Exit(expression))
             }
 
             _ => {

@@ -1,6 +1,7 @@
 @main
-do
+do to s32
         do
                 print_s32(67)
         done()
+        return 0
 done

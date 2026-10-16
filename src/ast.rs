@@ -77,7 +77,6 @@ pub enum Statement {
     },
     Discard(Expression),
     Return(Expression),
-    Exit(Expression),
     If {
         branches: Vec<ConditionalBranch>,
         else_body: Option<Vec<Statement>>,

@@ -306,9 +306,15 @@ impl<'ctx> Codegen<'ctx> {
             if ret_ty == Type::Void {
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             } else {
-                let zero = self.zero_value(&ret_ty)?;
+                let unreachable_bb = self
+                    .context
+                    .append_basic_block(llvm_function, "unreachable");
                 self.builder
-                    .build_return(Some(&zero))
+                    .build_unconditional_branch(unreachable_bb)
+                    .map_err(|e| e.to_string())?;
+                self.builder.position_at_end(unreachable_bb);
+                self.builder
+                    .build_unreachable()
                     .map_err(|e| e.to_string())?;
             }
         } else {
@@ -330,20 +336,22 @@ impl<'ctx> Codegen<'ctx> {
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let stack_ptr = self.enter_scope()?;
 
-        match &main_def.value {
-            Expression::Block { body, .. } => {
-                self.codegen_statements(body)?;
-            }
-            expr => {
-                self.codegen_expression(expr)?;
-            }
+        if let Expression::Block { body, .. } = &main_def.value {
+            self.codegen_statements(body)?;
+        } else {
+            return Err("entry point '@main' must evaluate to a block".to_string());
         }
 
         if !self.has_terminator(function) {
             self.exit_scope(stack_ptr)?;
+            let unreachable_bb = self.context.append_basic_block(function, "unreachable");
             self.builder
-                .build_return(Some(&i32_type.const_zero()))
-                .map_err(|error| error.to_string())?;
+                .build_unconditional_branch(unreachable_bb)
+                .map_err(|e| e.to_string())?;
+            self.builder.position_at_end(unreachable_bb);
+            self.builder
+                .build_unreachable()
+                .map_err(|e| e.to_string())?;
         } else {
             self.local_scopes.pop();
         }
@@ -420,17 +428,6 @@ impl<'ctx> Codegen<'ctx> {
             Statement::Return(expression) => {
                 let binding = self.codegen_expression(expression)?;
                 self.build_return(&binding)
-            }
-
-            Statement::Exit(expression) => {
-                let binding = self.codegen_expression(expression)?;
-                let value = self.binding_int_value(&binding)?;
-
-                self.builder
-                    .build_return(Some(&value))
-                    .map_err(|error| error.to_string())?;
-
-                Ok(())
             }
 
             Statement::If {

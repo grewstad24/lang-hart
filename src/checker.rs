@@ -93,7 +93,7 @@ impl Checker {
             self.resolve_definition(name)?;
         }
 
-        self.validate_main()?;
+        self.validate_main(program)?;
 
         let extern_functions = program
             .extern_functions
@@ -122,35 +122,40 @@ impl Checker {
         })
     }
 
-    fn validate_main(&self) -> Result<(), String> {
-        let main_type = self.resolved_definitions.get("main").ok_or_else(|| {
-            "program is malformed: missing required entry point '@main'".to_string()
-        })?;
+    fn validate_main(&self, program: &Program) -> Result<(), String> {
+        let main_def = program
+            .definitions
+            .iter()
+            .find(|d| d.name == "main")
+            .ok_or_else(|| {
+                "program is malformed: missing required entry point '@main'".to_string()
+            })?;
 
-        match main_type {
-            Type::Function {
-                parameters,
-                return_type,
-                is_variadic,
+        match &main_def.value {
+            Expression::Block {
+                signature: Some(sig),
+                ..
             } => {
-                if !parameters.is_empty() {
+                if !sig.parameters.is_empty() {
                     return Err(format!(
                         "entry point '@main' cannot accept parameters, found {}",
-                        parameters.len()
+                        sig.parameters.len()
                     ));
                 }
-                if *is_variadic {
+                if sig.is_variadic {
                     return Err("entry point '@main' cannot be variadic".to_string());
                 }
-                if **return_type != Type::Void && **return_type != Type::S32 {
+                if *sig.return_type != Type::S32 {
                     return Err(format!(
-                        "entry point '@main' must return void or s32, found {:?}",
-                        return_type
+                        "entry point '@main' must have signature 'to s32', found return type {:?}",
+                        sig.return_type
                     ));
                 }
             }
             _ => {
-                return Err("entry point '@main' must evaluate to a function/block".to_string());
+                return Err(
+                    "entry point '@main' must be a block with signature 'to s32'".to_string(),
+                );
             }
         }
 
@@ -569,6 +574,29 @@ impl Checker {
         }
     }
 
+    fn definitely_returns(statements: &[Statement]) -> bool {
+        for stmt in statements {
+            match stmt {
+                Statement::Return(_) => return true,
+                Statement::If {
+                    branches,
+                    else_body,
+                } => {
+                    if let Some(eb) = else_body {
+                        let all_branches_return =
+                            branches.iter().all(|b| Self::definitely_returns(&b.body));
+                        let else_returns = Self::definitely_returns(eb);
+                        if all_branches_return && else_returns {
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn validate_block(
         &mut self,
         statements: &[Statement],
@@ -650,13 +678,6 @@ impl Checker {
                     }
                 }
 
-                Statement::Exit(expr) => {
-                    let ty = self.type_of_expression(expr)?;
-                    if !Self::is_integer_type(&ty) {
-                        return Err(format!("exit code must be an integer, found {:?}", ty));
-                    }
-                }
-
                 Statement::Discard(expr) => {
                     self.type_of_expression(expr)?;
                 }
@@ -688,6 +709,14 @@ impl Checker {
                 }
             }
         }
+
+        if *expected_type != Type::Void && !Self::definitely_returns(statements) {
+            return Err(format!(
+                "missing return statement: non-void function expecting return type {:?} must return a value along all execution paths",
+                expected_type
+            ));
+        }
+
         Ok(())
     }
 
@@ -732,11 +761,6 @@ impl Checker {
 
             Statement::Return(expression) => {
                 Ok(Statement::Return(self.resolve_expression(expression)?))
-            }
-
-            Statement::Exit(expression) => {
-                let resolved_expr = self.resolve_expression(expression)?;
-                Ok(Statement::Exit(resolved_expr))
             }
 
             Statement::If {

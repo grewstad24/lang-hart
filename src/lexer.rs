@@ -9,7 +9,6 @@ pub enum Token {
     Done,
 
     Return,
-    Exit,
 
     If,
     Elif,
@@ -305,7 +304,6 @@ impl Lexer {
             "done" => Token::Done,
 
             "return" => Token::Return,
-            "exit" => Token::Exit,
 
             "if" => Token::If,
             "elif" => Token::Elif,
