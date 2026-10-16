@@ -9,6 +9,7 @@ pub enum Type {
     U32,
     U64,
     Bool,
+    Atom(String),
     Function {
         parameters: Vec<Type>,
         return_type: Box<Type>,
@@ -61,7 +62,7 @@ pub struct Program {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IfCondition {
     Expression(Expression),
-    Wildcard,
+    Else,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,7 +80,7 @@ pub enum Statement {
     },
     Assign {
         expression: Expression,
-        targets: Vec<String>,
+        target: String,
     },
     Discard(Expression),
     Return(Expression),
@@ -89,6 +90,7 @@ pub enum Statement {
 pub enum Expression {
     Integer(i64),
     Boolean(bool),
+    Atom(String),
     String(Vec<u8>),
     Identifier(String),
     Array(Vec<Expression>),

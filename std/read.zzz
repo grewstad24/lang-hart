@@ -1,7 +1,7 @@
 @extern read
-(fd: s32, buf: *u8, bytes: u64) to s64
+(fd :: s32, buf :: *u8, bytes :: u64) to s64
 
 @fn read_fd
-do (fd: s32, buf: *u8, count: u64) to s64
+do (fd :: s32, buf :: *u8, count :: u64) to s64
         return read (fd, buf, count)
 done

@@ -103,7 +103,7 @@ impl Parser {
             if !self.is(Token::RParen) {
                 loop {
                     let name = self.expect_identifier()?;
-                    self.expect(Token::Colon)?;
+                    self.expect(Token::ColonColon)?;
                     let ty = self.parse_type()?;
 
                     parameters.push(Parameter { name, ty });
@@ -196,7 +196,7 @@ impl Parser {
             Token::Var => {
                 self.advance();
                 let name = self.expect_identifier()?;
-                self.expect(Token::Colon)?;
+                self.expect(Token::ColonColon)?;
                 let ty = self.parse_type()?;
                 self.consume_optional_newline();
                 Ok(Statement::Declare { name, ty })
@@ -215,16 +215,17 @@ impl Parser {
                 let expression = self.parse_expression()?;
 
                 if self.is(Token::Arrow) {
-                    let mut targets = Vec::new();
-                    while self.is(Token::Arrow) {
-                        self.advance();
-                        targets.push(self.expect_identifier()?);
+                    self.advance();
+                    let target = self.expect_identifier()?;
+
+                    if self.is(Token::Arrow) {
+                        return Err(
+                            "multiple assignment via chained '->' is not supported".to_string()
+                        );
                     }
+
                     self.consume_optional_newline();
-                    Ok(Statement::Assign {
-                        expression,
-                        targets,
-                    })
+                    Ok(Statement::Assign { expression, target })
                 } else {
                     self.consume_optional_newline();
                     Ok(Statement::Discard(expression))
@@ -238,13 +239,13 @@ impl Parser {
         self.skip_newlines();
 
         let mut arms = Vec::new();
-        let mut has_wildcard = false;
+        let mut has_else = false;
 
         while !self.is(Token::End) && !self.is(Token::Eof) {
-            let condition = if self.is(Token::Underscore) {
+            let condition = if self.is(Token::Else) {
                 self.advance();
-                has_wildcard = true;
-                IfCondition::Wildcard
+                has_else = true;
+                IfCondition::Else
             } else {
                 IfCondition::Expression(self.parse_expression()?)
             };
@@ -262,7 +263,7 @@ impl Parser {
             });
             self.skip_newlines();
 
-            if has_wildcard {
+            if has_else {
                 break;
             }
         }
@@ -270,8 +271,8 @@ impl Parser {
         self.expect(Token::End)?;
         self.consume_optional_newline();
 
-        if !has_wildcard {
-            return Err("'doif' statement requires a wildcard '_' fallback arm".to_string());
+        if !has_else {
+            return Err("'doif' statement requires a fallback 'else' arm".to_string());
         }
 
         Ok(Statement::Discard(Expression::If { arms }))
@@ -282,13 +283,13 @@ impl Parser {
         self.skip_newlines();
 
         let mut arms = Vec::new();
-        let mut has_wildcard = false;
+        let mut has_else = false;
 
         while !self.is(Token::End) && !self.is(Token::Eof) {
-            let condition = if self.is(Token::Underscore) {
+            let condition = if self.is(Token::Else) {
                 self.advance();
-                has_wildcard = true;
-                IfCondition::Wildcard
+                has_else = true;
+                IfCondition::Else
             } else {
                 IfCondition::Expression(self.parse_expression()?)
             };
@@ -300,15 +301,15 @@ impl Parser {
             arms.push(IfArm { condition, body });
             self.skip_newlines();
 
-            if has_wildcard {
+            if has_else {
                 break;
             }
         }
 
         self.expect(Token::End)?;
 
-        if !has_wildcard {
-            return Err("expression 'if' requires a wildcard '_' fallback arm".to_string());
+        if !has_else {
+            return Err("expression 'if' requires a fallback 'else' arm".to_string());
         }
 
         Ok(Expression::If { arms })
@@ -512,6 +513,11 @@ impl Parser {
             Token::Do => self.parse_block_expression(),
             Token::If => self.parse_if_expression(),
 
+            Token::Atom(name) => {
+                self.advance();
+                Ok(Expression::Atom(name))
+            }
+
             Token::Integer(value) => {
                 self.advance();
                 Ok(Expression::Integer(value))
@@ -582,7 +588,7 @@ impl Parser {
                     &self.tokens[self.position + 1],
                     &self.tokens[self.position + 2]
                 ),
-                (Token::Identifier(_), Token::Colon)
+                (Token::Identifier(_), Token::ColonColon)
             )
         } else {
             false
@@ -590,7 +596,11 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
-        match self.peek() {
+        match self.peek().clone() {
+            Token::Atom(name) => {
+                self.advance();
+                Ok(Type::Atom(name))
+            }
             Token::TypeS16 => {
                 self.advance();
                 Ok(Type::S16)

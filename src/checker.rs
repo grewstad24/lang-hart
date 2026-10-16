@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Definition, Expression, ExternalFunction, IfArm, IfCondition, Parameter, Program, Signature,
-    Statement, Type,
+    ComparisonOperator, Definition, Expression, ExternalFunction, IfArm, IfCondition, Parameter,
+    Program, Signature, Statement, Type,
 };
 
 #[derive(Debug, Clone)]
@@ -23,6 +23,7 @@ pub struct Checker {
     resolving_definitions: HashSet<String>,
 
     scopes: Vec<HashMap<String, BindingInfo>>,
+    atom_table: HashMap<String, u32>,
 }
 
 impl Checker {
@@ -50,6 +51,17 @@ impl Checker {
             resolving_definitions: HashSet::new(),
 
             scopes: Vec::new(),
+            atom_table: HashMap::new(),
+        }
+    }
+
+    pub fn intern_atom(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.atom_table.get(name) {
+            id
+        } else {
+            let id = self.atom_table.len() as u32;
+            self.atom_table.insert(name.to_string(), id);
+            id
         }
     }
 
@@ -258,6 +270,10 @@ impl Checker {
         match expression {
             Expression::Integer(_) => Ok(Type::S32),
             Expression::Boolean(_) => Ok(Type::Bool),
+            Expression::Atom(name) => {
+                self.intern_atom(name);
+                Ok(Type::Atom(name.clone()))
+            }
             Expression::String(_) => Ok(Type::Slice {
                 element: Box::new(Type::U8),
             }),
@@ -363,11 +379,11 @@ impl Checker {
             }
 
             Expression::If { arms } => {
-                let has_wildcard = arms
+                let has_else = arms
                     .iter()
-                    .any(|a| matches!(a.condition, IfCondition::Wildcard));
-                if !has_wildcard {
-                    return Err("expression 'if' must have a fallback '_' arm".to_string());
+                    .any(|a| matches!(a.condition, IfCondition::Else));
+                if !has_else {
+                    return Err("expression 'if' must have a fallback 'else' arm".to_string());
                 }
 
                 let mut expected_ty: Option<Type> = None;
@@ -383,10 +399,10 @@ impl Checker {
                                 ));
                             }
                         }
-                        IfCondition::Wildcard => {
+                        IfCondition::Else => {
                             if i != arms.len() - 1 {
                                 return Err(
-                                    "wildcard '_' arm must be the final arm in if".to_string()
+                                    "fallback 'else' arm must be the final arm in if".to_string()
                                 );
                             }
                         }
@@ -466,9 +482,31 @@ impl Checker {
                 Ok(left_type)
             }
 
-            Expression::Comparison { left, right, .. } => {
+            Expression::Comparison {
+                left,
+                operator,
+                right,
+            } => {
                 let left_type = self.type_of_expression(left)?;
                 let right_type = self.type_of_expression(right)?;
+
+                if matches!(left_type, Type::Atom(_)) || matches!(right_type, Type::Atom(_)) {
+                    if !matches!(
+                        operator,
+                        ComparisonOperator::Equal | ComparisonOperator::NotEqual
+                    ) {
+                        return Err(
+                            "atoms only support equality comparisons ('=' and '!=')".to_string()
+                        );
+                    }
+                    if left_type != right_type {
+                        return Err(format!(
+                            "cannot compare distinct atom types: {:?} and {:?}",
+                            left_type, right_type
+                        ));
+                    }
+                    return Ok(Type::Bool);
+                }
 
                 if left_type != right_type {
                     return Err(format!(
@@ -663,44 +701,36 @@ impl Checker {
                 );
             }
 
-            Statement::Assign {
-                expression,
-                targets,
-            } => {
+            Statement::Assign { expression, target } => {
                 let expr_ty = self.type_of_expression(expression)?;
-                let mut current_ty = expr_ty;
 
-                for target in targets {
-                    if let Some(info) = self.lookup_binding(target) {
-                        if !info.is_mutable {
-                            return Err(format!(
-                                "cannot reassign to immutable constant '{}'",
-                                target
-                            ));
-                        }
-
-                        if current_ty != info.ty {
-                            return Err(format!(
-                                "type mismatch assigning to '{}': expected {:?}, found {:?}",
-                                target, info.ty, current_ty
-                            ));
-                        }
-
-                        if let Some(info_mut) = self.lookup_binding_mut(target) {
-                            info_mut.is_initialized = true;
-                        }
-                    } else {
-                        self.scopes.last_mut().unwrap().insert(
-                            target.clone(),
-                            BindingInfo {
-                                ty: current_ty.clone(),
-                                is_mutable: false,
-                                is_initialized: true,
-                            },
-                        );
+                if let Some(info) = self.lookup_binding(target) {
+                    if !info.is_mutable {
+                        return Err(format!(
+                            "cannot reassign to immutable constant '{}'",
+                            target
+                        ));
                     }
 
-                    current_ty = self.lookup_binding(target).unwrap().ty;
+                    if expr_ty != info.ty {
+                        return Err(format!(
+                            "type mismatch assigning to '{}': expected {:?}, found {:?}",
+                            target, info.ty, expr_ty
+                        ));
+                    }
+
+                    if let Some(info_mut) = self.lookup_binding_mut(target) {
+                        info_mut.is_initialized = true;
+                    }
+                } else {
+                    self.scopes.last_mut().unwrap().insert(
+                        target.clone(),
+                        BindingInfo {
+                            ty: expr_ty,
+                            is_mutable: false,
+                            is_initialized: true,
+                        },
+                    );
                 }
             }
 
@@ -763,14 +793,11 @@ impl Checker {
                 ty: ty.clone(),
             }),
 
-            Statement::Assign {
-                expression,
-                targets,
-            } => {
+            Statement::Assign { expression, target } => {
                 let resolved_expr = self.resolve_expression(expression)?;
                 Ok(Statement::Assign {
                     expression: resolved_expr,
-                    targets: targets.clone(),
+                    target: target.clone(),
                 })
             }
 
@@ -789,6 +816,10 @@ impl Checker {
         match expression {
             Expression::Integer(value) => Ok(Expression::Integer(*value)),
             Expression::Boolean(value) => Ok(Expression::Boolean(*value)),
+            Expression::Atom(name) => {
+                self.intern_atom(name);
+                Ok(Expression::Atom(name.clone()))
+            }
             Expression::String(value) => Ok(Expression::String(value.clone())),
             Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
 
@@ -810,7 +841,7 @@ impl Checker {
                         IfCondition::Expression(expr) => {
                             IfCondition::Expression(self.resolve_expression(expr)?)
                         }
-                        IfCondition::Wildcard => IfCondition::Wildcard,
+                        IfCondition::Else => IfCondition::Else,
                     };
                     let body = Box::new(self.resolve_expression(&arm.body)?);
                     resolved_arms.push(IfArm { condition, body });
@@ -923,6 +954,11 @@ impl Checker {
     pub fn is_supported_cast(source: &Type, target: &Type) -> bool {
         if source == target {
             return true;
+        }
+
+        // Atoms cannot be cast to or from other types (strongly typed singleton)
+        if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
+            return false;
         }
 
         if (*source == Type::Bool && Self::is_integer_type(target))

@@ -3,7 +3,7 @@ do to s32
         if
                 5 > 5 => 42
                 6 = 7 => 56
-                _ => 8
+                else => 8
         end -> x
 
         print_s32(x)

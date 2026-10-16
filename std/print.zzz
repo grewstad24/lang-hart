@@ -1,15 +1,15 @@
 @extern printf
-(ptr: *u8)++ to s32
+(ptr :: *u8)++ to s32
 
 @fn print_string
-do (s: []u8) to s32
+do (s :: []u8) to s32
         printf ("%s"^, s^)
         pr_nl()
         return 0
 done
 
 @fn print_s32
-do (num: s32) to s32
+do (num :: s32) to s32
         return printf ("%d"^, num)
 done
 

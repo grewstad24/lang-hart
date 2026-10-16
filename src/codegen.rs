@@ -28,6 +28,11 @@ enum Binding<'ctx> {
         value: IntValue<'ctx>,
     },
 
+    Atom {
+        name: String,
+        value: IntValue<'ctx>,
+    },
+
     Array {
         ty: Type,
         value: ArrayValue<'ctx>,
@@ -63,6 +68,7 @@ pub struct Codegen<'ctx> {
 
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
     extern_functions: HashMap<String, Signature>,
+    atom_table: HashMap<String, u32>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -78,6 +84,7 @@ impl<'ctx> Codegen<'ctx> {
 
             local_scopes: Vec::new(),
             extern_functions: HashMap::new(),
+            atom_table: HashMap::new(),
 
             string_counter: 0,
             branch_counter: 0,
@@ -103,6 +110,16 @@ impl<'ctx> Codegen<'ctx> {
                 .insert(external.name.clone(), external.signature.clone());
         }
         Ok(())
+    }
+
+    fn get_atom_id(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.atom_table.get(name) {
+            id
+        } else {
+            let id = self.atom_table.len() as u32;
+            self.atom_table.insert(name.to_string(), id);
+            id
+        }
     }
 
     fn get_stacksave_intrinsic(&self) -> FunctionValue<'ctx> {
@@ -398,46 +415,34 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(())
             }
 
-            Statement::Assign {
-                expression,
-                targets,
-            } => {
-                let mut current_binding = self.codegen_expression(expression)?;
+            Statement::Assign { expression, target } => {
+                let current_binding = self.codegen_expression(expression)?;
 
-                for target in targets {
-                    let local = if let Some(existing) = self.lookup_local(target) {
-                        existing
-                    } else {
-                        let ty = self.binding_type(&current_binding)?;
-                        let llvm_ty = self.llvm_type(&ty)?;
-                        let alloca = self
-                            .builder
-                            .build_alloca(llvm_ty, target)
-                            .map_err(|e| e.to_string())?;
-
-                        let new_local = LocalVar {
-                            ty: ty.clone(),
-                            alloca,
-                        };
-                        self.local_scopes
-                            .last_mut()
-                            .unwrap()
-                            .insert(target.clone(), new_local.clone());
-                        new_local
-                    };
-
-                    let value = self.binding_basic_value(&current_binding)?;
-                    self.builder
-                        .build_store(local.alloca, value)
-                        .map_err(|e| e.to_string())?;
-
-                    let loaded = self
+                let local = if let Some(existing) = self.lookup_local(target) {
+                    existing
+                } else {
+                    let ty = self.binding_type(&current_binding)?;
+                    let llvm_ty = self.llvm_type(&ty)?;
+                    let alloca = self
                         .builder
-                        .build_load(self.llvm_type(&local.ty)?, local.alloca, "assign_prop")
+                        .build_alloca(llvm_ty, target)
                         .map_err(|e| e.to_string())?;
 
-                    current_binding = self.binding_from_basic_value(&local.ty, loaded)?;
-                }
+                    let new_local = LocalVar {
+                        ty: ty.clone(),
+                        alloca,
+                    };
+                    self.local_scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(target.clone(), new_local.clone());
+                    new_local
+                };
+
+                let value = self.binding_basic_value(&current_binding)?;
+                self.builder
+                    .build_store(local.alloca, value)
+                    .map_err(|e| e.to_string())?;
 
                 Ok(())
             }
@@ -467,6 +472,15 @@ impl<'ctx> Codegen<'ctx> {
                     .bool_type()
                     .const_int(if *value { 1 } else { 0 }, false),
             }),
+
+            Expression::Atom(name) => {
+                let id = self.get_atom_id(name);
+                let value = self.context.i32_type().const_int(id as u64, false);
+                Ok(Binding::Atom {
+                    name: name.clone(),
+                    value,
+                })
+            }
 
             Expression::String(value) => self.codegen_string_literal(value),
 
@@ -640,7 +654,7 @@ impl<'ctx> Codegen<'ctx> {
                     next_test_bb = false_bb;
                 }
 
-                IfCondition::Wildcard => {
+                IfCondition::Else => {
                     let body_binding = self.codegen_expression(&arm.body)?;
 
                     if result_type.is_none() {
@@ -850,6 +864,18 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         let array_value = match &element_type {
+            Type::Atom(_) => {
+                let values = bindings
+                    .iter()
+                    .map(|b| match b {
+                        Binding::Atom { value, .. } => Ok(*value),
+                        _ => Err("expected atom element".to_string()),
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                self.context.i32_type().const_array(&values)
+            }
+
             Type::S16
             | Type::S32
             | Type::S64
@@ -1004,8 +1030,13 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        let left_value = self.binding_int_value(left)?;
-        let right_value = self.binding_int_value(right)?;
+        let (left_value, right_value) = match (left, right) {
+            (Binding::Atom { value: v1, .. }, Binding::Atom { value: v2, .. }) => (*v1, *v2),
+            _ => (
+                self.binding_int_value(left)?,
+                self.binding_int_value(right)?,
+            ),
+        };
 
         let predicate = match operator {
             ComparisonOperator::Equal => IntPredicate::EQ,
@@ -1495,6 +1526,11 @@ impl<'ctx> Codegen<'ctx> {
         match ty {
             Type::Void => Ok(Binding::Void),
 
+            Type::Atom(name) => Ok(Binding::Atom {
+                name: name.clone(),
+                value: value.into_int_value(),
+            }),
+
             Type::Bool => Ok(Binding::Boolean {
                 value: value.into_int_value(),
             }),
@@ -1533,6 +1569,7 @@ impl<'ctx> Codegen<'ctx> {
     fn binding_type(&self, binding: &Binding<'ctx>) -> Result<Type, String> {
         match binding {
             Binding::Void => Ok(Type::Void),
+            Binding::Atom { name, .. } => Ok(Type::Atom(name.clone())),
             Binding::Integer { ty, .. } => Ok(ty.clone()),
             Binding::Boolean { .. } => Ok(Type::Bool),
             Binding::Array { ty, .. } => Ok(ty.clone()),
@@ -1551,6 +1588,7 @@ impl<'ctx> Codegen<'ctx> {
     fn binding_basic_value(&self, binding: &Binding<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         match binding {
             Binding::Void => Err("cannot treat void as a basic value".to_string()),
+            Binding::Atom { value, .. } => Ok((*value).into()),
             Binding::Integer { value, .. } => Ok((*value).into()),
             Binding::Boolean { value } => Ok((*value).into()),
             Binding::Array { value, .. } => Ok((*value).into()),
@@ -1588,6 +1626,7 @@ impl<'ctx> Codegen<'ctx> {
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void type is not a basic type in LLVM".to_string()),
+            Type::Atom(_) => Ok(self.context.i32_type().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
@@ -1609,6 +1648,7 @@ impl<'ctx> Codegen<'ctx> {
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void has no zero value".to_string()),
+            Type::Atom(_) => Ok(self.context.i32_type().const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),

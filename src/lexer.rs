@@ -9,6 +9,7 @@ pub enum Token {
 
     If,
     DoIf,
+    Else,
     End,
 
     Return,
@@ -25,6 +26,7 @@ pub enum Token {
     TypeU64,
     TypeBool,
 
+    Atom(String),
     Identifier(String),
     Integer(i64),
     Boolean(bool),
@@ -48,9 +50,8 @@ pub enum Token {
 
     Arrow,
     FatArrow,
-    Underscore,
 
-    Colon,
+    ColonColon,
     Comma,
     Dot,
     Pipe,
@@ -221,8 +222,21 @@ impl Lexer {
                 }
 
                 ':' => {
-                    self.position += 1;
-                    tokens.push(Token::Colon);
+                    if self.peek_char(1) == Some(':') {
+                        self.position += 2;
+                        tokens.push(Token::ColonColon);
+                    } else if let Some(c) = self.peek_char(1) {
+                        if c.is_alphabetic() || c == '_' {
+                            tokens.push(self.lex_atom()?);
+                        } else {
+                            return Err(format!(
+                                "expected atom identifier after ':', found '{}'",
+                                c
+                            ));
+                        }
+                    } else {
+                        return Err("unexpected ':' at end of file".to_string());
+                    }
                 }
 
                 ',' => {
@@ -300,6 +314,28 @@ impl Lexer {
         Ok(Token::Integer(value))
     }
 
+    fn lex_atom(&mut self) -> Result<Token, String> {
+        debug_assert_eq!(self.chars[self.position], ':');
+        self.position += 1; // consume ':'
+
+        let start = self.position;
+        while self.position < self.chars.len() {
+            match self.chars[self.position] {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => {
+                    self.position += 1;
+                }
+                _ => break,
+            }
+        }
+
+        let name: String = self.chars[start..self.position].iter().collect();
+        if name.is_empty() {
+            return Err("atom identifier cannot be empty".to_string());
+        }
+
+        Ok(Token::Atom(name))
+    }
+
     fn lex_identifier(&mut self) -> Token {
         let start = self.position;
 
@@ -315,7 +351,6 @@ impl Lexer {
         let text: String = self.chars[start..self.position].iter().collect();
 
         match text.as_str() {
-            "_" => Token::Underscore,
             "var" => Token::Var,
 
             "do" => Token::Do,
@@ -323,6 +358,7 @@ impl Lexer {
 
             "if" => Token::If,
             "doif" => Token::DoIf,
+            "else" => Token::Else,
             "end" => Token::End,
 
             "return" => Token::Return,
