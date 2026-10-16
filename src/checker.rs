@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     ConditionalBranch, Definition, Expression, ExternalFunction, Parameter, Program, Signature,
-    Statement, Type, TypeExpression,
+    Statement, Type,
 };
 
 #[derive(Debug, Clone)]
@@ -168,7 +168,7 @@ impl Checker {
 
         if !self.resolving_extern_functions.insert(name.to_string()) {
             return Err(format!(
-                "cyclic type expression involving external function '{}'",
+                "cyclic dependency involving external function '{}'",
                 name
             ));
         }
@@ -186,8 +186,7 @@ impl Checker {
                         p.name, name
                     ));
                 }
-                let param_type = self.resolve_type_expression(&p.ty)?;
-                if param_type == Type::Void {
+                if p.ty == Type::Void {
                     return Err(format!(
                         "parameter '{}' in extern function '{}' cannot be void",
                         p.name, name
@@ -195,17 +194,13 @@ impl Checker {
                 }
                 parameters.push(Parameter {
                     name: p.name.clone(),
-                    ty: TypeExpression::Concrete(param_type),
+                    ty: p.ty.clone(),
                 });
             }
 
-            let return_type = Box::new(TypeExpression::Concrete(
-                self.resolve_type_expression(&raw.return_type)?,
-            ));
-
             Ok(Signature {
                 parameters,
-                return_type,
+                return_type: raw.return_type.clone(),
                 is_variadic: raw.is_variadic,
             })
         })();
@@ -242,16 +237,6 @@ impl Checker {
         self.resolved_definitions
             .insert(name.to_string(), ty.clone());
         Ok(ty)
-    }
-
-    fn resolve_type_expression(
-        &mut self,
-        type_expression: &TypeExpression,
-    ) -> Result<Type, String> {
-        match type_expression {
-            TypeExpression::Concrete(ty) => Ok(ty.clone()),
-            TypeExpression::Of(expression) => self.type_of_expression(expression),
-        }
     }
 
     fn lookup_binding(&self, name: &str) -> Option<BindingInfo> {
@@ -294,16 +279,11 @@ impl Checker {
                     };
                 }
                 if let Some(ext) = self.extern_functions.get(name).cloned() {
-                    let param_types = ext
-                        .parameters
-                        .iter()
-                        .map(|p| self.resolve_type_expression(&p.ty))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let ret = self.resolve_type_expression(&ext.return_type)?;
+                    let param_types = ext.parameters.iter().map(|p| p.ty.clone()).collect();
                     return Ok(Type::Pointer {
                         element: Box::new(Type::Function {
                             parameters: param_types,
-                            return_type: Box::new(ret),
+                            return_type: ext.return_type.clone(),
                             is_variadic: ext.is_variadic,
                         }),
                     });
@@ -322,16 +302,14 @@ impl Checker {
                             p.name
                         ));
                     }
-                    let p_ty = self.resolve_type_expression(&p.ty)?;
-                    if p_ty == Type::Void {
+                    if p.ty == Type::Void {
                         return Err(format!("parameter '{}' cannot be void", p.name));
                     }
-                    param_types.push(p_ty);
+                    param_types.push(p.ty.clone());
                 }
-                let ret = self.resolve_type_expression(&sig.return_type)?;
                 Ok(Type::Function {
                     parameters: param_types,
-                    return_type: Box::new(ret),
+                    return_type: sig.return_type.clone(),
                     is_variadic: sig.is_variadic,
                 })
             }
@@ -350,22 +328,21 @@ impl Checker {
                             self.scopes.pop();
                             return Err(format!("duplicate parameter name '{}' in block", p.name));
                         }
-                        let p_ty = self.resolve_type_expression(&p.ty)?;
-                        if p_ty == Type::Void {
+                        if p.ty == Type::Void {
                             self.scopes.pop();
                             return Err(format!("block parameter '{}' cannot be void", p.name));
                         }
                         self.scopes.last_mut().unwrap().insert(
                             p.name.clone(),
                             BindingInfo {
-                                ty: p_ty.clone(),
+                                ty: p.ty.clone(),
                                 is_mutable: false,
                                 is_initialized: true,
                             },
                         );
-                        param_types.push(p_ty);
+                        param_types.push(p.ty.clone());
                     }
-                    expected_return = self.resolve_type_expression(&sig.return_type)?;
+                    expected_return = *sig.return_type.clone();
                     is_variadic = sig.is_variadic;
                 }
 
@@ -400,10 +377,6 @@ impl Checker {
                     element: Box::new(element_type),
                     size: elements.len(),
                 })
-            }
-
-            Expression::TypeOf(_) => {
-                Err("type expression cannot be used as a runtime value".to_string())
             }
 
             Expression::Unary { operator, operand } => {
@@ -458,16 +431,15 @@ impl Checker {
 
             Expression::Cast { expression, ty } => {
                 let source_type = self.type_of_expression(expression)?;
-                let target_type = self.resolve_type_expression(ty)?;
 
-                if !Self::is_supported_cast(&source_type, &target_type) {
+                if !Self::is_supported_cast(&source_type, ty) {
                     return Err(format!(
                         "unsupported cast from {:?} to {:?}",
-                        source_type, target_type
+                        source_type, ty
                     ));
                 }
 
-                Ok(target_type)
+                Ok(ty.clone())
             }
 
             Expression::Call { target, arguments } => {
@@ -609,8 +581,7 @@ impl Checker {
                     name,
                     ty,
                 } => {
-                    let concrete_ty = self.resolve_type_expression(ty)?;
-                    if concrete_ty == Type::Void {
+                    if *ty == Type::Void {
                         return Err(format!(
                             "variable '{}' cannot be declared with type void",
                             name
@@ -625,7 +596,7 @@ impl Checker {
                     self.scopes.last_mut().unwrap().insert(
                         name.clone(),
                         BindingInfo {
-                            ty: concrete_ty,
+                            ty: ty.clone(),
                             is_mutable: *is_mutable,
                             is_initialized: false,
                         },
@@ -737,14 +708,11 @@ impl Checker {
                 is_mutable,
                 name,
                 ty,
-            } => {
-                let resolved_ty = self.resolve_type_expression(ty)?;
-                Ok(Statement::Declare {
-                    is_mutable: *is_mutable,
-                    name: name.clone(),
-                    ty: TypeExpression::Concrete(resolved_ty),
-                })
-            }
+            } => Ok(Statement::Declare {
+                is_mutable: *is_mutable,
+                name: name.clone(),
+                ty: ty.clone(),
+            }),
 
             Statement::Assign {
                 expression,
@@ -806,47 +774,13 @@ impl Checker {
             Expression::String(value) => Ok(Expression::String(value.clone())),
             Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
 
-            Expression::Signature(sig) => {
-                let mut resolved_params = Vec::new();
-                for p in &sig.parameters {
-                    let ty = self.resolve_type_expression(&p.ty)?;
-                    resolved_params.push(Parameter {
-                        name: p.name.clone(),
-                        ty: TypeExpression::Concrete(ty),
-                    });
-                }
-                let ret_ty = self.resolve_type_expression(&sig.return_type)?;
-                Ok(Expression::Signature(Signature {
-                    parameters: resolved_params,
-                    return_type: Box::new(TypeExpression::Concrete(ret_ty)),
-                    is_variadic: sig.is_variadic,
-                }))
-            }
+            Expression::Signature(sig) => Ok(Expression::Signature(sig.clone())),
 
             Expression::Block { signature, body } => {
-                let resolved_sig = if let Some(sig) = signature {
-                    let mut resolved_params = Vec::new();
-                    for p in &sig.parameters {
-                        let ty = self.resolve_type_expression(&p.ty)?;
-                        resolved_params.push(Parameter {
-                            name: p.name.clone(),
-                            ty: TypeExpression::Concrete(ty),
-                        });
-                    }
-                    let ret_ty = self.resolve_type_expression(&sig.return_type)?;
-                    Some(Signature {
-                        parameters: resolved_params,
-                        return_type: Box::new(TypeExpression::Concrete(ret_ty)),
-                        is_variadic: sig.is_variadic,
-                    })
-                } else {
-                    None
-                };
-
                 let resolved_body = self.resolve_statements(body)?;
 
                 Ok(Expression::Block {
-                    signature: resolved_sig,
+                    signature: signature.clone(),
                     body: resolved_body,
                 })
             }
@@ -857,10 +791,6 @@ impl Checker {
                     .map(|element| self.resolve_expression(element))
                     .collect::<Result<Vec<_>, _>>()?,
             )),
-
-            Expression::TypeOf(_) => {
-                Err("type expression cannot be used as a runtime value".to_string())
-            }
 
             Expression::Unary { operator, operand } => {
                 let resolved_operand = self.resolve_expression(operand)?;
@@ -900,10 +830,9 @@ impl Checker {
 
             Expression::Cast { expression, ty } => {
                 let resolved_expression = self.resolve_expression(expression)?;
-                let resolved_type = self.resolve_type_expression(ty)?;
                 Ok(Expression::Cast {
                     expression: Box::new(resolved_expression),
-                    ty: TypeExpression::Concrete(resolved_type),
+                    ty: ty.clone(),
                 })
             }
 
@@ -945,15 +874,6 @@ impl Checker {
             Expression::Decay(expression) => {
                 let resolved_expression = self.resolve_expression(expression)?;
                 Ok(Expression::Decay(Box::new(resolved_expression)))
-            }
-        }
-    }
-
-    pub fn concrete_type(type_expression: &TypeExpression) -> Result<Type, String> {
-        match type_expression {
-            TypeExpression::Concrete(ty) => Ok(ty.clone()),
-            TypeExpression::Of(_) => {
-                Err("unresolved type expression reached code generation".to_string())
             }
         }
     }

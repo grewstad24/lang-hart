@@ -1,7 +1,6 @@
 use crate::ast::{
     BinaryOperator, ComparisonOperator, ConditionalBranch, Definition, Expression,
-    ExternalFunction, Parameter, Program, Signature, Statement, Type, TypeExpression,
-    UnaryOperator,
+    ExternalFunction, Parameter, Program, Signature, Statement, Type, UnaryOperator,
 };
 use crate::lexer::Token;
 
@@ -105,7 +104,7 @@ impl Parser {
             loop {
                 let name = self.expect_identifier()?;
                 self.expect(Token::Colon)?;
-                let ty = self.parse_type_expression()?;
+                let ty = self.parse_type()?;
 
                 parameters.push(Parameter { name, ty });
 
@@ -128,9 +127,9 @@ impl Parser {
 
         let return_type = if self.is(Token::To) {
             self.advance();
-            self.parse_type_expression()?
+            self.parse_type()?
         } else {
-            TypeExpression::Concrete(Type::Void)
+            Type::Void
         };
 
         Ok(Signature {
@@ -147,7 +146,7 @@ impl Parser {
             Some(self.parse_signature()?)
         } else if self.is(Token::To) {
             self.advance();
-            let return_type = self.parse_type_expression()?;
+            let return_type = self.parse_type()?;
             Some(Signature {
                 parameters: Vec::new(),
                 return_type: Box::new(return_type),
@@ -189,7 +188,7 @@ impl Parser {
                 self.advance();
                 let name = self.expect_identifier()?;
                 self.expect(Token::Colon)?;
-                let ty = self.parse_type_expression()?;
+                let ty = self.parse_type()?;
                 self.consume_optional_newline();
                 Ok(Statement::Declare {
                     is_mutable: false,
@@ -202,7 +201,7 @@ impl Parser {
                 self.advance();
                 let name = self.expect_identifier()?;
                 self.expect(Token::Colon)?;
-                let ty = self.parse_type_expression()?;
+                let ty = self.parse_type()?;
                 self.consume_optional_newline();
                 Ok(Statement::Declare {
                     is_mutable: true,
@@ -470,7 +469,7 @@ impl Parser {
 
                 Token::As => {
                     self.advance();
-                    let ty = self.parse_type_expression()?;
+                    let ty = self.parse_type()?;
                     expression = Expression::Cast {
                         expression: Box::new(expression),
                         ty,
@@ -501,12 +500,6 @@ impl Parser {
             Token::String(value) => {
                 self.advance();
                 Ok(Expression::String(value))
-            }
-
-            Token::Hash => {
-                self.advance();
-                let expression = self.parse_expression()?;
-                Ok(Expression::TypeOf(Box::new(expression)))
             }
 
             Token::Identifier(name) => {
@@ -571,17 +564,7 @@ impl Parser {
         }
     }
 
-    fn parse_type_expression(&mut self) -> Result<TypeExpression, String> {
-        if self.is(Token::Hash) {
-            self.advance();
-            let expression = self.parse_expression()?;
-            Ok(TypeExpression::Of(Box::new(expression)))
-        } else {
-            Ok(TypeExpression::Concrete(self.parse_concrete_type()?))
-        }
-    }
-
-    fn parse_concrete_type(&mut self) -> Result<Type, String> {
+    fn parse_type(&mut self) -> Result<Type, String> {
         match self.peek() {
             Token::TypeS16 => {
                 self.advance();
@@ -617,7 +600,7 @@ impl Parser {
             }
             Token::Star => {
                 self.advance();
-                let element = self.parse_concrete_type()?;
+                let element = self.parse_type()?;
                 Ok(Type::Pointer {
                     element: Box::new(element),
                 })
@@ -626,7 +609,7 @@ impl Parser {
                 self.advance();
                 if self.is(Token::RBracket) {
                     self.advance();
-                    let element = self.parse_concrete_type()?;
+                    let element = self.parse_type()?;
                     return Ok(Type::Slice {
                         element: Box::new(element),
                     });
@@ -641,7 +624,7 @@ impl Parser {
                 };
 
                 self.expect(Token::RBracket)?;
-                let element = self.parse_concrete_type()?;
+                let element = self.parse_type()?;
                 Ok(Type::Array {
                     element: Box::new(element),
                     size,
@@ -649,26 +632,8 @@ impl Parser {
             }
             Token::LParen => {
                 let sig = self.parse_signature()?;
-                let mut param_types = Vec::new();
-                for param in sig.parameters {
-                    match param.ty {
-                        TypeExpression::Concrete(t) => param_types.push(t),
-                        TypeExpression::Of(_) => {
-                            return Err(
-                                "type-of expressions in function signatures are unsupported"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                }
-
-                let return_type = match *sig.return_type {
-                    TypeExpression::Concrete(t) => t,
-                    TypeExpression::Of(_) => {
-                        return Err("type-of expressions in function signatures are unsupported"
-                            .to_string());
-                    }
-                };
+                let param_types = sig.parameters.into_iter().map(|p| p.ty).collect();
+                let return_type = *sig.return_type;
 
                 Ok(Type::Function {
                     parameters: param_types,

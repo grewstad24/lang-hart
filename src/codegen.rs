@@ -161,15 +161,14 @@ impl<'ctx> Codegen<'ctx> {
                 .parameters
                 .iter()
                 .map(|param| {
-                    let ty = Checker::concrete_type(&param.ty)?;
-                    let llvm_ty = self.llvm_type(&ty)?;
+                    let llvm_ty = self.llvm_type(&param.ty)?;
                     Ok(llvm_ty.into())
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            let ret_type = Checker::concrete_type(&external.signature.return_type)?;
+            let ret_type = &external.signature.return_type;
 
-            let fn_type = match self.llvm_type(&ret_type) {
+            let fn_type = match self.llvm_type(ret_type) {
                 Ok(basic_ty) => basic_ty.fn_type(&param_types, external.signature.is_variadic),
                 Err(_) => self
                     .context
@@ -222,21 +221,20 @@ impl<'ctx> Codegen<'ctx> {
                 .parameters
                 .iter()
                 .map(|p| {
-                    let ty = Checker::concrete_type(&p.ty)?;
-                    let llvm_ty = self.llvm_type(&ty)?;
+                    let llvm_ty = self.llvm_type(&p.ty)?;
                     Ok(BasicMetadataTypeEnum::from(llvm_ty))
                 })
                 .collect::<Result<Vec<_>, String>>()?;
 
-            let ret_type = Checker::concrete_type(&sig.return_type)?;
-            if ret_type == Type::Void {
+            let ret_type = &sig.return_type;
+            if **ret_type == Type::Void {
                 Ok(self
                     .context
                     .void_type()
                     .fn_type(&param_types, sig.is_variadic))
             } else {
                 Ok(self
-                    .llvm_type(&ret_type)?
+                    .llvm_type(ret_type)?
                     .fn_type(&param_types, sig.is_variadic))
             }
         } else {
@@ -269,8 +267,8 @@ impl<'ctx> Codegen<'ctx> {
 
         if let Some(sig) = signature {
             for (index, parameter) in sig.parameters.iter().enumerate() {
-                let ty = Checker::concrete_type(&parameter.ty)?;
-                let llvm_ty = self.llvm_type(&ty)?;
+                let ty = &parameter.ty;
+                let llvm_ty = self.llvm_type(ty)?;
                 let param_val = llvm_function
                     .get_nth_param(index as u32)
                     .ok_or_else(|| format!("missing parameter {}", index))?;
@@ -284,10 +282,13 @@ impl<'ctx> Codegen<'ctx> {
                     .build_store(alloca, param_val)
                     .map_err(|e| e.to_string())?;
 
-                self.local_scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert(parameter.name.clone(), LocalVar { ty, alloca });
+                self.local_scopes.last_mut().unwrap().insert(
+                    parameter.name.clone(),
+                    LocalVar {
+                        ty: ty.clone(),
+                        alloca,
+                    },
+                );
             }
         }
 
@@ -295,7 +296,7 @@ impl<'ctx> Codegen<'ctx> {
 
         if !self.has_terminator(llvm_function) {
             let ret_ty = if let Some(sig) = signature {
-                Checker::concrete_type(&sig.return_type)?
+                (*sig.return_type).clone()
             } else {
                 Type::Void
             };
@@ -367,8 +368,7 @@ impl<'ctx> Codegen<'ctx> {
     fn codegen_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
             Statement::Declare { name, ty, .. } => {
-                let concrete_ty = Checker::concrete_type(ty)?;
-                let llvm_ty = self.llvm_type(&concrete_ty)?;
+                let llvm_ty = self.llvm_type(ty)?;
 
                 let alloca = self
                     .builder
@@ -378,7 +378,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.local_scopes.last_mut().unwrap().insert(
                     name.clone(),
                     LocalVar {
-                        ty: concrete_ty,
+                        ty: ty.clone(),
                         alloca,
                     },
                 );
@@ -596,10 +596,6 @@ impl<'ctx> Codegen<'ctx> {
 
             Expression::Array(elements) => self.codegen_array_literal(elements),
 
-            Expression::TypeOf(_) => {
-                Err("type expression cannot be used as a runtime value".to_string())
-            }
-
             Expression::Unary { operator, operand } => {
                 let operand = self.codegen_expression(operand)?;
                 self.codegen_unary(operator.clone(), &operand)
@@ -627,8 +623,7 @@ impl<'ctx> Codegen<'ctx> {
 
             Expression::Cast { expression, ty } => {
                 let value = self.codegen_expression(expression)?;
-                let target_type = Checker::concrete_type(ty)?;
-                self.codegen_cast(value, target_type)
+                self.codegen_cast(value, ty.clone())
             }
 
             Expression::Call { target, arguments } => self.codegen_call(target, arguments),
@@ -1107,7 +1102,7 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Identifier(name) => {
                 if let Some(func) = self.module.get_function(name) {
                     let return_type = if let Some(sig) = self.extern_functions.get(name) {
-                        Checker::concrete_type(&sig.return_type)?
+                        (*sig.return_type).clone()
                     } else {
                         match func.get_type().get_return_type() {
                             Some(_) => Type::S32,

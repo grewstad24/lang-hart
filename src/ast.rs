@@ -27,21 +27,15 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum TypeExpression {
-    Concrete(Type),
-    Of(Box<Expression>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
-    pub ty: TypeExpression,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Signature {
     pub parameters: Vec<Parameter>,
-    pub return_type: Box<TypeExpression>,
+    pub return_type: Box<Type>,
     pub is_variadic: bool,
 }
 
@@ -75,7 +69,7 @@ pub enum Statement {
     Declare {
         is_mutable: bool,
         name: String,
-        ty: TypeExpression,
+        ty: Type,
     },
     Assign {
         expression: Expression,
@@ -97,7 +91,6 @@ pub enum Expression {
     String(Vec<u8>),
     Identifier(String),
     Array(Vec<Expression>),
-    TypeOf(Box<Expression>),
     Signature(Signature),
     Block {
         signature: Option<Signature>,
@@ -119,7 +112,7 @@ pub enum Expression {
     },
     Cast {
         expression: Box<Expression>,
-        ty: TypeExpression,
+        ty: Type,
     },
     Call {
         target: Box<Expression>,

@@ -39,7 +39,6 @@ pub enum Token {
     Slash,
     Percent,
     Ampersand,
-    Hash,
     Caret,
 
     Equal,
@@ -153,11 +152,6 @@ impl Lexer {
                 '&' => {
                     self.position += 1;
                     tokens.push(Token::Ampersand);
-                }
-
-                '#' => {
-                    self.position += 1;
-                    tokens.push(Token::Hash);
                 }
 
                 '^' => {
