@@ -380,7 +380,7 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(())
             }
 
-            Statement::Declare { name, ty, .. } => {
+            Statement::Declare { name, ty } => {
                 let llvm_ty = self.llvm_type(ty)?;
 
                 let alloca = self
@@ -405,9 +405,26 @@ impl<'ctx> Codegen<'ctx> {
                 let mut current_binding = self.codegen_expression(expression)?;
 
                 for target in targets {
-                    let local = self
-                        .lookup_local(target)
-                        .ok_or_else(|| format!("unknown local variable '{}'", target))?;
+                    let local = if let Some(existing) = self.lookup_local(target) {
+                        existing
+                    } else {
+                        let ty = self.binding_type(&current_binding)?;
+                        let llvm_ty = self.llvm_type(&ty)?;
+                        let alloca = self
+                            .builder
+                            .build_alloca(llvm_ty, target)
+                            .map_err(|e| e.to_string())?;
+
+                        let new_local = LocalVar {
+                            ty: ty.clone(),
+                            alloca,
+                        };
+                        self.local_scopes
+                            .last_mut()
+                            .unwrap()
+                            .insert(target.clone(), new_local.clone());
+                        new_local
+                    };
 
                     let value = self.binding_basic_value(&current_binding)?;
                     self.builder
@@ -434,94 +451,7 @@ impl<'ctx> Codegen<'ctx> {
                 let binding = self.codegen_expression(expression)?;
                 self.build_return(&binding)
             }
-
-            Statement::If { arms } => self.codegen_doif_statement(arms),
         }
-    }
-
-    fn codegen_doif_statement(&mut self, arms: &[IfArm]) -> Result<(), String> {
-        let current_block = self
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| "cannot generate doif outside basic block".to_string())?;
-
-        let current_fn = current_block
-            .get_parent()
-            .ok_or_else(|| "current block has no parent function".to_string())?;
-
-        let id = self.branch_counter;
-        self.branch_counter += 1;
-
-        let end_bb = self
-            .context
-            .append_basic_block(current_fn, &format!("doif.end.{}", id));
-
-        let first_arm_bb = self
-            .context
-            .append_basic_block(current_fn, &format!("doif.arm.0.{}", id));
-
-        self.builder
-            .build_unconditional_branch(first_arm_bb)
-            .map_err(|e| e.to_string())?;
-
-        let mut next_arm_bb = first_arm_bb;
-
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.position_at_end(next_arm_bb);
-
-            match &arm.condition {
-                IfCondition::Expression(cond_expr) => {
-                    let cond_binding = self.codegen_expression(cond_expr)?;
-                    let cond_val = match cond_binding {
-                        Binding::Boolean { value } => value,
-                        _ => return Err("doif condition must evaluate to a boolean".to_string()),
-                    };
-
-                    let then_bb = self
-                        .context
-                        .append_basic_block(current_fn, &format!("doif.then.{}.{}", i, id));
-
-                    let false_bb = if i + 1 < arms.len() {
-                        self.context
-                            .append_basic_block(current_fn, &format!("doif.arm.{}.{}", i + 1, id))
-                    } else {
-                        end_bb
-                    };
-
-                    self.builder
-                        .build_conditional_branch(cond_val, then_bb, false_bb)
-                        .map_err(|e| e.to_string())?;
-
-                    self.builder.position_at_end(then_bb);
-                    self.codegen_statement(&arm.body)?;
-
-                    if let Some(insert_bb) = self.builder.get_insert_block() {
-                        if insert_bb.get_terminator().is_none() {
-                            self.builder
-                                .build_unconditional_branch(end_bb)
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-
-                    next_arm_bb = false_bb;
-                }
-
-                IfCondition::Wildcard => {
-                    self.codegen_statement(&arm.body)?;
-
-                    if let Some(insert_bb) = self.builder.get_insert_block() {
-                        if insert_bb.get_terminator().is_none() {
-                            self.builder
-                                .build_unconditional_branch(end_bb)
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-            }
-        }
-
-        self.builder.position_at_end(end_bb);
-        Ok(())
     }
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
@@ -585,6 +515,8 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(Binding::Function { value: function })
             }
 
+            Expression::If { arms } => self.codegen_if_expression(arms),
+
             Expression::Array(elements) => self.codegen_array_literal(elements),
 
             Expression::Unary { operator, operand } => {
@@ -626,6 +558,132 @@ impl<'ctx> Codegen<'ctx> {
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
 
             Expression::Decay(expression) => self.codegen_decay(expression),
+        }
+    }
+
+    fn codegen_if_expression(&mut self, arms: &[IfArm]) -> Result<Binding<'ctx>, String> {
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "cannot generate if outside basic block".to_string())?;
+
+        let current_fn = current_block
+            .get_parent()
+            .ok_or_else(|| "current block has no parent function".to_string())?;
+
+        let id = self.branch_counter;
+        self.branch_counter += 1;
+
+        let merge_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("if.merge.{}", id));
+
+        let first_test_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("if.arm.0.{}", id));
+
+        self.builder
+            .build_unconditional_branch(first_test_bb)
+            .map_err(|e| e.to_string())?;
+
+        let mut next_test_bb = first_test_bb;
+        let mut incoming: Vec<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
+            Vec::new();
+        let mut result_type: Option<Type> = None;
+
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.position_at_end(next_test_bb);
+
+            match &arm.condition {
+                IfCondition::Expression(cond_expr) => {
+                    let cond_binding = self.codegen_expression(cond_expr)?;
+                    let cond_val = match cond_binding {
+                        Binding::Boolean { value } => value,
+                        _ => return Err("if condition must evaluate to a boolean".to_string()),
+                    };
+
+                    let then_bb = self
+                        .context
+                        .append_basic_block(current_fn, &format!("if.then.{}.{}", i, id));
+                    let false_bb = self
+                        .context
+                        .append_basic_block(current_fn, &format!("if.arm.{}.{}", i + 1, id));
+
+                    self.builder
+                        .build_conditional_branch(cond_val, then_bb, false_bb)
+                        .map_err(|e| e.to_string())?;
+
+                    self.builder.position_at_end(then_bb);
+                    let body_binding = self.codegen_expression(&arm.body)?;
+
+                    if result_type.is_none() {
+                        result_type = Some(self.binding_type(&body_binding)?);
+                    }
+
+                    if let Ok(val) = self.binding_basic_value(&body_binding) {
+                        let end_of_arm = self.builder.get_insert_block().unwrap();
+                        incoming.push((val, end_of_arm));
+                    }
+
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_terminator()
+                        .is_none()
+                    {
+                        self.builder
+                            .build_unconditional_branch(merge_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+
+                    next_test_bb = false_bb;
+                }
+
+                IfCondition::Wildcard => {
+                    let body_binding = self.codegen_expression(&arm.body)?;
+
+                    if result_type.is_none() {
+                        result_type = Some(self.binding_type(&body_binding)?);
+                    }
+
+                    if let Ok(val) = self.binding_basic_value(&body_binding) {
+                        let end_of_arm = self.builder.get_insert_block().unwrap();
+                        incoming.push((val, end_of_arm));
+                    }
+
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_terminator()
+                        .is_none()
+                    {
+                        self.builder
+                            .build_unconditional_branch(merge_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+
+        self.builder.position_at_end(merge_bb);
+
+        let ty = result_type.unwrap_or(Type::Void);
+        if ty == Type::Void {
+            Ok(Binding::Void)
+        } else {
+            let llvm_ty = self.llvm_type(&ty)?;
+            let phi = self
+                .builder
+                .build_phi(llvm_ty, &format!("if.res.{}", id))
+                .map_err(|e| e.to_string())?;
+
+            for (val, bb) in &incoming {
+                phi.add_incoming(&[(val, *bb)]);
+            }
+
+            self.binding_from_basic_value(&ty, phi.as_basic_value())
         }
     }
 

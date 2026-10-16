@@ -362,6 +362,52 @@ impl Checker {
                 })
             }
 
+            Expression::If { arms } => {
+                let has_wildcard = arms
+                    .iter()
+                    .any(|a| matches!(a.condition, IfCondition::Wildcard));
+                if !has_wildcard {
+                    return Err("expression 'if' must have a fallback '_' arm".to_string());
+                }
+
+                let mut expected_ty: Option<Type> = None;
+
+                for (i, arm) in arms.iter().enumerate() {
+                    match &arm.condition {
+                        IfCondition::Expression(cond) => {
+                            let cond_ty = self.type_of_expression(cond)?;
+                            if cond_ty != Type::Bool {
+                                return Err(format!(
+                                    "if condition must evaluate to Bool, found {:?}",
+                                    cond_ty
+                                ));
+                            }
+                        }
+                        IfCondition::Wildcard => {
+                            if i != arms.len() - 1 {
+                                return Err(
+                                    "wildcard '_' arm must be the final arm in if".to_string()
+                                );
+                            }
+                        }
+                    }
+
+                    let arm_ty = self.type_of_expression(&arm.body)?;
+                    if let Some(target_ty) = &expected_ty {
+                        if arm_ty != *target_ty {
+                            return Err(format!(
+                                "mismatched arm types in 'if': expected {:?}, found {:?}",
+                                target_ty, arm_ty
+                            ));
+                        }
+                    } else {
+                        expected_ty = Some(arm_ty);
+                    }
+                }
+
+                Ok(expected_ty.unwrap_or(Type::Void))
+            }
+
             Expression::Array(elements) => {
                 if elements.is_empty() {
                     return Err("cannot infer type of empty array".to_string());
@@ -578,16 +624,6 @@ impl Checker {
         match stmt {
             Statement::Return(_) => true,
             Statement::Compound(stmts) => Self::definitely_returns(stmts),
-            Statement::If { arms } => {
-                let has_wildcard = arms
-                    .iter()
-                    .any(|a| matches!(a.condition, IfCondition::Wildcard));
-                if !has_wildcard {
-                    return false;
-                }
-                arms.iter()
-                    .all(|a| Self::statement_definitely_returns(&a.body))
-            }
             _ => false,
         }
     }
@@ -604,11 +640,7 @@ impl Checker {
                 }
             }
 
-            Statement::Declare {
-                is_mutable,
-                name,
-                ty,
-            } => {
+            Statement::Declare { name, ty } => {
                 if *ty == Type::Void {
                     return Err(format!(
                         "variable '{}' cannot be declared with type void",
@@ -625,7 +657,7 @@ impl Checker {
                     name.clone(),
                     BindingInfo {
                         ty: ty.clone(),
-                        is_mutable: *is_mutable,
+                        is_mutable: true,
                         is_initialized: false,
                     },
                 );
@@ -639,32 +671,36 @@ impl Checker {
                 let mut current_ty = expr_ty;
 
                 for target in targets {
-                    let (var_ty, is_mutable, is_init) = {
-                        let info = self.lookup_binding(target).ok_or_else(|| {
-                            format!("cannot assign to undeclared variable '{}'", target)
-                        })?;
-                        (info.ty, info.is_mutable, info.is_initialized)
-                    };
+                    if let Some(info) = self.lookup_binding(target) {
+                        if !info.is_mutable {
+                            return Err(format!(
+                                "cannot reassign to immutable constant '{}'",
+                                target
+                            ));
+                        }
 
-                    if is_init && !is_mutable {
-                        return Err(format!(
-                            "cannot reassign to immutable constant '{}'",
-                            target
-                        ));
+                        if current_ty != info.ty {
+                            return Err(format!(
+                                "type mismatch assigning to '{}': expected {:?}, found {:?}",
+                                target, info.ty, current_ty
+                            ));
+                        }
+
+                        if let Some(info_mut) = self.lookup_binding_mut(target) {
+                            info_mut.is_initialized = true;
+                        }
+                    } else {
+                        self.scopes.last_mut().unwrap().insert(
+                            target.clone(),
+                            BindingInfo {
+                                ty: current_ty.clone(),
+                                is_mutable: false,
+                                is_initialized: true,
+                            },
+                        );
                     }
 
-                    if current_ty != var_ty {
-                        return Err(format!(
-                            "type mismatch assigning to '{}': expected {:?}, found {:?}",
-                            target, var_ty, current_ty
-                        ));
-                    }
-
-                    if let Some(info) = self.lookup_binding_mut(target) {
-                        info.is_initialized = true;
-                    }
-
-                    current_ty = var_ty;
+                    current_ty = self.lookup_binding(target).unwrap().ty;
                 }
             }
 
@@ -680,30 +716,6 @@ impl Checker {
 
             Statement::Discard(expr) => {
                 self.type_of_expression(expr)?;
-            }
-
-            Statement::If { arms } => {
-                for (i, arm) in arms.iter().enumerate() {
-                    match &arm.condition {
-                        IfCondition::Expression(cond) => {
-                            let cond_ty = self.type_of_expression(cond)?;
-                            if cond_ty != Type::Bool {
-                                return Err(format!(
-                                    "doif condition must be of type Bool, found {:?}",
-                                    cond_ty
-                                ));
-                            }
-                        }
-                        IfCondition::Wildcard => {
-                            if i != arms.len() - 1 {
-                                return Err(
-                                    "wildcard '_' arm in doif must be the last arm".to_string()
-                                );
-                            }
-                        }
-                    }
-                    self.validate_statement(&arm.body, expected_type)?;
-                }
             }
         }
         Ok(())
@@ -746,12 +758,7 @@ impl Checker {
                 Ok(Statement::Compound(resolved))
             }
 
-            Statement::Declare {
-                is_mutable,
-                name,
-                ty,
-            } => Ok(Statement::Declare {
-                is_mutable: *is_mutable,
+            Statement::Declare { name, ty } => Ok(Statement::Declare {
                 name: name.clone(),
                 ty: ty.clone(),
             }),
@@ -775,27 +782,6 @@ impl Checker {
             Statement::Return(expression) => {
                 Ok(Statement::Return(self.resolve_expression(expression)?))
             }
-
-            Statement::If { arms } => {
-                let mut resolved_arms = Vec::new();
-                for arm in arms {
-                    let resolved_cond = match &arm.condition {
-                        IfCondition::Expression(expr) => {
-                            IfCondition::Expression(self.resolve_expression(expr)?)
-                        }
-                        IfCondition::Wildcard => IfCondition::Wildcard,
-                    };
-                    let resolved_body = Box::new(self.resolve_statement(&arm.body)?);
-                    resolved_arms.push(IfArm {
-                        condition: resolved_cond,
-                        body: resolved_body,
-                    });
-                }
-
-                Ok(Statement::If {
-                    arms: resolved_arms,
-                })
-            }
         }
     }
 
@@ -814,6 +800,23 @@ impl Checker {
                 Ok(Expression::Block {
                     signature: signature.clone(),
                     body: resolved_body,
+                })
+            }
+
+            Expression::If { arms } => {
+                let mut resolved_arms = Vec::new();
+                for arm in arms {
+                    let condition = match &arm.condition {
+                        IfCondition::Expression(expr) => {
+                            IfCondition::Expression(self.resolve_expression(expr)?)
+                        }
+                        IfCondition::Wildcard => IfCondition::Wildcard,
+                    };
+                    let body = Box::new(self.resolve_expression(&arm.body)?);
+                    resolved_arms.push(IfArm { condition, body });
+                }
+                Ok(Expression::If {
+                    arms: resolved_arms,
                 })
             }
 

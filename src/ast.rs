@@ -67,14 +67,13 @@ pub enum IfCondition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IfArm {
     pub condition: IfCondition,
-    pub body: Box<Statement>,
+    pub body: Box<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Compound(Vec<Statement>),
     Declare {
-        is_mutable: bool,
         name: String,
         ty: Type,
     },
@@ -84,9 +83,6 @@ pub enum Statement {
     },
     Discard(Expression),
     Return(Expression),
-    If {
-        arms: Vec<IfArm>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +96,9 @@ pub enum Expression {
     Block {
         signature: Option<Signature>,
         body: Vec<Statement>,
+    },
+    If {
+        arms: Vec<IfArm>,
     },
     Unary {
         operator: UnaryOperator,

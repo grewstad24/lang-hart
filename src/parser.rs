@@ -193,30 +193,13 @@ impl Parser {
                 Ok(Statement::Compound(body))
             }
 
-            Token::Const => {
-                self.advance();
-                let name = self.expect_identifier()?;
-                self.expect(Token::Colon)?;
-                let ty = self.parse_type()?;
-                self.consume_optional_newline();
-                Ok(Statement::Declare {
-                    is_mutable: false,
-                    name,
-                    ty,
-                })
-            }
-
             Token::Var => {
                 self.advance();
                 let name = self.expect_identifier()?;
                 self.expect(Token::Colon)?;
                 let ty = self.parse_type()?;
                 self.consume_optional_newline();
-                Ok(Statement::Declare {
-                    is_mutable: true,
-                    name,
-                    ty,
-                })
+                Ok(Statement::Declare { name, ty })
             }
 
             Token::DoIf => self.parse_doif_statement(),
@@ -255,10 +238,12 @@ impl Parser {
         self.skip_newlines();
 
         let mut arms = Vec::new();
+        let mut has_wildcard = false;
 
         while !self.is(Token::End) && !self.is(Token::Eof) {
             let condition = if self.is(Token::Underscore) {
                 self.advance();
+                has_wildcard = true;
                 IfCondition::Wildcard
             } else {
                 IfCondition::Expression(self.parse_expression()?)
@@ -267,15 +252,66 @@ impl Parser {
             self.expect(Token::FatArrow)?;
             self.skip_newlines();
 
-            let body = Box::new(self.parse_statement()?);
-            arms.push(IfArm { condition, body });
+            let body = self.parse_statement()?;
+            arms.push(IfArm {
+                condition,
+                body: Box::new(Expression::Block {
+                    signature: None,
+                    body: vec![body],
+                }),
+            });
             self.skip_newlines();
+
+            if has_wildcard {
+                break;
+            }
         }
 
         self.expect(Token::End)?;
         self.consume_optional_newline();
 
-        Ok(Statement::If { arms })
+        if !has_wildcard {
+            return Err("'doif' statement requires a wildcard '_' fallback arm".to_string());
+        }
+
+        Ok(Statement::Discard(Expression::If { arms }))
+    }
+
+    fn parse_if_expression(&mut self) -> Result<Expression, String> {
+        self.expect(Token::If)?;
+        self.skip_newlines();
+
+        let mut arms = Vec::new();
+        let mut has_wildcard = false;
+
+        while !self.is(Token::End) && !self.is(Token::Eof) {
+            let condition = if self.is(Token::Underscore) {
+                self.advance();
+                has_wildcard = true;
+                IfCondition::Wildcard
+            } else {
+                IfCondition::Expression(self.parse_expression()?)
+            };
+
+            self.expect(Token::FatArrow)?;
+            self.skip_newlines();
+
+            let body = Box::new(self.parse_expression()?);
+            arms.push(IfArm { condition, body });
+            self.skip_newlines();
+
+            if has_wildcard {
+                break;
+            }
+        }
+
+        self.expect(Token::End)?;
+
+        if !has_wildcard {
+            return Err("expression 'if' requires a wildcard '_' fallback arm".to_string());
+        }
+
+        Ok(Expression::If { arms })
     }
 
     fn parse_expression(&mut self) -> Result<Expression, String> {
@@ -474,6 +510,7 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expression, String> {
         match self.peek().clone() {
             Token::Do => self.parse_block_expression(),
+            Token::If => self.parse_if_expression(),
 
             Token::Integer(value) => {
                 self.advance();

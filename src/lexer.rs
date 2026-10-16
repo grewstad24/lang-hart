@@ -2,16 +2,16 @@
 pub enum Token {
     At,
 
-    Const,
     Var,
 
     Do,
     Done,
 
-    Return,
-
+    If,
     DoIf,
     End,
+
+    Return,
 
     To,
     As,
@@ -316,16 +316,16 @@ impl Lexer {
 
         match text.as_str() {
             "_" => Token::Underscore,
-            "const" => Token::Const,
             "var" => Token::Var,
 
             "do" => Token::Do,
             "done" => Token::Done,
 
-            "return" => Token::Return,
-
+            "if" => Token::If,
             "doif" => Token::DoIf,
             "end" => Token::End,
+
+            "return" => Token::Return,
 
             "to" => Token::To,
             "as" => Token::As,
