@@ -10,8 +10,8 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate};
 
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, ConditionalBranch, Definition, Expression,
-    ExternalFunction, Program, Signature, Statement, Type, UnaryOperator,
+    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
+    IfCondition, Program, Signature, Statement, Type, UnaryOperator,
 };
 use crate::checker::Checker;
 
@@ -375,6 +375,11 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
+            Statement::Compound(statements) => {
+                self.codegen_statements(statements)?;
+                Ok(())
+            }
+
             Statement::Declare { name, ty, .. } => {
                 let llvm_ty = self.llvm_type(ty)?;
 
@@ -430,22 +435,15 @@ impl<'ctx> Codegen<'ctx> {
                 self.build_return(&binding)
             }
 
-            Statement::If {
-                branches,
-                else_body,
-            } => self.codegen_if_statement(branches, else_body),
+            Statement::If { arms } => self.codegen_doif_statement(arms),
         }
     }
 
-    fn codegen_if_statement(
-        &mut self,
-        branches: &[ConditionalBranch],
-        else_body: &Option<Vec<Statement>>,
-    ) -> Result<(), String> {
+    fn codegen_doif_statement(&mut self, arms: &[IfArm]) -> Result<(), String> {
         let current_block = self
             .builder
             .get_insert_block()
-            .ok_or_else(|| "cannot generate if statement outside basic block".to_string())?;
+            .ok_or_else(|| "cannot generate doif outside basic block".to_string())?;
 
         let current_fn = current_block
             .get_parent()
@@ -456,72 +454,68 @@ impl<'ctx> Codegen<'ctx> {
 
         let end_bb = self
             .context
-            .append_basic_block(current_fn, &format!("if.end.{}", id));
+            .append_basic_block(current_fn, &format!("doif.end.{}", id));
 
-        let first_cond_bb = self
+        let first_arm_bb = self
             .context
-            .append_basic_block(current_fn, &format!("if.test.0.{}", id));
+            .append_basic_block(current_fn, &format!("doif.arm.0.{}", id));
 
         self.builder
-            .build_unconditional_branch(first_cond_bb)
+            .build_unconditional_branch(first_arm_bb)
             .map_err(|e| e.to_string())?;
 
-        let mut next_cond_bb = first_cond_bb;
+        let mut next_arm_bb = first_arm_bb;
 
-        for (i, branch) in branches.iter().enumerate() {
-            self.builder.position_at_end(next_cond_bb);
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.position_at_end(next_arm_bb);
 
-            let cond_binding = self.codegen_expression(&branch.condition)?;
-            let cond_value = match cond_binding {
-                Binding::Boolean { value } => value,
-                _ => return Err("if condition must evaluate to a boolean".to_string()),
-            };
+            match &arm.condition {
+                IfCondition::Expression(cond_expr) => {
+                    let cond_binding = self.codegen_expression(cond_expr)?;
+                    let cond_val = match cond_binding {
+                        Binding::Boolean { value } => value,
+                        _ => return Err("doif condition must evaluate to a boolean".to_string()),
+                    };
 
-            let then_bb = self
-                .context
-                .append_basic_block(current_fn, &format!("if.then.{}.{}", i, id));
+                    let then_bb = self
+                        .context
+                        .append_basic_block(current_fn, &format!("doif.then.{}.{}", i, id));
 
-            let false_bb = if i + 1 < branches.len() {
-                self.context
-                    .append_basic_block(current_fn, &format!("if.test.{}.{}", i + 1, id))
-            } else if else_body.is_some() {
-                self.context
-                    .append_basic_block(current_fn, &format!("if.else.{}", id))
-            } else {
-                end_bb
-            };
+                    let false_bb = if i + 1 < arms.len() {
+                        self.context
+                            .append_basic_block(current_fn, &format!("doif.arm.{}.{}", i + 1, id))
+                    } else {
+                        end_bb
+                    };
 
-            self.builder
-                .build_conditional_branch(cond_value, then_bb, false_bb)
-                .map_err(|e| e.to_string())?;
-
-            self.builder.position_at_end(then_bb);
-            let then_stack = self.enter_scope()?;
-            self.codegen_statements(&branch.body)?;
-            self.exit_scope(then_stack)?;
-
-            if let Some(insert_bb) = self.builder.get_insert_block() {
-                if insert_bb.get_terminator().is_none() {
                     self.builder
-                        .build_unconditional_branch(end_bb)
+                        .build_conditional_branch(cond_val, then_bb, false_bb)
                         .map_err(|e| e.to_string())?;
+
+                    self.builder.position_at_end(then_bb);
+                    self.codegen_statement(&arm.body)?;
+
+                    if let Some(insert_bb) = self.builder.get_insert_block() {
+                        if insert_bb.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(end_bb)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+
+                    next_arm_bb = false_bb;
                 }
-            }
 
-            next_cond_bb = false_bb;
-        }
+                IfCondition::Wildcard => {
+                    self.codegen_statement(&arm.body)?;
 
-        if let Some(else_stmts) = else_body {
-            self.builder.position_at_end(next_cond_bb);
-            let else_stack = self.enter_scope()?;
-            self.codegen_statements(else_stmts)?;
-            self.exit_scope(else_stack)?;
-
-            if let Some(insert_bb) = self.builder.get_insert_block() {
-                if insert_bb.get_terminator().is_none() {
-                    self.builder
-                        .build_unconditional_branch(end_bb)
-                        .map_err(|e| e.to_string())?;
+                    if let Some(insert_bb) = self.builder.get_insert_block() {
+                        if insert_bb.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(end_bb)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
                 }
             }
         }

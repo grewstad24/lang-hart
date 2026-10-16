@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    ConditionalBranch, Definition, Expression, ExternalFunction, Parameter, Program, Signature,
+    Definition, Expression, ExternalFunction, IfArm, IfCondition, Parameter, Program, Signature,
     Statement, Type,
 };
 
@@ -574,27 +574,139 @@ impl Checker {
         }
     }
 
+    fn statement_definitely_returns(stmt: &Statement) -> bool {
+        match stmt {
+            Statement::Return(_) => true,
+            Statement::Compound(stmts) => Self::definitely_returns(stmts),
+            Statement::If { arms } => {
+                let has_wildcard = arms
+                    .iter()
+                    .any(|a| matches!(a.condition, IfCondition::Wildcard));
+                if !has_wildcard {
+                    return false;
+                }
+                arms.iter()
+                    .all(|a| Self::statement_definitely_returns(&a.body))
+            }
+            _ => false,
+        }
+    }
+
     fn definitely_returns(statements: &[Statement]) -> bool {
-        for stmt in statements {
-            match stmt {
-                Statement::Return(_) => return true,
-                Statement::If {
-                    branches,
-                    else_body,
-                } => {
-                    if let Some(eb) = else_body {
-                        let all_branches_return =
-                            branches.iter().all(|b| Self::definitely_returns(&b.body));
-                        let else_returns = Self::definitely_returns(eb);
-                        if all_branches_return && else_returns {
-                            return true;
+        statements.iter().any(Self::statement_definitely_returns)
+    }
+
+    fn validate_statement(&mut self, stmt: &Statement, expected_type: &Type) -> Result<(), String> {
+        match stmt {
+            Statement::Compound(stmts) => {
+                for s in stmts {
+                    self.validate_statement(s, expected_type)?;
+                }
+            }
+
+            Statement::Declare {
+                is_mutable,
+                name,
+                ty,
+            } => {
+                if *ty == Type::Void {
+                    return Err(format!(
+                        "variable '{}' cannot be declared with type void",
+                        name
+                    ));
+                }
+                if self.scopes.last().unwrap().contains_key(name) {
+                    return Err(format!(
+                        "variable '{}' already declared in this scope",
+                        name
+                    ));
+                }
+                self.scopes.last_mut().unwrap().insert(
+                    name.clone(),
+                    BindingInfo {
+                        ty: ty.clone(),
+                        is_mutable: *is_mutable,
+                        is_initialized: false,
+                    },
+                );
+            }
+
+            Statement::Assign {
+                expression,
+                targets,
+            } => {
+                let expr_ty = self.type_of_expression(expression)?;
+                let mut current_ty = expr_ty;
+
+                for target in targets {
+                    let (var_ty, is_mutable, is_init) = {
+                        let info = self.lookup_binding(target).ok_or_else(|| {
+                            format!("cannot assign to undeclared variable '{}'", target)
+                        })?;
+                        (info.ty, info.is_mutable, info.is_initialized)
+                    };
+
+                    if is_init && !is_mutable {
+                        return Err(format!(
+                            "cannot reassign to immutable constant '{}'",
+                            target
+                        ));
+                    }
+
+                    if current_ty != var_ty {
+                        return Err(format!(
+                            "type mismatch assigning to '{}': expected {:?}, found {:?}",
+                            target, var_ty, current_ty
+                        ));
+                    }
+
+                    if let Some(info) = self.lookup_binding_mut(target) {
+                        info.is_initialized = true;
+                    }
+
+                    current_ty = var_ty;
+                }
+            }
+
+            Statement::Return(expr) => {
+                let actual = self.type_of_expression(expr)?;
+                if actual != *expected_type {
+                    return Err(format!(
+                        "return type mismatch: expected {:?}, found {:?}",
+                        expected_type, actual
+                    ));
+                }
+            }
+
+            Statement::Discard(expr) => {
+                self.type_of_expression(expr)?;
+            }
+
+            Statement::If { arms } => {
+                for (i, arm) in arms.iter().enumerate() {
+                    match &arm.condition {
+                        IfCondition::Expression(cond) => {
+                            let cond_ty = self.type_of_expression(cond)?;
+                            if cond_ty != Type::Bool {
+                                return Err(format!(
+                                    "doif condition must be of type Bool, found {:?}",
+                                    cond_ty
+                                ));
+                            }
+                        }
+                        IfCondition::Wildcard => {
+                            if i != arms.len() - 1 {
+                                return Err(
+                                    "wildcard '_' arm in doif must be the last arm".to_string()
+                                );
+                            }
                         }
                     }
+                    self.validate_statement(&arm.body, expected_type)?;
                 }
-                _ => {}
             }
         }
-        false
+        Ok(())
     }
 
     fn validate_block(
@@ -603,111 +715,7 @@ impl Checker {
         expected_type: &Type,
     ) -> Result<(), String> {
         for stmt in statements {
-            match stmt {
-                Statement::Declare {
-                    is_mutable,
-                    name,
-                    ty,
-                } => {
-                    if *ty == Type::Void {
-                        return Err(format!(
-                            "variable '{}' cannot be declared with type void",
-                            name
-                        ));
-                    }
-                    if self.scopes.last().unwrap().contains_key(name) {
-                        return Err(format!(
-                            "variable '{}' already declared in this scope",
-                            name
-                        ));
-                    }
-                    self.scopes.last_mut().unwrap().insert(
-                        name.clone(),
-                        BindingInfo {
-                            ty: ty.clone(),
-                            is_mutable: *is_mutable,
-                            is_initialized: false,
-                        },
-                    );
-                }
-
-                Statement::Assign {
-                    expression,
-                    targets,
-                } => {
-                    let expr_ty = self.type_of_expression(expression)?;
-                    let mut current_ty = expr_ty;
-
-                    for target in targets {
-                        let (var_ty, is_mutable, is_init) = {
-                            let info = self.lookup_binding(target).ok_or_else(|| {
-                                format!("cannot assign to undeclared variable '{}'", target)
-                            })?;
-                            (info.ty, info.is_mutable, info.is_initialized)
-                        };
-
-                        if is_init && !is_mutable {
-                            return Err(format!(
-                                "cannot reassign to immutable constant '{}'",
-                                target
-                            ));
-                        }
-
-                        if current_ty != var_ty {
-                            return Err(format!(
-                                "type mismatch assigning to '{}': expected {:?}, found {:?}",
-                                target, var_ty, current_ty
-                            ));
-                        }
-
-                        if let Some(info) = self.lookup_binding_mut(target) {
-                            info.is_initialized = true;
-                        }
-
-                        current_ty = var_ty;
-                    }
-                }
-
-                Statement::Return(expr) => {
-                    let actual = self.type_of_expression(expr)?;
-                    if actual != *expected_type {
-                        return Err(format!(
-                            "return type mismatch: expected {:?}, found {:?}",
-                            expected_type, actual
-                        ));
-                    }
-                }
-
-                Statement::Discard(expr) => {
-                    self.type_of_expression(expr)?;
-                }
-
-                Statement::If {
-                    branches,
-                    else_body,
-                } => {
-                    for b in branches {
-                        let cond_ty = self.type_of_expression(&b.condition)?;
-                        if cond_ty != Type::Bool {
-                            return Err(format!(
-                                "if condition must be of type Bool, found {:?}",
-                                cond_ty
-                            ));
-                        }
-                        self.scopes.push(HashMap::new());
-                        let res = self.validate_block(&b.body, expected_type);
-                        self.scopes.pop();
-                        res?;
-                    }
-
-                    if let Some(eb) = else_body {
-                        self.scopes.push(HashMap::new());
-                        let res = self.validate_block(eb, expected_type);
-                        self.scopes.pop();
-                        res?;
-                    }
-                }
-            }
+            self.validate_statement(stmt, expected_type)?;
         }
 
         if *expected_type != Type::Void && !Self::definitely_returns(statements) {
@@ -733,6 +741,11 @@ impl Checker {
 
     fn resolve_statement(&mut self, statement: &Statement) -> Result<Statement, String> {
         match statement {
+            Statement::Compound(stmts) => {
+                let resolved = self.resolve_statements(stmts)?;
+                Ok(Statement::Compound(resolved))
+            }
+
             Statement::Declare {
                 is_mutable,
                 name,
@@ -763,29 +776,24 @@ impl Checker {
                 Ok(Statement::Return(self.resolve_expression(expression)?))
             }
 
-            Statement::If {
-                branches,
-                else_body,
-            } => {
-                let mut resolved_branches = Vec::new();
-                for branch in branches {
-                    let resolved_condition = self.resolve_expression(&branch.condition)?;
-                    let resolved_body = self.resolve_statements(&branch.body)?;
-                    resolved_branches.push(ConditionalBranch {
-                        condition: resolved_condition,
+            Statement::If { arms } => {
+                let mut resolved_arms = Vec::new();
+                for arm in arms {
+                    let resolved_cond = match &arm.condition {
+                        IfCondition::Expression(expr) => {
+                            IfCondition::Expression(self.resolve_expression(expr)?)
+                        }
+                        IfCondition::Wildcard => IfCondition::Wildcard,
+                    };
+                    let resolved_body = Box::new(self.resolve_statement(&arm.body)?);
+                    resolved_arms.push(IfArm {
+                        condition: resolved_cond,
                         body: resolved_body,
                     });
                 }
 
-                let resolved_else_body = if let Some(body) = else_body {
-                    Some(self.resolve_statements(body)?)
-                } else {
-                    None
-                };
-
                 Ok(Statement::If {
-                    branches: resolved_branches,
-                    else_body: resolved_else_body,
+                    arms: resolved_arms,
                 })
             }
         }

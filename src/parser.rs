@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, ConditionalBranch, Definition, Expression,
-    ExternalFunction, Parameter, Program, Signature, Statement, Type, UnaryOperator,
+    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
+    IfCondition, Parameter, Program, Signature, Statement, Type, UnaryOperator,
 };
 use crate::lexer::Token;
 
@@ -95,10 +95,6 @@ impl Parser {
         })
     }
 
-    /// Parses a function signature in any of the 3 canonical forms:
-    /// 1. Full form: `(params...) [++] [to T]`
-    /// 2. Return-only form: `to T`
-    /// 3. Omitted form: defaults to `() to void`
     pub fn parse_signature(&mut self) -> Result<Signature, String> {
         if self.is(Token::LParen) {
             self.advance();
@@ -161,7 +157,6 @@ impl Parser {
     fn parse_block_expression(&mut self) -> Result<Expression, String> {
         self.expect(Token::Do)?;
 
-        // Canonicalizes omitted, `to T`, or `(params) [to T]` signatures into a uniform Signature
         let signature = Some(self.parse_signature()?);
 
         self.skip_newlines();
@@ -174,24 +169,30 @@ impl Parser {
         let mut statements = Vec::new();
         self.skip_newlines();
 
-        while !self.is(Token::Eof)
-            && !self.is(Token::Done)
-            && !self.is(Token::Elif)
-            && !self.is(Token::Else)
-        {
+        while !self.is(Token::Eof) && !self.is(Token::Done) {
             statements.push(self.parse_statement()?);
             self.skip_newlines();
         }
 
-        if !self.is(Token::Elif) && !self.is(Token::Else) {
-            self.expect(Token::Done)?;
-        }
-
+        self.expect(Token::Done)?;
         Ok(statements)
     }
 
     fn parse_statement(&mut self) -> Result<Statement, String> {
         match self.peek() {
+            Token::LBrace => {
+                self.advance();
+                self.skip_newlines();
+                let mut body = Vec::new();
+                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                    body.push(self.parse_statement()?);
+                    self.skip_newlines();
+                }
+                self.expect(Token::RBrace)?;
+                self.consume_optional_newline();
+                Ok(Statement::Compound(body))
+            }
+
             Token::Const => {
                 self.advance();
                 let name = self.expect_identifier()?;
@@ -218,7 +219,7 @@ impl Parser {
                 })
             }
 
-            Token::If => self.parse_if_statement(),
+            Token::DoIf => self.parse_doif_statement(),
 
             Token::Return => {
                 self.advance();
@@ -249,46 +250,32 @@ impl Parser {
         }
     }
 
-    fn parse_if_statement(&mut self) -> Result<Statement, String> {
-        self.expect(Token::If)?;
-        let condition = self.parse_expression()?;
-        self.skip_newlines();
-        self.expect(Token::Do)?;
-        self.skip_newlines();
-        let body = self.parse_statements_until_done()?;
-
-        let mut branches = vec![ConditionalBranch { condition, body }];
+    fn parse_doif_statement(&mut self) -> Result<Statement, String> {
+        self.expect(Token::DoIf)?;
         self.skip_newlines();
 
-        while self.is(Token::Elif) {
-            self.advance();
-            let elif_condition = self.parse_expression()?;
+        let mut arms = Vec::new();
+
+        while !self.is(Token::End) && !self.is(Token::Eof) {
+            let condition = if self.is(Token::Underscore) {
+                self.advance();
+                IfCondition::Wildcard
+            } else {
+                IfCondition::Expression(self.parse_expression()?)
+            };
+
+            self.expect(Token::FatArrow)?;
             self.skip_newlines();
-            self.expect(Token::Do)?;
-            self.skip_newlines();
-            let elif_body = self.parse_statements_until_done()?;
 
-            branches.push(ConditionalBranch {
-                condition: elif_condition,
-                body: elif_body,
-            });
+            let body = Box::new(self.parse_statement()?);
+            arms.push(IfArm { condition, body });
             self.skip_newlines();
         }
 
-        let else_body = if self.is(Token::Else) {
-            self.advance();
-            self.skip_newlines();
-            self.expect(Token::Do)?;
-            self.skip_newlines();
-            Some(self.parse_statements_until_done()?)
-        } else {
-            None
-        };
+        self.expect(Token::End)?;
+        self.consume_optional_newline();
 
-        Ok(Statement::If {
-            branches,
-            else_body,
-        })
+        Ok(Statement::If { arms })
     }
 
     fn parse_expression(&mut self) -> Result<Expression, String> {

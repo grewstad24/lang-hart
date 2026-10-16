@@ -1,7 +1,16 @@
 @main
 do to s32
-        do
-                print_s32(67)
-        done()
+        doif
+                5 > 6 => print_string("hi")
+
+                1 = 2 => {
+                        print_s32(42)
+                        pr_nl()
+                        return 0
+                }
+
+                _  => pr_nl()
+        end
+
         return 0
 done

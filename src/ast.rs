@@ -59,13 +59,20 @@ pub struct Program {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConditionalBranch {
-    pub condition: Expression,
-    pub body: Vec<Statement>,
+pub enum IfCondition {
+    Expression(Expression),
+    Wildcard,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfArm {
+    pub condition: IfCondition,
+    pub body: Box<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    Compound(Vec<Statement>),
     Declare {
         is_mutable: bool,
         name: String,
@@ -78,8 +85,7 @@ pub enum Statement {
     Discard(Expression),
     Return(Expression),
     If {
-        branches: Vec<ConditionalBranch>,
-        else_body: Option<Vec<Statement>>,
+        arms: Vec<IfArm>,
     },
 }
 

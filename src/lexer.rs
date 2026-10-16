@@ -10,9 +10,8 @@ pub enum Token {
 
     Return,
 
-    If,
-    Elif,
-    Else,
+    DoIf,
+    End,
 
     To,
     As,
@@ -48,6 +47,8 @@ pub enum Token {
     GreaterEqual,
 
     Arrow,
+    FatArrow,
+    Underscore,
 
     Colon,
     Comma,
@@ -58,6 +59,8 @@ pub enum Token {
     RParen,
     LBracket,
     RBracket,
+    LBrace,
+    RBrace,
 
     Newline,
     Eof,
@@ -99,6 +102,16 @@ impl Lexer {
                 '@' => {
                     self.position += 1;
                     tokens.push(Token::At);
+                }
+
+                '{' => {
+                    self.position += 1;
+                    tokens.push(Token::LBrace);
+                }
+
+                '}' => {
+                    self.position += 1;
+                    tokens.push(Token::RBrace);
                 }
 
                 '0'..='9' => {
@@ -169,8 +182,13 @@ impl Lexer {
                 }
 
                 '=' => {
-                    self.position += 1;
-                    tokens.push(Token::Equal);
+                    if self.peek_char(1) == Some('>') {
+                        self.position += 2;
+                        tokens.push(Token::FatArrow);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Equal);
+                    }
                 }
 
                 '!' => {
@@ -297,6 +315,7 @@ impl Lexer {
         let text: String = self.chars[start..self.position].iter().collect();
 
         match text.as_str() {
+            "_" => Token::Underscore,
             "const" => Token::Const,
             "var" => Token::Var,
 
@@ -305,9 +324,8 @@ impl Lexer {
 
             "return" => Token::Return,
 
-            "if" => Token::If,
-            "elif" => Token::Elif,
-            "else" => Token::Else,
+            "doif" => Token::DoIf,
+            "end" => Token::End,
 
             "to" => Token::To,
             "as" => Token::As,
