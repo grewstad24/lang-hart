@@ -10,7 +10,7 @@ use inkwell::values::{
 use inkwell::{AddressSpace, IntPredicate};
 
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
+    BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
     IfCondition, Program, Signature, Statement, Type, UnaryOperator,
 };
 use crate::checker::Checker;
@@ -61,12 +61,19 @@ struct LocalVar<'ctx> {
     alloca: PointerValue<'ctx>,
 }
 
+#[derive(Debug, Clone)]
+struct GlobalVar<'ctx> {
+    ty: Type,
+    pointer: PointerValue<'ctx>,
+}
+
 pub struct Codegen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
 
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
+    global_vars: HashMap<String, GlobalVar<'ctx>>,
     extern_functions: HashMap<String, Signature>,
     atom_table: HashMap<String, u32>,
 
@@ -83,6 +90,7 @@ impl<'ctx> Codegen<'ctx> {
             builder: context.create_builder(),
 
             local_scopes: Vec::new(),
+            global_vars: HashMap::new(),
             extern_functions: HashMap::new(),
             atom_table: HashMap::new(),
 
@@ -123,22 +131,23 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn get_stacksave_intrinsic(&self) -> FunctionValue<'ctx> {
-        if let Some(func) = self.module.get_function("llvm.stacksave") {
+        if let Some(func) = self.module.get_function("llvm.stacksave.p0") {
             func
         } else {
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             let fn_type = ptr_type.fn_type(&[], false);
-            self.module.add_function("llvm.stacksave", fn_type, None)
+            self.module.add_function("llvm.stacksave.p0", fn_type, None)
         }
     }
 
     fn get_stackrestore_intrinsic(&self) -> FunctionValue<'ctx> {
-        if let Some(func) = self.module.get_function("llvm.stackrestore") {
+        if let Some(func) = self.module.get_function("llvm.stackrestore.p0") {
             func
         } else {
             let ptr_type = self.context.ptr_type(AddressSpace::default());
             let fn_type = self.context.void_type().fn_type(&[ptr_type.into()], false);
-            self.module.add_function("llvm.stackrestore", fn_type, None)
+            self.module
+                .add_function("llvm.stackrestore.p0", fn_type, None)
         }
     }
 
@@ -150,7 +159,7 @@ impl<'ctx> Codegen<'ctx> {
             .map_err(|e| e.to_string())?
             .try_as_basic_value()
             .basic()
-            .ok_or_else(|| "llvm.stacksave must yield a basic value".to_string())?
+            .ok_or_else(|| "llvm.stacksave.p0 must yield a basic value".to_string())?
             .into_pointer_value();
 
         self.local_scopes.push(HashMap::new());
@@ -222,7 +231,20 @@ impl<'ctx> Codegen<'ctx> {
                 let global =
                     self.module
                         .add_global(llvm_ty, Some(AddressSpace::default()), &def.name);
-                global.set_initializer(&self.zero_value(&ty)?);
+
+                let init_val = match self.binding_basic_value(&binding) {
+                    Ok(val) => val,
+                    Err(_) => self.zero_value(&ty)?,
+                };
+                global.set_initializer(&init_val);
+
+                self.global_vars.insert(
+                    def.name.clone(),
+                    GlobalVar {
+                        ty,
+                        pointer: global.as_pointer_value(),
+                    },
+                );
             }
         }
 
@@ -261,8 +283,9 @@ impl<'ctx> Codegen<'ctx> {
 
     fn lookup_local(&self, name: &str) -> Option<LocalVar<'ctx>> {
         self.local_scopes
-            .last()
-            .and_then(|scope| scope.get(name).cloned())
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
     }
 
     fn codegen_named_function(
@@ -456,7 +479,90 @@ impl<'ctx> Codegen<'ctx> {
                 let binding = self.codegen_expression(expression)?;
                 self.build_return(&binding)
             }
+
+            Statement::If { arms } => self.codegen_doif_statement(arms),
         }
+    }
+
+    fn codegen_doif_statement(&mut self, arms: &[DoIfArm]) -> Result<(), String> {
+        let current_block = self
+            .builder
+            .get_insert_block()
+            .ok_or_else(|| "cannot generate doif outside basic block".to_string())?;
+
+        let current_fn = current_block
+            .get_parent()
+            .ok_or_else(|| "current block has no parent function".to_string())?;
+
+        let id = self.branch_counter;
+        self.branch_counter += 1;
+
+        let merge_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("doif.merge.{}", id));
+
+        let first_test_bb = self
+            .context
+            .append_basic_block(current_fn, &format!("doif.arm.0.{}", id));
+
+        self.builder
+            .build_unconditional_branch(first_test_bb)
+            .map_err(|e| e.to_string())?;
+
+        let mut next_test_bb = first_test_bb;
+
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.position_at_end(next_test_bb);
+
+            match &arm.condition {
+                IfCondition::Expression(cond_expr) => {
+                    let cond_binding = self.codegen_expression(cond_expr)?;
+                    let cond_val = match cond_binding {
+                        Binding::Boolean { value } => value,
+                        _ => return Err("doif condition must evaluate to a boolean".to_string()),
+                    };
+
+                    let then_bb = self
+                        .context
+                        .append_basic_block(current_fn, &format!("doif.then.{}.{}", i, id));
+                    let false_bb = self
+                        .context
+                        .append_basic_block(current_fn, &format!("doif.arm.{}.{}", i + 1, id));
+
+                    self.builder
+                        .build_conditional_branch(cond_val, then_bb, false_bb)
+                        .map_err(|e| e.to_string())?;
+
+                    self.builder.position_at_end(then_bb);
+                    self.codegen_statement(&arm.body)?;
+
+                    if let Some(bb) = self.builder.get_insert_block() {
+                        if bb.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(merge_bb)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+
+                    next_test_bb = false_bb;
+                }
+
+                IfCondition::Else => {
+                    self.codegen_statement(&arm.body)?;
+
+                    if let Some(bb) = self.builder.get_insert_block() {
+                        if bb.get_terminator().is_none() {
+                            self.builder
+                                .build_unconditional_branch(merge_bb)
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.builder.position_at_end(merge_bb);
+        Ok(())
     }
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
@@ -493,17 +599,16 @@ impl<'ctx> Codegen<'ctx> {
                     return self.binding_from_basic_value(&local.ty, loaded);
                 }
 
-                if let Some(function) = self.module.get_function(name) {
-                    return Ok(Binding::Function { value: function });
+                if let Some(global_var) = self.global_vars.get(name) {
+                    let loaded = self
+                        .builder
+                        .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
+                        .map_err(|e| e.to_string())?;
+                    return self.binding_from_basic_value(&global_var.ty, loaded);
                 }
 
-                if let Some(global) = self.module.get_global(name) {
-                    return Ok(Binding::Pointer {
-                        ty: Type::Pointer {
-                            element: Box::new(Type::Void),
-                        },
-                        value: global.as_pointer_value(),
-                    });
+                if let Some(function) = self.module.get_function(name) {
+                    return Ok(Binding::Function { value: function });
                 }
 
                 Err(format!("unknown identifier '{}'", name))
@@ -634,18 +739,11 @@ impl<'ctx> Codegen<'ctx> {
                         result_type = Some(self.binding_type(&body_binding)?);
                     }
 
-                    if let Ok(val) = self.binding_basic_value(&body_binding) {
-                        let end_of_arm = self.builder.get_insert_block().unwrap();
-                        incoming.push((val, end_of_arm));
-                    }
-
-                    if self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_terminator()
-                        .is_none()
-                    {
+                    let end_of_arm = self.builder.get_insert_block().unwrap();
+                    if end_of_arm.get_terminator().is_none() {
+                        if let Ok(val) = self.binding_basic_value(&body_binding) {
+                            incoming.push((val, end_of_arm));
+                        }
                         self.builder
                             .build_unconditional_branch(merge_bb)
                             .map_err(|e| e.to_string())?;
@@ -661,18 +759,11 @@ impl<'ctx> Codegen<'ctx> {
                         result_type = Some(self.binding_type(&body_binding)?);
                     }
 
-                    if let Ok(val) = self.binding_basic_value(&body_binding) {
-                        let end_of_arm = self.builder.get_insert_block().unwrap();
-                        incoming.push((val, end_of_arm));
-                    }
-
-                    if self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_terminator()
-                        .is_none()
-                    {
+                    let end_of_arm = self.builder.get_insert_block().unwrap();
+                    if end_of_arm.get_terminator().is_none() {
+                        if let Ok(val) = self.binding_basic_value(&body_binding) {
+                            incoming.push((val, end_of_arm));
+                        }
                         self.builder
                             .build_unconditional_branch(merge_bb)
                             .map_err(|e| e.to_string())?;
@@ -748,7 +839,7 @@ impl<'ctx> Codegen<'ctx> {
                 "ptr" => {
                     let elem_clone = (*element).clone();
                     let storage = self.array_storage(binding, &elem_clone, size)?;
-                    let zero = self.context.i32_type().const_zero();
+                    let zero = self.context.i64_type().const_zero();
                     let llvm_array_type = self
                         .llvm_type(&Type::Array {
                             element: elem_clone.clone(),
@@ -817,7 +908,7 @@ impl<'ctx> Codegen<'ctx> {
                     })?
                     .into_array_type();
 
-                let zero = self.context.i32_type().const_zero();
+                let zero = self.context.i64_type().const_zero();
                 let pointer = unsafe {
                     self.builder
                         .build_gep(llvm_array_type, storage, &[zero, zero], "decayptr")
@@ -1283,6 +1374,10 @@ impl<'ctx> Codegen<'ctx> {
         let binding = self.codegen_expression(expression)?;
         let index_binding = self.codegen_expression(index)?;
         let index_value = self.binding_int_value(&index_binding)?;
+        let index_i64 = self
+            .builder
+            .build_int_z_extend_or_bit_cast(index_value, self.context.i64_type(), "idx64")
+            .map_err(|e| e.to_string())?;
 
         match self.binding_type(&binding)? {
             Type::Array { element, size } => {
@@ -1303,7 +1398,7 @@ impl<'ctx> Codegen<'ctx> {
                         .build_gep(
                             llvm_array_type,
                             storage,
-                            &[self.context.i32_type().const_zero(), index_value],
+                            &[self.context.i64_type().const_zero(), index_i64],
                             "indexptr",
                         )
                         .map_err(|error| error.to_string())?
@@ -1333,7 +1428,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let gep = unsafe {
                     self.builder
-                        .build_gep(elem_llvm_type, ptr_val, &[index_value], "sliceidx")
+                        .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceidx")
                         .map_err(|e| e.to_string())?
                 };
 
@@ -1361,6 +1456,15 @@ impl<'ctx> Codegen<'ctx> {
                     });
                 }
 
+                if let Some(global_var) = self.global_vars.get(name) {
+                    return Ok(Binding::Pointer {
+                        ty: Type::Pointer {
+                            element: Box::new(global_var.ty.clone()),
+                        },
+                        value: global_var.pointer,
+                    });
+                }
+
                 Err(format!("unknown variable '{}'", name))
             }
 
@@ -1368,6 +1472,10 @@ impl<'ctx> Codegen<'ctx> {
                 let binding = self.codegen_expression(expression)?;
                 let index_binding = self.codegen_expression(index)?;
                 let index_value = self.binding_int_value(&index_binding)?;
+                let index_i64 = self
+                    .builder
+                    .build_int_z_extend_or_bit_cast(index_value, self.context.i64_type(), "idx64")
+                    .map_err(|e| e.to_string())?;
 
                 match self.binding_type(&binding)? {
                     Type::Array { element, size } => {
@@ -1388,7 +1496,7 @@ impl<'ctx> Codegen<'ctx> {
                                 .build_gep(
                                     llvm_array_type,
                                     storage,
-                                    &[self.context.i32_type().const_zero(), index_value],
+                                    &[self.context.i64_type().const_zero(), index_i64],
                                     "addressptr",
                                 )
                                 .map_err(|error| error.to_string())?
@@ -1416,7 +1524,7 @@ impl<'ctx> Codegen<'ctx> {
 
                         let pointer = unsafe {
                             self.builder
-                                .build_gep(elem_llvm_type, ptr_val, &[index_value], "sliceaddr")
+                                .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceaddr")
                                 .map_err(|e| e.to_string())?
                         };
 

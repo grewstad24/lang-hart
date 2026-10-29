@@ -1,12 +1,14 @@
+@val x
+3
+
 @main
 do to s32
-        if
-                5 > 5 => 42
-                6 = 7 => 56
-                else => 8
-        end -> x
+        var y :: s32
+        doif
+                x > 5 => 5 -> y
+                else => x -> y
+        end
 
-        print_s32(x)
-
+        print_s32(y)
         return 0
 done

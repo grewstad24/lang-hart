@@ -1,5 +1,5 @@
 use crate::ast::{
-    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
+    BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
     IfCondition, Parameter, Program, Signature, Statement, Type, UnaryOperator,
 };
 use crate::lexer::Token;
@@ -27,9 +27,34 @@ impl Parser {
             match self.peek() {
                 Token::At => {
                     self.advance();
-                    let directive = self.expect_identifier()?;
+
+                    let directive = match self.peek().clone() {
+                        Token::Val => {
+                            self.advance();
+                            "val".to_string()
+                        }
+                        Token::Identifier(name) => {
+                            self.advance();
+                            name
+                        }
+                        token => {
+                            return Err(format!(
+                                "expected directive after '@' (@val, @extern, or @main), found {:?}",
+                                token
+                            ));
+                        }
+                    };
 
                     match directive.as_str() {
+                        "val" => {
+                            self.skip_newlines();
+                            let name = self.expect_identifier()?;
+                            self.skip_newlines();
+                            let value = self.parse_expression()?;
+                            self.consume_optional_newline();
+                            definitions.push(Definition { name, value });
+                        }
+
                         "extern" => {
                             self.skip_newlines();
                             let name = self.expect_identifier()?;
@@ -46,14 +71,7 @@ impl Parser {
                                 ));
                             }
                         }
-                        "fn" => {
-                            self.skip_newlines();
-                            let name = self.expect_identifier()?;
-                            self.skip_newlines();
-                            let value = self.parse_expression()?;
-                            self.consume_optional_newline();
-                            definitions.push(Definition { name, value });
-                        }
+
                         "main" => {
                             self.skip_newlines();
                             let value = self.parse_expression()?;
@@ -63,9 +81,10 @@ impl Parser {
                                 value,
                             });
                         }
+
                         other => {
                             return Err(format!(
-                                "unknown top-level decorator '@{}', expected @fn, @extern, or @main",
+                                "unknown top-level decorator '@{}', expected only @val, @extern, or @main",
                                 other
                             ));
                         }
@@ -76,8 +95,8 @@ impl Parser {
                     self.skip_newlines();
                 }
 
-                _ => {
-                    return Err(format!("unexpected token at top level: {:?}", self.peek()));
+                token => {
+                    return Err(format!("unexpected token at top level: {:?}", token));
                 }
             }
 
@@ -254,12 +273,9 @@ impl Parser {
             self.skip_newlines();
 
             let body = self.parse_statement()?;
-            arms.push(IfArm {
+            arms.push(DoIfArm {
                 condition,
-                body: Box::new(Expression::Block {
-                    signature: None,
-                    body: vec![body],
-                }),
+                body: Box::new(body),
             });
             self.skip_newlines();
 
@@ -275,7 +291,7 @@ impl Parser {
             return Err("'doif' statement requires a fallback 'else' arm".to_string());
         }
 
-        Ok(Statement::Discard(Expression::If { arms }))
+        Ok(Statement::If { arms })
     }
 
     fn parse_if_expression(&mut self) -> Result<Expression, String> {

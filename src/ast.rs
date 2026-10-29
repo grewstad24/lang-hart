@@ -72,6 +72,12 @@ pub struct IfArm {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DoIfArm {
+    pub condition: IfCondition,
+    pub body: Box<Statement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Compound(Vec<Statement>),
     Declare {
@@ -84,6 +90,9 @@ pub enum Statement {
     },
     Discard(Expression),
     Return(Expression),
+    If {
+        arms: Vec<DoIfArm>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

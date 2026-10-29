@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    ComparisonOperator, Definition, Expression, ExternalFunction, IfArm, IfCondition, Parameter,
-    Program, Signature, Statement, Type,
+    ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm, IfCondition,
+    Parameter, Program, Signature, Statement, Type,
 };
 
 #[derive(Debug, Clone)]
@@ -257,13 +257,11 @@ impl Checker {
     }
 
     fn lookup_binding(&self, name: &str) -> Option<BindingInfo> {
-        self.scopes
-            .last()
-            .and_then(|scope| scope.get(name).cloned())
+        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
     }
 
     fn lookup_binding_mut(&mut self, name: &str) -> Option<&mut BindingInfo> {
-        self.scopes.last_mut().and_then(|scope| scope.get_mut(name))
+        self.scopes.iter_mut().rev().find_map(|s| s.get_mut(name))
     }
 
     fn type_of_expression(&mut self, expression: &Expression) -> Result<Type, String> {
@@ -633,6 +631,10 @@ impl Checker {
                         Ok(Type::Pointer {
                             element: Box::new(info.ty),
                         })
+                    } else if let Some(ty) = self.resolved_definitions.get(name) {
+                        Ok(Type::Pointer {
+                            element: Box::new(ty.clone()),
+                        })
                     } else {
                         Err(format!(
                             "cannot take address of unknown variable '{}'",
@@ -640,7 +642,7 @@ impl Checker {
                         ))
                     }
                 }
-                _ => Err("address-of requires a local variable or array index".to_string()),
+                _ => Err("address-of requires a variable or array index".to_string()),
             },
 
             Expression::Decay(expression) => {
@@ -662,6 +664,12 @@ impl Checker {
         match stmt {
             Statement::Return(_) => true,
             Statement::Compound(stmts) => Self::definitely_returns(stmts),
+            Statement::If { arms } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| Self::statement_definitely_returns(&arm.body))
+            }
             _ => false,
         }
     }
@@ -747,6 +755,21 @@ impl Checker {
             Statement::Discard(expr) => {
                 self.type_of_expression(expr)?;
             }
+
+            Statement::If { arms } => {
+                for arm in arms {
+                    if let IfCondition::Expression(cond) = &arm.condition {
+                        let cond_ty = self.type_of_expression(cond)?;
+                        if cond_ty != Type::Bool {
+                            return Err(format!(
+                                "doif condition must evaluate to Bool, found {:?}",
+                                cond_ty
+                            ));
+                        }
+                    }
+                    self.validate_statement(&arm.body, expected_type)?;
+                }
+            }
         }
         Ok(())
     }
@@ -808,6 +831,23 @@ impl Checker {
 
             Statement::Return(expression) => {
                 Ok(Statement::Return(self.resolve_expression(expression)?))
+            }
+
+            Statement::If { arms } => {
+                let mut resolved_arms = Vec::new();
+                for arm in arms {
+                    let condition = match &arm.condition {
+                        IfCondition::Expression(expr) => {
+                            IfCondition::Expression(self.resolve_expression(expr)?)
+                        }
+                        IfCondition::Else => IfCondition::Else,
+                    };
+                    let body = Box::new(self.resolve_statement(&arm.body)?);
+                    resolved_arms.push(DoIfArm { condition, body });
+                }
+                Ok(Statement::If {
+                    arms: resolved_arms,
+                })
             }
         }
     }
@@ -956,7 +996,6 @@ impl Checker {
             return true;
         }
 
-        // Atoms cannot be cast to or from other types (strongly typed singleton)
         if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
             return false;
         }

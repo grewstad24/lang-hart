@@ -1,7 +1,7 @@
 @extern fflush
 (ptr :: *u8) to s32
 
-@fn flush_file
+@val flush_file
 do (ptr :: *u8) to s32
         return fflush(ptr)
 done

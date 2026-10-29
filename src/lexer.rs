@@ -2,6 +2,7 @@
 pub enum Token {
     At,
 
+    Val,
     Var,
 
     Do,
@@ -316,7 +317,7 @@ impl Lexer {
 
     fn lex_atom(&mut self) -> Result<Token, String> {
         debug_assert_eq!(self.chars[self.position], ':');
-        self.position += 1; // consume ':'
+        self.position += 1;
 
         let start = self.position;
         while self.position < self.chars.len() {
@@ -351,6 +352,7 @@ impl Lexer {
         let text: String = self.chars[start..self.position].iter().collect();
 
         match text.as_str() {
+            "val" => Token::Val,
             "var" => Token::Var,
 
             "do" => Token::Do,

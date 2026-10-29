@@ -9,9 +9,8 @@ use snore::codegen::Codegen;
 use snore::lexer::Lexer;
 use snore::parser::Parser;
 
-/// Helper function to locate the `~/.snore` directory.
+// Helper function to locate the `~/.snore` directory.
 fn get_snore_home_dir() -> Option<PathBuf> {
-    // Tries HOME on Unix/Linux/macOS or USERPROFILE on Windows
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".snore"))
@@ -44,7 +43,6 @@ fn collect_sources(dirs: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
     }
 
     files.sort();
-    // Remove duplicates in case ~/.snore and project_dir point to overlapping locations
     files.dedup();
 
     Ok(files)
@@ -65,7 +63,6 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Collect search directories: ~/.snore (if present) and the target project_dir
     let mut search_dirs = Vec::new();
 
     if let Some(snore_home) = get_snore_home_dir() {
@@ -119,12 +116,19 @@ fn main() {
         std::process::exit(1);
     });
 
-    let bitcode_path = Path::new("main.bc");
+    if let Err(err) = module.verify() {
+        eprintln!("llvm verification error:\n{}", err.to_string());
+        std::process::exit(1);
+    }
 
-    module.write_bitcode_to_path(bitcode_path);
+    let ir_path = Path::new("main.ll");
+    if let Err(err) = module.print_to_file(ir_path) {
+        eprintln!("failed to write LLVM IR: {}", err);
+        std::process::exit(1);
+    }
 
     let status = Command::new("clang")
-        .args(["main.bc", "-o", "main"])
+        .args(["main.ll", "-o", "main"])
         .status()
         .expect("failed to execute clang");
 

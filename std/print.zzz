@@ -1,19 +1,19 @@
 @extern printf
 (ptr :: *u8)++ to s32
 
-@fn print_string
+@val print_string
 do (s :: []u8) to s32
         printf ("%s"^, s^)
         pr_nl()
         return 0
 done
 
-@fn print_s32
+@val print_s32
 do (num :: s32) to s32
         return printf ("%d"^, num)
 done
 
-@fn pr_nl
+@val pr_nl
 do () to s32
         return printf ("\n"^)
 done
