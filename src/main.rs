@@ -128,7 +128,7 @@ fn main() {
     }
 
     let status = Command::new("clang")
-        .args(["main.ll", "-o", "main"])
+        .args(["-O3", "main.ll", "-o", "main"])
         .status()
         .expect("failed to execute clang");
 

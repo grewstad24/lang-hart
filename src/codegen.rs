@@ -334,7 +334,12 @@ impl<'ctx> Codegen<'ctx> {
 
         self.codegen_statements(body)?;
 
-        if !self.has_terminator(llvm_function) {
+        let needs_terminator = self
+            .builder
+            .get_insert_block()
+            .map_or(false, |bb| bb.get_terminator().is_none());
+
+        if needs_terminator {
             let ret_ty = if let Some(sig) = signature {
                 (*sig.return_type).clone()
             } else {
@@ -382,7 +387,12 @@ impl<'ctx> Codegen<'ctx> {
             return Err("entry point '@main' must evaluate to a block".to_string());
         }
 
-        if !self.has_terminator(function) {
+        let needs_terminator = self
+            .builder
+            .get_insert_block()
+            .map_or(false, |bb| bb.get_terminator().is_none());
+
+        if needs_terminator {
             self.exit_scope(stack_ptr)?;
             let unreachable_bb = self.context.append_basic_block(function, "unreachable");
             self.builder
@@ -395,8 +405,6 @@ impl<'ctx> Codegen<'ctx> {
         } else {
             self.local_scopes.pop();
         }
-
-        self.local_scopes = previous_scopes;
         Ok(())
     }
 
@@ -561,7 +569,18 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        self.builder.position_at_end(merge_bb);
+        // If no arm branched to merge_bb, it is unreachable dead code - delete it.
+        // Otherwise, place builder in merge_bb to continue subsequent statements.
+        if merge_bb.get_first_use().is_none() {
+            unsafe {
+                merge_bb
+                    .delete()
+                    .map_err(|_| "failed to delete basic block".to_string())?;
+            }
+        } else {
+            self.builder.position_at_end(merge_bb);
+        }
+
         Ok(())
     }
 
@@ -1293,6 +1312,31 @@ impl<'ctx> Codegen<'ctx> {
                         .into_pointer_value();
 
                     let ret_ty = match &local.ty {
+                        Type::Pointer { element } => match element.as_ref() {
+                            Type::Function { return_type, .. } => *return_type.clone(),
+                            _ => Type::Void,
+                        },
+                        _ => Type::Void,
+                    };
+
+                    let fn_type = match self.llvm_type(&ret_ty) {
+                        Ok(b) => b.fn_type(&[], true),
+                        Err(_) => self.context.void_type().fn_type(&[], true),
+                    };
+
+                    Ok((loaded, ret_ty, fn_type))
+                } else if let Some(global_var) = self.global_vars.get(name) {
+                    let loaded = self
+                        .builder
+                        .build_load(
+                            self.llvm_type(&global_var.ty)?,
+                            global_var.pointer,
+                            "fn_ptr",
+                        )
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value();
+
+                    let ret_ty = match &global_var.ty {
                         Type::Pointer { element } => match element.as_ref() {
                             Type::Function { return_type, .. } => *return_type.clone(),
                             _ => Type::Void,

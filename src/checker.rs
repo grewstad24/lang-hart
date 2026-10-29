@@ -94,11 +94,40 @@ impl Checker {
         Ok(())
     }
 
+    fn declare_definitions(&mut self, program: &Program) -> Result<(), String> {
+        for def in &program.definitions {
+            if let Expression::Block { signature, .. } = &def.value {
+                let mut param_types = Vec::new();
+                let mut expected_return = Type::Void;
+                let mut is_variadic = false;
+
+                if let Some(sig) = signature {
+                    for p in &sig.parameters {
+                        param_types.push(p.ty.clone());
+                    }
+                    expected_return = *sig.return_type.clone();
+                    is_variadic = sig.is_variadic;
+                }
+
+                let fn_ty = Type::Function {
+                    parameters: param_types,
+                    return_type: Box::new(expected_return),
+                    is_variadic,
+                };
+                self.resolved_definitions.insert(def.name.clone(), fn_ty);
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_program(&mut self, program: &Program) -> Result<Program, String> {
         let extern_names: Vec<String> = self.extern_functions.keys().cloned().collect();
         for name in &extern_names {
             self.resolve_external_function(name)?;
         }
+
+        // Register function signatures first so recursive calls can see them
+        self.declare_definitions(program)?;
 
         let definition_names: Vec<String> = self.definitions.keys().cloned().collect();
         for name in &definition_names {
@@ -232,6 +261,14 @@ impl Checker {
 
     fn resolve_definition(&mut self, name: &str) -> Result<Type, String> {
         if let Some(ty) = self.resolved_definitions.get(name) {
+            // If it's a function, typecheck its body if not already visited
+            if matches!(ty, Type::Function { .. }) {
+                if self.resolving_definitions.insert(name.to_string()) {
+                    let expr = self.definitions.get(name).cloned().unwrap();
+                    let _ = self.type_of_expression(&expr)?;
+                }
+                return Ok(self.resolved_definitions[name].clone());
+            }
             return Ok(ty.clone());
         }
 

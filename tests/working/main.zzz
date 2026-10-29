@@ -1,14 +1,13 @@
-@val x
-3
+@val loop do (fn :: ()) to s32
+        fn()
+        return loop(fn)
+done
 
 @main
 do to s32
-        var y :: s32
-        doif
-                x > 5 => 5 -> y
-                else => x -> y
-        end
+        loop(do
+                print_string("im looping!")
+        done)
 
-        print_s32(y)
         return 0
 done
