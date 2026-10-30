@@ -8,6 +8,17 @@ do (count :: s32, fn :: ())
         end
 done
 
+@val repeat
+do (fn :: (), count :: s32)
+        doif
+                count > 0 => {
+                        fn()
+                        repeat(fn, count - 1)
+                }
+        end
+done
+
+
 @val loop
 do (fn :: ())
         fn()

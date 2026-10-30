@@ -9,47 +9,39 @@ use inkwell::values::{
 };
 use inkwell::{AddressSpace, IntPredicate};
 
-use crate::ast::{
+use crate::sema::Checker;
+use crate::syntax::{
     BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
     IfCondition, Program, Signature, Statement, Type, UnaryOperator,
 };
-use crate::checker::Checker;
 
 #[derive(Debug, Clone)]
 enum Binding<'ctx> {
     Void,
-
     Integer {
         ty: Type,
         value: IntValue<'ctx>,
     },
-
     Boolean {
         value: IntValue<'ctx>,
     },
-
     Atom {
         name: String,
         value: IntValue<'ctx>,
     },
-
     Array {
         ty: Type,
         value: ArrayValue<'ctx>,
         storage: Option<PointerValue<'ctx>>,
     },
-
     Pointer {
         ty: Type,
         value: PointerValue<'ctx>,
     },
-
     Slice {
         ty: Type,
         value: StructValue<'ctx>,
-        storage: Option<PointerValue<'ctx>>,
     },
-
     Function {
         value: FunctionValue<'ctx>,
     },
@@ -88,12 +80,10 @@ impl<'ctx> Codegen<'ctx> {
             context,
             module: context.create_module(module_name),
             builder: context.create_builder(),
-
             local_scopes: Vec::new(),
             global_vars: HashMap::new(),
             extern_functions: HashMap::new(),
             atom_table: HashMap::new(),
-
             string_counter: 0,
             branch_counter: 0,
             anon_counter: 0,
@@ -101,14 +91,9 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     pub fn generate(mut self, program: &Program) -> Result<Module<'ctx>, String> {
-        let mut checker = Checker::new(program);
-        let resolved_program = checker.check(program)?;
-
-        self.collect_declarations(&resolved_program)?;
-
-        self.codegen_externals(&resolved_program.extern_functions)?;
-        self.codegen_definitions(&resolved_program.definitions)?;
-
+        self.collect_declarations(program)?;
+        self.codegen_externals(&program.extern_functions)?;
+        self.codegen_definitions(&program.definitions)?;
         Ok(self.module)
     }
 
@@ -405,6 +390,8 @@ impl<'ctx> Codegen<'ctx> {
         } else {
             self.local_scopes.pop();
         }
+
+        self.local_scopes = previous_scopes;
         Ok(())
     }
 
@@ -427,7 +414,6 @@ impl<'ctx> Codegen<'ctx> {
                 self.codegen_statements(statements)?;
                 Ok(())
             }
-
             Statement::Declare { name, ty } => {
                 let llvm_ty = self.llvm_type(ty)?;
 
@@ -445,7 +431,6 @@ impl<'ctx> Codegen<'ctx> {
                 );
                 Ok(())
             }
-
             Statement::Assign { expression, target } => {
                 let current_binding = self.codegen_expression(expression)?;
 
@@ -477,17 +462,14 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(())
             }
-
             Statement::Discard(expression) => {
                 self.codegen_expression(expression)?;
                 Ok(())
             }
-
             Statement::Return(expression) => {
                 let binding = self.codegen_expression(expression)?;
                 self.build_return(&binding)
             }
-
             Statement::If { arms } => self.codegen_doif_statement(arms),
         }
     }
@@ -554,7 +536,6 @@ impl<'ctx> Codegen<'ctx> {
 
                     next_test_bb = false_bb;
                 }
-
                 IfCondition::Else => {
                     self.codegen_statement(&arm.body)?;
 
@@ -569,8 +550,6 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        // If no arm branched to merge_bb, it is unreachable dead code - delete it.
-        // Otherwise, place builder in merge_bb to continue subsequent statements.
         if merge_bb.get_first_use().is_none() {
             unsafe {
                 merge_bb
@@ -590,14 +569,12 @@ impl<'ctx> Codegen<'ctx> {
                 ty: Type::S32,
                 value: self.context.i32_type().const_int(*value as u64, true),
             }),
-
             Expression::Boolean(value) => Ok(Binding::Boolean {
                 value: self
                     .context
                     .bool_type()
                     .const_int(if *value { 1 } else { 0 }, false),
             }),
-
             Expression::Atom(name) => {
                 let id = self.get_atom_id(name);
                 let value = self.context.i32_type().const_int(id as u64, false);
@@ -606,9 +583,7 @@ impl<'ctx> Codegen<'ctx> {
                     value,
                 })
             }
-
             Expression::String(value) => self.codegen_string_literal(value),
-
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
                     let loaded = self
@@ -632,9 +607,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 Err(format!("unknown identifier '{}'", name))
             }
-
             Expression::Signature(_) => Ok(Binding::Void),
-
             Expression::Block { signature, body } => {
                 let anon_name = format!("__anon_block_{}", self.anon_counter);
                 self.anon_counter += 1;
@@ -652,16 +625,12 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(Binding::Function { value: function })
             }
-
             Expression::If { arms } => self.codegen_if_expression(arms),
-
             Expression::Array(elements) => self.codegen_array_literal(elements),
-
             Expression::Unary { operator, operand } => {
                 let operand = self.codegen_expression(operand)?;
                 self.codegen_unary(operator.clone(), &operand)
             }
-
             Expression::Binary {
                 left,
                 operator,
@@ -671,7 +640,6 @@ impl<'ctx> Codegen<'ctx> {
                 let right = self.codegen_expression(right)?;
                 self.codegen_binary(&left, operator.clone(), &right)
             }
-
             Expression::Comparison {
                 left,
                 operator,
@@ -681,20 +649,14 @@ impl<'ctx> Codegen<'ctx> {
                 let right = self.codegen_expression(right)?;
                 self.codegen_comparison(&left, operator.clone(), &right)
             }
-
             Expression::Cast { expression, ty } => {
                 let value = self.codegen_expression(expression)?;
                 self.codegen_cast(value, ty.clone())
             }
-
             Expression::Call { target, arguments } => self.codegen_call(target, arguments),
-
             Expression::Index { expression, index } => self.codegen_index(expression, index),
-
             Expression::Member { expression, field } => self.codegen_member(expression, field),
-
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
-
             Expression::Decay(expression) => self.codegen_decay(expression),
         }
     }
@@ -770,7 +732,6 @@ impl<'ctx> Codegen<'ctx> {
 
                     next_test_bb = false_bb;
                 }
-
                 IfCondition::Else => {
                     let body_binding = self.codegen_expression(&arm.body)?;
 
@@ -850,7 +811,6 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 _ => Err(format!("unknown slice member '.{}'", field)),
             },
-
             Binding::Array {
                 ty: Type::Array { ref element, size },
                 ..
@@ -885,7 +845,6 @@ impl<'ctx> Codegen<'ctx> {
                 }),
                 _ => Err(format!("unknown array member '.{}'", field)),
             },
-
             other => Err(format!(
                 "member access '.{}' unsupported on {:?}",
                 field, other
@@ -913,7 +872,6 @@ impl<'ctx> Codegen<'ctx> {
                     value: ptr_val,
                 })
             }
-
             Binding::Array {
                 ty: Type::Array { ref element, size },
                 ..
@@ -941,9 +899,7 @@ impl<'ctx> Codegen<'ctx> {
                     value: pointer,
                 })
             }
-
             Binding::Pointer { .. } => Ok(binding),
-
             other => Err(format!("cannot decay non-array/slice binding: {:?}", other)),
         }
     }
@@ -985,7 +941,6 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.context.i32_type().const_array(&values)
             }
-
             Type::S16
             | Type::S32
             | Type::S64
@@ -1003,7 +958,6 @@ impl<'ctx> Codegen<'ctx> {
                     .into_int_type()
                     .const_array(&values)
             }
-
             Type::Array { .. } => {
                 let values = bindings
                     .iter()
@@ -1017,7 +971,6 @@ impl<'ctx> Codegen<'ctx> {
                     .into_array_type()
                     .const_array(&values)
             }
-
             Type::Pointer { .. } | Type::Slice { .. } | Type::Function { .. } | Type::Void => {
                 return Err(
                     "array literals of pointers, slices, functions, or void are not supported"
@@ -1046,7 +999,6 @@ impl<'ctx> Codegen<'ctx> {
 
         match operator {
             UnaryOperator::Plus => Ok(Binding::Integer { ty, value }),
-
             UnaryOperator::Minus => {
                 let value = self
                     .builder
@@ -1082,17 +1034,14 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_int_add(left_value, right_value, "addtmp")
                 .map_err(|error| error.to_string())?,
-
             BinaryOperator::Subtract => self
                 .builder
                 .build_int_sub(left_value, right_value, "subtmp")
                 .map_err(|error| error.to_string())?,
-
             BinaryOperator::Multiply => self
                 .builder
                 .build_int_mul(left_value, right_value, "multmp")
                 .map_err(|error| error.to_string())?,
-
             BinaryOperator::Divide => {
                 if self.is_signed(&left_type) {
                     self.builder
@@ -1104,7 +1053,6 @@ impl<'ctx> Codegen<'ctx> {
                         .map_err(|error| error.to_string())?
                 }
             }
-
             BinaryOperator::Modulo => {
                 if self.is_signed(&left_type) {
                     self.builder
@@ -1151,7 +1099,6 @@ impl<'ctx> Codegen<'ctx> {
         let predicate = match operator {
             ComparisonOperator::Equal => IntPredicate::EQ,
             ComparisonOperator::NotEqual => IntPredicate::NE,
-
             ComparisonOperator::Less => {
                 if self.is_signed(&left_type) {
                     IntPredicate::SLT
@@ -1159,7 +1106,6 @@ impl<'ctx> Codegen<'ctx> {
                     IntPredicate::ULT
                 }
             }
-
             ComparisonOperator::LessEqual => {
                 if self.is_signed(&left_type) {
                     IntPredicate::SLE
@@ -1167,7 +1113,6 @@ impl<'ctx> Codegen<'ctx> {
                     IntPredicate::ULE
                 }
             }
-
             ComparisonOperator::Greater => {
                 if self.is_signed(&left_type) {
                     IntPredicate::SGT
@@ -1175,7 +1120,6 @@ impl<'ctx> Codegen<'ctx> {
                     IntPredicate::UGT
                 }
             }
-
             ComparisonOperator::GreaterEqual => {
                 if self.is_signed(&left_type) {
                     IntPredicate::SGE
@@ -1455,7 +1399,6 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.binding_from_basic_value(&element, loaded)
             }
-
             Type::Slice { element } => {
                 let slice_struct = match binding {
                     Binding::Slice { value, .. } => value,
@@ -1483,7 +1426,6 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.binding_from_basic_value(&element, loaded)
             }
-
             other => Err(format!("cannot index value of type {:?}", other)),
         }
     }
@@ -1511,7 +1453,6 @@ impl<'ctx> Codegen<'ctx> {
 
                 Err(format!("unknown variable '{}'", name))
             }
-
             Expression::Index { expression, index } => {
                 let binding = self.codegen_expression(expression)?;
                 let index_binding = self.codegen_expression(index)?;
@@ -1551,7 +1492,6 @@ impl<'ctx> Codegen<'ctx> {
                             value: pointer,
                         })
                     }
-
                     Type::Slice { element } => {
                         let slice_struct = match binding {
                             Binding::Slice { value, .. } => value,
@@ -1577,11 +1517,9 @@ impl<'ctx> Codegen<'ctx> {
                             value: pointer,
                         })
                     }
-
                     other => Err(format!("cannot take address of value of type {:?}", other)),
                 }
             }
-
             _ => Err("address-of requires a local variable or array index".to_string()),
         }
     }
@@ -1597,7 +1535,6 @@ impl<'ctx> Codegen<'ctx> {
                 storage: Some(storage),
                 ..
             } => Ok(storage),
-
             Binding::Array {
                 value,
                 storage: None,
@@ -1621,7 +1558,6 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(temporary)
             }
-
             _ => Err("array does not have addressable storage".to_string()),
         }
     }
@@ -1666,7 +1602,6 @@ impl<'ctx> Codegen<'ctx> {
                 element: Box::new(Type::U8),
             },
             value: slice_val,
-            storage: None,
         })
     }
 
@@ -1677,40 +1612,32 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         match ty {
             Type::Void => Ok(Binding::Void),
-
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
                 value: value.into_int_value(),
             }),
-
             Type::Bool => Ok(Binding::Boolean {
                 value: value.into_int_value(),
             }),
-
             Type::S16 | Type::S32 | Type::S64 | Type::U8 | Type::U16 | Type::U32 | Type::U64 => {
                 Ok(Binding::Integer {
                     ty: ty.clone(),
                     value: value.into_int_value(),
                 })
             }
-
             Type::Array { .. } => Ok(Binding::Array {
                 ty: ty.clone(),
                 value: value.into_array_value(),
                 storage: None,
             }),
-
             Type::Pointer { .. } => Ok(Binding::Pointer {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
             }),
-
             Type::Slice { .. } => Ok(Binding::Slice {
                 ty: ty.clone(),
                 value: value.into_struct_value(),
-                storage: None,
             }),
-
             Type::Function { .. } => Ok(Binding::Pointer {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
@@ -1784,15 +1711,12 @@ impl<'ctx> Codegen<'ctx> {
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
             Type::U8 => Ok(self.context.i8_type().into()),
             Type::Bool => Ok(self.context.bool_type().into()),
-
             Type::Array { element, size } => {
                 Ok(self.llvm_type(element)?.array_type(*size as u32).into())
             }
-
             Type::Pointer { .. } | Type::Function { .. } => {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
-
             Type::Slice { .. } => Ok(self.slice_type().into()),
         }
     }
@@ -1806,7 +1730,6 @@ impl<'ctx> Codegen<'ctx> {
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),
             Type::U8 => Ok(self.context.i8_type().const_zero().into()),
             Type::Bool => Ok(self.context.bool_type().const_zero().into()),
-
             Type::Array { element, size } => {
                 let array_type = self
                     .llvm_type(&Type::Array {
@@ -1817,25 +1740,16 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(array_type.const_zero().into())
             }
-
             Type::Pointer { .. } | Type::Function { .. } => Ok(self
                 .context
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
-
             Type::Slice { .. } => Ok(self.slice_type().const_zero().into()),
         }
     }
 
     fn is_signed(&self, ty: &Type) -> bool {
         matches!(ty, Type::S16 | Type::S32 | Type::S64)
-    }
-
-    fn has_terminator(&self, function: FunctionValue<'ctx>) -> bool {
-        function
-            .get_last_basic_block()
-            .and_then(|block| block.get_terminator())
-            .is_some()
     }
 }

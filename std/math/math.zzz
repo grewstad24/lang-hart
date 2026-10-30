@@ -1,0 +1,19 @@
+@val add
+do (a :: s32, b :: s32) to s32
+        return a + b
+done
+
+@val sub
+do (a :: s32, b :: s32) to s32
+        return a - b
+done
+
+@val mul
+do (a :: s32, b :: s32) to s32
+        return a * b
+done
+
+@val div
+do (a :: s32, b :: s32) to s32
+        return a / b
+done

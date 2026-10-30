@@ -1,5 +1,5 @@
-pub mod ast;
-pub mod checker;
 pub mod codegen;
-pub mod lexer;
-pub mod parser;
+pub mod config;
+pub mod driver;
+pub mod sema;
+pub mod syntax;
