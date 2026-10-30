@@ -45,6 +45,18 @@ impl fmt::Display for NamespacePath {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct StructFieldType {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructFieldInit {
+    pub name: String,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
     S16,
@@ -57,6 +69,7 @@ pub enum Type {
     Bool,
     Atom(String),
     Alias(String),
+    Struct(Vec<StructFieldType>),
     Pointer {
         element: Box<Type>,
     },
@@ -140,6 +153,7 @@ pub enum Expression {
     Atom(String),
     Identifier(String),
     Array(Vec<Expression>),
+    Struct(Vec<StructFieldInit>),
     Signature(Signature),
     Unary {
         operator: UnaryOperator,
@@ -262,6 +276,7 @@ pub enum Token {
     Return,
     To,
     As,
+    Fn,
     TypeS16,
     TypeS32,
     TypeS64,
@@ -577,6 +592,7 @@ impl Lexer {
             "return" => Token::Return,
             "to" => Token::To,
             "as" => Token::As,
+            "Fn" => Token::Fn,
             "s16" => Token::TypeS16,
             "s32" => Token::TypeS32,
             "s64" => Token::TypeS64,
@@ -704,6 +720,97 @@ impl Parser {
                 Ok(name)
             }
             token => Err(format!("expected identifier, found {:?}", token)),
+        }
+    }
+
+    fn expect_field_name(&mut self) -> Result<String, String> {
+        self.skip_newlines();
+        match self.peek().clone() {
+            Token::Identifier(name) => {
+                self.advance();
+                Ok(name)
+            }
+            Token::To => {
+                self.advance();
+                Ok("to".to_string())
+            }
+            Token::Val => {
+                self.advance();
+                Ok("val".to_string())
+            }
+            Token::Var => {
+                self.advance();
+                Ok("var".to_string())
+            }
+            Token::Do => {
+                self.advance();
+                Ok("do".to_string())
+            }
+            Token::Done => {
+                self.advance();
+                Ok("done".to_string())
+            }
+            Token::If => {
+                self.advance();
+                Ok("if".to_string())
+            }
+            Token::DoIf => {
+                self.advance();
+                Ok("doif".to_string())
+            }
+            Token::Else => {
+                self.advance();
+                Ok("else".to_string())
+            }
+            Token::End => {
+                self.advance();
+                Ok("end".to_string())
+            }
+            Token::Return => {
+                self.advance();
+                Ok("return".to_string())
+            }
+            Token::As => {
+                self.advance();
+                Ok("as".to_string())
+            }
+            Token::Fn => {
+                self.advance();
+                Ok("Fn".to_string())
+            }
+            Token::TypeS16 => {
+                self.advance();
+                Ok("s16".to_string())
+            }
+            Token::TypeS32 => {
+                self.advance();
+                Ok("s32".to_string())
+            }
+            Token::TypeS64 => {
+                self.advance();
+                Ok("s64".to_string())
+            }
+            Token::TypeU8 => {
+                self.advance();
+                Ok("u8".to_string())
+            }
+            Token::TypeU16 => {
+                self.advance();
+                Ok("u16".to_string())
+            }
+            Token::TypeU32 => {
+                self.advance();
+                Ok("u32".to_string())
+            }
+            Token::TypeU64 => {
+                self.advance();
+                Ok("u64".to_string())
+            }
+            Token::TypeBool => {
+                self.advance();
+                Ok("bool".to_string())
+            }
+            token => Err(format!("expected field name identifier, found {:?}", token)),
         }
     }
 
@@ -1060,6 +1167,52 @@ impl Parser {
         Ok(arguments)
     }
 
+    pub fn parse_struct_fields(
+        &mut self,
+        closing_token: Token,
+    ) -> Result<Vec<StructFieldInit>, String> {
+        let mut fields = Vec::new();
+        self.skip_newlines();
+
+        while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
+            self.expect(Token::At)?;
+            let name = self.expect_field_name()?;
+            self.skip_newlines();
+            let value = self.parse_expression()?;
+            fields.push(StructFieldInit { name, value });
+
+            let mut had_delimiter = false;
+            while self.is(Token::Comma) || self.is(Token::Newline) {
+                had_delimiter = true;
+                self.advance();
+            }
+
+            if self.is(closing_token.clone()) {
+                break;
+            }
+
+            if !had_delimiter {
+                break;
+            }
+        }
+
+        if closing_token != Token::Eof {
+            self.expect(closing_token)?;
+        }
+        Ok(fields)
+    }
+
+    fn is_struct_literal_start(&self) -> bool {
+        let mut idx = self.cursor;
+        while idx < self.tokens.len() {
+            if self.tokens[idx] != Token::Newline {
+                return self.tokens[idx] == Token::At;
+            }
+            idx += 1;
+        }
+        false
+    }
+
     fn parse_primary(&mut self) -> Result<Expression, String> {
         match self.peek().clone() {
             Token::Integer(value) => {
@@ -1085,6 +1238,12 @@ impl Parser {
             Token::LParen => {
                 self.advance();
                 self.skip_newlines();
+
+                if self.is_struct_literal_start() {
+                    let fields = self.parse_struct_fields(Token::RParen)?;
+                    return Ok(Expression::Struct(fields));
+                }
+
                 if self.is_signature_start() {
                     let sig = self.parse_signature_inner()?;
                     self.expect(Token::RParen)?;
@@ -1144,7 +1303,7 @@ impl Parser {
         self.skip_newlines();
 
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
-            let name = self.expect_identifier()?;
+            let name = self.expect_field_name()?;
             self.expect(Token::ColonColon)?;
             self.skip_newlines();
             let ty = self.parse_type()?;
@@ -1352,6 +1511,51 @@ impl Parser {
     pub fn parse_type(&mut self) -> Result<Type, String> {
         self.skip_newlines();
         match self.peek().clone() {
+            Token::Fn => {
+                self.advance();
+                self.skip_newlines();
+                self.expect(Token::LBrace)?;
+                self.skip_newlines();
+
+                // Fn{(param :: Ty) to Ret} or Fn{() to Ret} or Fn{()}
+                let mut parameters = Vec::new();
+                if self.is(Token::LParen) {
+                    self.advance();
+                    self.skip_newlines();
+                    if !self.is(Token::RParen) {
+                        parameters = self.parse_signature_inner()?;
+                    }
+                    self.expect(Token::RParen)?;
+                }
+
+                self.skip_newlines();
+
+                let is_variadic = if self.is(Token::PlusPlus) {
+                    self.advance();
+                    self.skip_newlines();
+                    true
+                } else {
+                    false
+                };
+
+                let return_type = if self.is(Token::To) {
+                    self.advance();
+                    self.skip_newlines();
+                    Box::new(self.parse_type()?)
+                } else {
+                    Box::new(Type::Void)
+                };
+
+                self.skip_newlines();
+                self.expect(Token::RBrace)?;
+
+                let param_types = parameters.into_iter().map(|p| p.ty).collect();
+                Ok(Type::Function {
+                    parameters: param_types,
+                    return_type,
+                    is_variadic,
+                })
+            }
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Type::Alias(name))
@@ -1430,32 +1634,20 @@ impl Parser {
             Token::LParen => {
                 self.advance();
                 self.skip_newlines();
-                let mut parameters = Vec::new();
+
+                let mut fields = Vec::new();
                 if !self.is(Token::RParen) {
-                    parameters = self.parse_signature_inner()?;
+                    let parameters = self.parse_signature_inner()?;
+                    fields = parameters
+                        .into_iter()
+                        .map(|p| StructFieldType {
+                            name: p.name,
+                            ty: p.ty,
+                        })
+                        .collect();
                 }
                 self.expect(Token::RParen)?;
-                self.skip_newlines();
-                let param_types = parameters.into_iter().map(|p| p.ty).collect();
-                let is_variadic = if self.is(Token::PlusPlus) {
-                    self.advance();
-                    self.skip_newlines();
-                    true
-                } else {
-                    false
-                };
-                let return_type = if self.is(Token::To) {
-                    self.advance();
-                    self.skip_newlines();
-                    Box::new(self.parse_type()?)
-                } else {
-                    Box::new(Type::Void)
-                };
-                Ok(Type::Function {
-                    parameters: param_types,
-                    return_type,
-                    is_variadic,
-                })
+                Ok(Type::Struct(fields))
             }
             token => Err(format!("expected type, found {:?}", token)),
         }

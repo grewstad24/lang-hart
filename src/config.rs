@@ -1,217 +1,4 @@
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    String(String),
-    Number(i64),
-    List(Vec<Value>),
-    Scope(HashMap<String, Value>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Token {
-    At,
-    Ident(String),
-    String(String),
-    Number(i64),
-    OpenParen,
-    CloseParen,
-    OpenBracket,
-    CloseBracket,
-    Eof,
-}
-
-pub struct Lexer<'a> {
-    chars: std::iter::Peekable<std::str::Chars<'a>>,
-}
-
-impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
-        Self {
-            chars: input.chars().peekable(),
-        }
-    }
-
-    fn skip_whitespace_and_comments(&mut self) {
-        while let Some(&ch) = self.chars.peek() {
-            if ch.is_whitespace() || ch == ',' {
-                self.chars.next();
-            } else if ch == '#' || ch == ';' {
-                while let Some(&c) = self.chars.peek() {
-                    self.chars.next();
-                    if c == '\n' {
-                        break;
-                    }
-                }
-            } else {
-                break;
-            }
-        }
-    }
-
-    pub fn next_token(&mut self) -> Result<Token, String> {
-        self.skip_whitespace_and_comments();
-
-        let ch = match self.chars.next() {
-            Some(c) => c,
-            None => return Ok(Token::Eof),
-        };
-
-        match ch {
-            '@' => Ok(Token::At),
-            '(' => Ok(Token::OpenParen),
-            ')' => Ok(Token::CloseParen),
-            '[' => Ok(Token::OpenBracket),
-            ']' => Ok(Token::CloseBracket),
-            '"' => {
-                let mut string = String::new();
-                while let Some(c) = self.chars.next() {
-                    if c == '"' {
-                        return Ok(Token::String(string));
-                    }
-                    if c == '\\' {
-                        if let Some(escaped) = self.chars.next() {
-                            string.push(match escaped {
-                                'n' => '\n',
-                                't' => '\t',
-                                'r' => '\r',
-                                '"' => '"',
-                                '\\' => '\\',
-                                other => other,
-                            });
-                            continue;
-                        }
-                    }
-                    string.push(c);
-                }
-                Err("unterminated string literal in yawn file".to_string())
-            }
-            c if c.is_ascii_digit() || c == '-' => {
-                let mut s = String::new();
-                s.push(c);
-                while let Some(&next) = self.chars.peek() {
-                    if next.is_ascii_digit() {
-                        s.push(self.chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                let n = s
-                    .parse::<i64>()
-                    .map_err(|_| format!("invalid integer: {}", s))?;
-                Ok(Token::Number(n))
-            }
-            c if c.is_alphanumeric() || c == '_' => {
-                let mut s = String::new();
-                s.push(c);
-                while let Some(&next) = self.chars.peek() {
-                    if next.is_alphanumeric() || next == '_' || next == '-' {
-                        s.push(self.chars.next().unwrap());
-                    } else {
-                        break;
-                    }
-                }
-                Ok(Token::Ident(s))
-            }
-            other => Err(format!("unexpected character in yawn: '{}'", other)),
-        }
-    }
-}
-
-pub struct Parser {
-    tokens: Vec<Token>,
-    cursor: usize,
-}
-
-impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, cursor: 0 }
-    }
-
-    fn peek(&self) -> &Token {
-        self.tokens.get(self.cursor).unwrap_or(&Token::Eof)
-    }
-
-    fn advance(&mut self) -> &Token {
-        if self.cursor < self.tokens.len() {
-            self.cursor += 1;
-        }
-        self.tokens.get(self.cursor - 1).unwrap_or(&Token::Eof)
-    }
-
-    fn expect(&mut self, expected: Token) -> Result<(), String> {
-        let current = self.peek().clone();
-        if current == expected {
-            self.advance();
-            Ok(())
-        } else {
-            Err(format!("expected {:?}, found {:?}", expected, current))
-        }
-    }
-
-    fn expect_ident(&mut self) -> Result<String, String> {
-        match self.peek().clone() {
-            Token::Ident(name) => {
-                self.advance();
-                Ok(name)
-            }
-            token => Err(format!("expected identifier after '@', found {:?}", token)),
-        }
-    }
-
-    fn parse_entry(&mut self) -> Result<(String, Value), String> {
-        self.expect(Token::At)?;
-        let key = self.expect_ident()?;
-        let value = self.parse_value()?;
-        Ok((key, value))
-    }
-
-    pub fn parse_value(&mut self) -> Result<Value, String> {
-        match self.peek().clone() {
-            Token::String(s) => {
-                self.advance();
-                Ok(Value::String(s))
-            }
-            Token::Number(n) => {
-                self.advance();
-                Ok(Value::Number(n))
-            }
-            Token::OpenBracket => self.parse_list(),
-            Token::OpenParen => self.parse_scope(),
-            token => Err(format!("expected value, found {:?}", token)),
-        }
-    }
-
-    fn parse_list(&mut self) -> Result<Value, String> {
-        self.expect(Token::OpenBracket)?;
-        let mut items = Vec::new();
-        while *self.peek() != Token::CloseBracket && *self.peek() != Token::Eof {
-            items.push(self.parse_value()?);
-        }
-        self.expect(Token::CloseBracket)?;
-        Ok(Value::List(items))
-    }
-
-    fn parse_scope(&mut self) -> Result<Value, String> {
-        self.expect(Token::OpenParen)?;
-        let mut scope = HashMap::new();
-        while *self.peek() != Token::CloseParen && *self.peek() != Token::Eof {
-            let (k, v) = self.parse_entry()?;
-            scope.insert(k, v);
-        }
-        self.expect(Token::CloseParen)?;
-        Ok(Value::Scope(scope))
-    }
-
-    pub fn parse_root(&mut self) -> Result<HashMap<String, Value>, String> {
-        let mut root = HashMap::new();
-        while *self.peek() != Token::Eof {
-            let (k, v) = self.parse_entry()?;
-            root.insert(k, v);
-        }
-        Ok(root)
-    }
-}
+use crate::syntax::{Expression, Lexer, Parser, Token};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportRule {
@@ -227,103 +14,199 @@ pub struct ModConfig {
 
 impl ModConfig {
     pub fn parse_and_validate(source: &str, file_path: &str) -> Result<Self, String> {
-        let mut lexer = Lexer::new(source);
-        let mut tokens = Vec::new();
-        loop {
-            let token = lexer
-                .next_token()
-                .map_err(|e| format!("in '{}': {}", file_path, e))?;
-            if token == Token::Eof {
-                tokens.push(token);
-                break;
-            }
-            tokens.push(token);
-        }
+        let tokens = Lexer::new(source.to_string())
+            .tokenize()
+            .map_err(|e| format!("in '{}': lexer error: {}", file_path, e))?;
 
         let mut parser = Parser::new(tokens);
-        let root = parser
-            .parse_root()
+        let fields = parser
+            .parse_struct_fields(Token::Eof)
             .map_err(|e| format!("in '{}': {}", file_path, e))?;
 
         let mut exports = Vec::new();
-        if let Some(export_val) = root.get("export") {
-            let list = match export_val {
-                Value::List(l) => l,
-                other => {
-                    return Err(format!(
-                        "in '{}': @export must be a list, found {:?}",
-                        file_path, other
-                    ));
-                }
-            };
-
-            for item in list {
-                let scope = match item {
-                    Value::Scope(s) => s,
-                    other => {
-                        return Err(format!(
-                            "in '{}': each item in @export must be ( ... ), found {:?}",
-                            file_path, other
-                        ));
-                    }
-                };
-
-                let symbol_val = scope.get("symbol").ok_or_else(|| {
-                    format!("in '{}': missing '@symbol' in export group", file_path)
-                })?;
-                let to_val = scope
-                    .get("to")
-                    .ok_or_else(|| format!("in '{}': missing '@to' in export group", file_path))?;
-
-                let symbols = extract_string_list(symbol_val, file_path, "@symbol")?;
-                let to = extract_string_list(to_val, file_path, "@to")?;
-
-                exports.push(ExportRule { symbols, to });
-            }
-        }
-
         let mut imports = Vec::new();
-        if let Some(import_val) = root.get("import") {
-            match import_val {
-                Value::List(items) => {
-                    for item in items {
-                        let segs = extract_string_list(item, file_path, "each @import item")?;
-                        imports.push(segs);
-                    }
+
+        for field in fields {
+            Self::assert_constant_data_expr(&field.value, file_path)?;
+
+            match field.name.as_str() {
+                "export" => {
+                    exports = Self::parse_export_directive(&field.value, file_path)?;
+                }
+                "import" => {
+                    imports = Self::parse_import_directive(&field.value, file_path)?;
                 }
                 other => {
                     return Err(format!(
-                        "in '{}': @import must be a list of lists, found {:?}",
+                        "in '{}': unknown directive in mod.yawn: '@{}'",
                         file_path, other
                     ));
                 }
             }
         }
 
-        Ok(ModConfig { exports, imports })
+        Ok(Self { exports, imports })
     }
-}
 
-fn extract_string_list(val: &Value, path: &str, field: &str) -> Result<Vec<String>, String> {
-    match val {
-        Value::List(items) => {
-            let mut result = Vec::new();
-            for item in items {
-                match item {
-                    Value::String(s) => result.push(s.clone()),
-                    other => {
-                        return Err(format!(
-                            "in '{}': expected string in {}, found {:?}",
-                            path, field, other
-                        ));
+    fn assert_constant_data_expr(expr: &Expression, file_path: &str) -> Result<(), String> {
+        match expr {
+            Expression::Integer(_)
+            | Expression::String(_)
+            | Expression::Boolean(_)
+            | Expression::Atom(_)
+            | Expression::Identifier(_) => Ok(()),
+            Expression::Array(elements) => {
+                for el in elements {
+                    Self::assert_constant_data_expr(el, file_path)?;
+                }
+                Ok(())
+            }
+            Expression::Struct(fields) => {
+                for f in fields {
+                    Self::assert_constant_data_expr(&f.value, file_path)?;
+                }
+                Ok(())
+            }
+            Expression::Block { .. } => Err(format!(
+                "in '{}': functions ('do...done') are prohibited in mod.yawn",
+                file_path
+            )),
+            Expression::Cast { .. } => Err(format!(
+                "in '{}': type casts ('as') are prohibited in mod.yawn",
+                file_path
+            )),
+            Expression::Call { .. } => Err(format!(
+                "in '{}': function and method calls are prohibited in mod.yawn",
+                file_path
+            )),
+            _ => Err(format!(
+                "in '{}': dynamic expressions are prohibited in mod.yawn",
+                file_path
+            )),
+        }
+    }
+
+    /// Enforces: @export must be strictly an Array of Structs:
+    /// `[] ( @symbol []String, @to []String )`
+    fn parse_export_directive(
+        expr: &Expression,
+        file_path: &str,
+    ) -> Result<Vec<ExportRule>, String> {
+        match expr {
+            Expression::Array(elements) => {
+                let mut rules = Vec::with_capacity(elements.len());
+                for el in elements {
+                    match el {
+                        Expression::Struct(fields) => {
+                            let mut symbols = None;
+                            let mut to = None;
+
+                            for field in fields {
+                                match field.name.as_str() {
+                                    "symbols" | "symbol" => {
+                                        symbols = Some(Self::parse_string_array(
+                                            &field.value,
+                                            file_path,
+                                            "@symbol",
+                                        )?);
+                                    }
+                                    "to" => {
+                                        to = Some(Self::parse_string_array(
+                                            &field.value,
+                                            file_path,
+                                            "@to",
+                                        )?);
+                                    }
+                                    other => {
+                                        return Err(format!(
+                                            "in '{}': unknown export field '@{}', expected '@symbol' or '@to'",
+                                            file_path, other
+                                        ));
+                                    }
+                                }
+                            }
+
+                            let symbols = symbols.ok_or_else(|| {
+                                format!(
+                                    "in '{}': export struct missing required field '@symbol'",
+                                    file_path
+                                )
+                            })?;
+                            let to = to.ok_or_else(|| {
+                                format!(
+                                    "in '{}': export struct missing required field '@to'",
+                                    file_path
+                                )
+                            })?;
+
+                            rules.push(ExportRule { symbols, to });
+                        }
+                        _ => {
+                            return Err(format!(
+                                "in '{}': type mismatch for @export: expected array of structs '[]( @symbol []String, @to []String )'",
+                                file_path
+                            ));
+                        }
                     }
                 }
+                Ok(rules)
             }
-            Ok(result)
+            _ => Err(format!(
+                "in '{}': type mismatch for @export: expected array of structs '[]( @symbol []String, @to []String )'",
+                file_path
+            )),
         }
-        other => Err(format!(
-            "in '{}': expected list in {}, found {:?}",
-            path, field, other
-        )),
+    }
+
+    /// Enforces: @import must be strictly an Array of Arrays of Strings:
+    /// `[][]String`
+    fn parse_import_directive(
+        expr: &Expression,
+        file_path: &str,
+    ) -> Result<Vec<Vec<String>>, String> {
+        match expr {
+            Expression::Array(elements) => {
+                let mut imports = Vec::with_capacity(elements.len());
+                for el in elements {
+                    let path = Self::parse_string_array(el, file_path, "import entry")?;
+                    imports.push(path);
+                }
+                Ok(imports)
+            }
+            _ => Err(format!(
+                "in '{}': type mismatch for @import: expected array of string arrays '[][]String'",
+                file_path
+            )),
+        }
+    }
+
+    /// Enforces: value must strictly be `[]String` (an array where every element is an identifier, atom, or string)
+    fn parse_string_array(
+        expr: &Expression,
+        file_path: &str,
+        context: &str,
+    ) -> Result<Vec<String>, String> {
+        match expr {
+            Expression::Array(elements) => elements
+                .iter()
+                .map(|e| Self::extract_string(e, file_path, context))
+                .collect(),
+            _ => Err(format!(
+                "in '{}': expected {} to be an array of strings '[]String'",
+                file_path, context
+            )),
+        }
+    }
+
+    fn extract_string(expr: &Expression, file_path: &str, context: &str) -> Result<String, String> {
+        match expr {
+            Expression::Identifier(name) | Expression::Atom(name) => Ok(name.clone()),
+            Expression::String(bytes) => String::from_utf8(bytes.clone())
+                .map_err(|_| format!("in '{}': invalid UTF-8 in {}", file_path, context)),
+            _ => Err(format!(
+                "in '{}': expected string or identifier in {}, found {:?}",
+                file_path, context, expr
+            )),
+        }
     }
 }

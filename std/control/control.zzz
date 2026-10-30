@@ -1,5 +1,5 @@
 @val times
-do (count :: s32, fn :: ())
+do (count :: s32, fn :: Fn{()})
         doif
                 count > 0 => {
                         fn()
@@ -9,7 +9,7 @@ do (count :: s32, fn :: ())
 done
 
 @val repeat
-do (fn :: (), count :: s32)
+do (fn :: Fn{()}, count :: s32)
         doif
                 count > 0 => {
                         fn()
@@ -20,7 +20,7 @@ done
 
 
 @val loop
-do (fn :: ())
+do (fn :: Fn{()})
         fn()
         loop(fn)
 done

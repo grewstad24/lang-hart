@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,8 +10,8 @@ use crate::codegen::Codegen;
 use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, ExternalFunction, Lexer, LogicalModule, Parser, Program, SourceFile, Type,
-    TypeAlias,
+    Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, Parameter,
+    Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
 };
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
@@ -122,6 +122,177 @@ fn canonicalize_type(ty: &Type, checker: &Checker) -> Result<Type, String> {
     checker.resolve_type(ty)
 }
 
+fn canonicalize_signature(sig: &Signature, checker: &Checker) -> Result<Signature, String> {
+    let mut resolved_params = Vec::with_capacity(sig.parameters.len());
+    for p in &sig.parameters {
+        resolved_params.push(Parameter {
+            name: p.name.clone(),
+            ty: canonicalize_type(&p.ty, checker)?,
+        });
+    }
+
+    let resolved_ret = canonicalize_type(sig.return_type.as_ref(), checker)?;
+    Ok(Signature {
+        parameters: resolved_params,
+        return_type: Box::new(resolved_ret),
+        is_variadic: sig.is_variadic,
+    })
+}
+
+fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Statement, String> {
+    match stmt {
+        Statement::Compound(stmts) => {
+            let mut resolved = Vec::with_capacity(stmts.len());
+            for s in stmts {
+                resolved.push(canonicalize_statement(s, checker)?);
+            }
+            Ok(Statement::Compound(resolved))
+        }
+        Statement::Declare { name, ty } => Ok(Statement::Declare {
+            name: name.clone(),
+            ty: canonicalize_type(ty, checker)?,
+        }),
+        Statement::Assign { expression, target } => Ok(Statement::Assign {
+            expression: canonicalize_expression(expression, checker)?,
+            target: target.clone(),
+        }),
+        Statement::Discard(expr) => Ok(Statement::Discard(canonicalize_expression(expr, checker)?)),
+        Statement::Return(expr) => Ok(Statement::Return(canonicalize_expression(expr, checker)?)),
+        Statement::If { arms } => {
+            let mut resolved_arms = Vec::with_capacity(arms.len());
+            for arm in arms {
+                let cond = match &arm.condition {
+                    crate::syntax::IfCondition::Expression(e) => {
+                        crate::syntax::IfCondition::Expression(canonicalize_expression(e, checker)?)
+                    }
+                    crate::syntax::IfCondition::Else => crate::syntax::IfCondition::Else,
+                };
+                let body = Box::new(canonicalize_statement(&arm.body, checker)?);
+                resolved_arms.push(DoIfArm {
+                    condition: cond,
+                    body,
+                });
+            }
+            Ok(Statement::If {
+                arms: resolved_arms,
+            })
+        }
+    }
+}
+
+fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expression, String> {
+    match expr {
+        Expression::Integer(v) => Ok(Expression::Integer(*v)),
+        Expression::String(v) => Ok(Expression::String(v.clone())),
+        Expression::Boolean(v) => Ok(Expression::Boolean(*v)),
+        Expression::Atom(v) => Ok(Expression::Atom(v.clone())),
+        Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
+        Expression::Array(elements) => {
+            let mut resolved = Vec::with_capacity(elements.len());
+            for el in elements {
+                resolved.push(canonicalize_expression(el, checker)?);
+            }
+            Ok(Expression::Array(resolved))
+        }
+        Expression::Struct(fields) => {
+            let mut resolved = Vec::with_capacity(fields.len());
+            for f in fields {
+                resolved.push(StructFieldInit {
+                    name: f.name.clone(),
+                    value: canonicalize_expression(&f.value, checker)?,
+                });
+            }
+            Ok(Expression::Struct(resolved))
+        }
+        Expression::Signature(sig) => {
+            Ok(Expression::Signature(canonicalize_signature(sig, checker)?))
+        }
+        Expression::Unary { operator, operand } => Ok(Expression::Unary {
+            operator: operator.clone(),
+            operand: Box::new(canonicalize_expression(operand, checker)?),
+        }),
+        Expression::Binary {
+            left,
+            operator,
+            right,
+        } => Ok(Expression::Binary {
+            left: Box::new(canonicalize_expression(left, checker)?),
+            operator: operator.clone(),
+            right: Box::new(canonicalize_expression(right, checker)?),
+        }),
+        Expression::Comparison {
+            left,
+            operator,
+            right,
+        } => Ok(Expression::Comparison {
+            left: Box::new(canonicalize_expression(left, checker)?),
+            operator: operator.clone(),
+            right: Box::new(canonicalize_expression(right, checker)?),
+        }),
+        Expression::Cast { expression, ty } => Ok(Expression::Cast {
+            expression: Box::new(canonicalize_expression(expression, checker)?),
+            ty: canonicalize_type(ty, checker)?,
+        }),
+        Expression::Call { target, arguments } => {
+            let mut resolved_args = Vec::with_capacity(arguments.len());
+            for arg in arguments {
+                resolved_args.push(canonicalize_expression(arg, checker)?);
+            }
+            Ok(Expression::Call {
+                target: Box::new(canonicalize_expression(target, checker)?),
+                arguments: resolved_args,
+            })
+        }
+        Expression::Index { expression, index } => Ok(Expression::Index {
+            expression: Box::new(canonicalize_expression(expression, checker)?),
+            index: Box::new(canonicalize_expression(index, checker)?),
+        }),
+        Expression::Member { expression, field } => Ok(Expression::Member {
+            expression: Box::new(canonicalize_expression(expression, checker)?),
+            field: field.clone(),
+        }),
+        Expression::AddressOf(e) => Ok(Expression::AddressOf(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
+        Expression::Decay(e) => Ok(Expression::Decay(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
+        Expression::Block { signature, body } => {
+            let resolved_sig = match signature {
+                Some(sig) => Some(canonicalize_signature(sig, checker)?),
+                None => None,
+            };
+            let mut resolved_body = Vec::with_capacity(body.len());
+            for stmt in body {
+                resolved_body.push(canonicalize_statement(stmt, checker)?);
+            }
+            Ok(Expression::Block {
+                signature: resolved_sig,
+                body: resolved_body,
+            })
+        }
+        Expression::If { arms } => {
+            let mut resolved_arms = Vec::with_capacity(arms.len());
+            for arm in arms {
+                let cond = match &arm.condition {
+                    crate::syntax::IfCondition::Expression(e) => {
+                        crate::syntax::IfCondition::Expression(canonicalize_expression(e, checker)?)
+                    }
+                    crate::syntax::IfCondition::Else => crate::syntax::IfCondition::Else,
+                };
+                let body = Box::new(canonicalize_expression(&arm.body, checker)?);
+                resolved_arms.push(IfArm {
+                    condition: cond,
+                    body,
+                });
+            }
+            Ok(Expression::If {
+                arms: resolved_arms,
+            })
+        }
+    }
+}
+
 pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let mut search_dirs = Vec::new();
     if let Some(snore_home) = get_snore_home_dir() {
@@ -155,29 +326,35 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let mut compiled_definitions: Vec<Definition> = Vec::new();
     let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
     let mut seen_extern_names: HashSet<String> = HashSet::new();
+    let mut seen_def_names: HashSet<String> = HashSet::new();
     let mut has_main = false;
 
-    for (module_idx, (module, scope)) in modules.iter().zip(module_scopes.iter()).enumerate() {
+    for (module, scope) in modules.iter().zip(module_scopes.iter()) {
         let checker = Checker::new(scope);
 
         for file in &module.source_files {
             for def in &file.definitions {
+                let resolved_value = canonicalize_expression(&def.value, &checker)?;
+
                 if def.name == "main" {
                     has_main = true;
-                    compiled_definitions.push(def.clone());
+                    if !seen_def_names.insert("main".to_string()) {
+                        continue;
+                    }
+                    compiled_definitions.push(Definition {
+                        name: "main".to_string(),
+                        value: resolved_value,
+                    });
                     continue;
                 }
 
-                let is_exported = scope.exported_symbols.contains(&def.name);
-                let final_name = if is_exported {
-                    def.name.clone()
-                } else {
-                    format!("__mod_{}_{}", module_idx, def.name)
-                };
+                if !seen_def_names.insert(def.name.clone()) {
+                    continue;
+                }
 
                 compiled_definitions.push(Definition {
-                    name: final_name,
-                    value: def.value.clone(),
+                    name: def.name.clone(),
+                    value: resolved_value,
                 });
             }
 
@@ -186,27 +363,11 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     continue;
                 }
 
-                let resolved_params = ext
-                    .signature
-                    .parameters
-                    .iter()
-                    .map(|p| {
-                        Ok(crate::syntax::Parameter {
-                            name: p.name.clone(),
-                            ty: canonicalize_type(&p.ty, &checker)?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-
-                let resolved_ret = canonicalize_type(ext.signature.return_type.as_ref(), &checker)?;
+                let resolved_sig = canonicalize_signature(&ext.signature, &checker)?;
 
                 compiled_externs.push(ExternalFunction {
                     name: ext.name.clone(),
-                    signature: crate::syntax::Signature {
-                        parameters: resolved_params,
-                        return_type: Box::new(resolved_ret),
-                        is_variadic: ext.signature.is_variadic,
-                    },
+                    signature: resolved_sig,
                 });
             }
         }

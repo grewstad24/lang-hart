@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Statement, Type, TypeAlias,
+    NamespacePath, Parameter, Signature, SourceFile, Statement, StructFieldType, Type, TypeAlias,
 };
 
 #[derive(Debug, Clone)]
@@ -303,6 +303,18 @@ impl<'a> Checker<'a> {
                 visited.remove(name);
                 Ok(resolved)
             }
+            Type::Struct(fields) => {
+                let resolved_fields = fields
+                    .iter()
+                    .map(|f| {
+                        Ok(StructFieldType {
+                            name: f.name.clone(),
+                            ty: self.resolve_type_inner(&f.ty, visited)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Type::Struct(resolved_fields))
+            }
             Type::Pointer { element } => Ok(Type::Pointer {
                 element: Box::new(self.resolve_type_inner(element, visited)?),
             }),
@@ -347,9 +359,12 @@ impl<'a> Checker<'a> {
 
                 if let Some(sig) = signature {
                     for p in &sig.parameters {
-                        param_types.push(p.ty.clone());
+                        let res_ty = self.resolve_type(&p.ty).unwrap_or_else(|_| p.ty.clone());
+                        param_types.push(res_ty);
                     }
-                    expected_return = *sig.return_type.clone();
+                    expected_return = self
+                        .resolve_type(&sig.return_type)
+                        .unwrap_or_else(|_| *sig.return_type.clone());
                     is_variadic = sig.is_variadic;
                 }
 
@@ -544,6 +559,27 @@ impl<'a> Checker<'a> {
                 element: Box::new(Type::U8),
             }),
 
+            Expression::Struct(fields) => {
+                let mut struct_fields = Vec::with_capacity(fields.len());
+                let mut seen_fields = HashSet::new();
+
+                for field in fields {
+                    if !seen_fields.insert(field.name.clone()) {
+                        return Err(format!(
+                            "in '{}': duplicate field '@{}' in struct literal",
+                            self.current_file_path, field.name
+                        ));
+                    }
+                    let field_ty = self.type_of_expression(&field.value)?;
+                    struct_fields.push(StructFieldType {
+                        name: field.name.clone(),
+                        ty: field_ty,
+                    });
+                }
+
+                Ok(Type::Struct(struct_fields))
+            }
+
             Expression::Identifier(name) => {
                 if self.scope.lookup_type_alias(name).is_some() {
                     return Err(format!(
@@ -696,7 +732,7 @@ impl<'a> Checker<'a> {
 
                     let arm_ty = self.type_of_expression(&arm.body)?;
                     if let Some(target_ty) = &expected_ty {
-                        if !Self::types_compatible(&arm_ty, target_ty) {
+                        if !self.are_types_compatible(&arm_ty, target_ty)? {
                             return Err(format!(
                                 "in '{}': mismatched arm types in 'if': expected {:?}, found {:?}",
                                 self.current_file_path, target_ty, arm_ty
@@ -721,7 +757,7 @@ impl<'a> Checker<'a> {
                 let element_type = self.type_of_expression(&elements[0])?;
                 for element in &elements[1..] {
                     let ty = self.type_of_expression(element)?;
-                    if !Self::types_compatible(&ty, &element_type) {
+                    if !self.are_types_compatible(&ty, &element_type)? {
                         return Err(format!(
                             "in '{}': array elements have mismatched types: expected {:?}, found {:?}",
                             self.current_file_path, element_type, ty
@@ -870,7 +906,7 @@ impl<'a> Checker<'a> {
 
                 for (arg, expected_ty) in arguments.iter().zip(param_types.iter()) {
                     let arg_ty = self.type_of_expression(arg)?;
-                    if !Self::types_compatible(&arg_ty, expected_ty) {
+                    if !self.are_types_compatible(&arg_ty, expected_ty)? {
                         return Err(format!(
                             "in '{}': argument type mismatch: expected {:?}, found {:?}",
                             self.current_file_path, expected_ty, arg_ty
@@ -886,7 +922,8 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Index { expression, index } => {
-                let expression_type = self.type_of_expression(expression)?;
+                let raw_expr_ty = self.type_of_expression(expression)?;
+                let expression_type = self.resolve_type(&raw_expr_ty)?;
                 let index_type = self.type_of_expression(index)?;
 
                 if !Self::is_integer_type(&index_type) {
@@ -907,8 +944,20 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Member { expression, field } => {
-                let expr_type = self.type_of_expression(expression)?;
+                let raw_expr_type = self.type_of_expression(expression)?;
+                let expr_type = self.resolve_type(&raw_expr_type)?;
+
                 match expr_type {
+                    Type::Struct(fields) => {
+                        if let Some(f) = fields.iter().find(|f| f.name == *field) {
+                            Ok(f.ty.clone())
+                        } else {
+                            Err(format!(
+                                "in '{}': struct has no field named '{}'",
+                                self.current_file_path, field
+                            ))
+                        }
+                    }
                     Type::Slice { element } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer { element }),
                         "len" => Ok(Type::U64),
@@ -962,7 +1011,8 @@ impl<'a> Checker<'a> {
             },
 
             Expression::Decay(expression) => {
-                let inner_type = self.type_of_expression(expression)?;
+                let raw_type = self.type_of_expression(expression)?;
+                let inner_type = self.resolve_type(&raw_type)?;
                 match inner_type {
                     Type::Array { element, .. } => Ok(Type::Pointer { element }),
                     Type::Slice { element } => Ok(Type::Pointer { element }),
@@ -976,12 +1026,45 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub fn are_types_compatible(&self, provided: &Type, expected: &Type) -> Result<bool, String> {
+        let res_prov = self.resolve_type(provided)?;
+        let res_exp = self.resolve_type(expected)?;
+        Ok(Self::types_compatible(&res_prov, &res_exp))
+    }
+
     pub fn types_compatible(provided: &Type, expected: &Type) -> bool {
         if provided == expected {
             return true;
         }
 
         match (provided, expected) {
+            (Type::Struct(fields1), Type::Struct(fields2)) => {
+                if fields1.len() != fields2.len() {
+                    return false;
+                }
+                for (f1, f2) in fields1.iter().zip(fields2.iter()) {
+                    if f1.name != f2.name || !Self::types_compatible(&f1.ty, &f2.ty) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
+                Self::types_compatible(e1, e2)
+            }
+            (
+                Type::Array {
+                    element: e1,
+                    size: s1,
+                },
+                Type::Array {
+                    element: e2,
+                    size: s2,
+                },
+            ) => s1 == s2 && Self::types_compatible(e1, e2),
+            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
+                Self::types_compatible(e1, e2)
+            }
             (Type::Function { .. }, Type::Pointer { element }) => {
                 if let Type::Function { .. } = element.as_ref() {
                     provided == element.as_ref()
@@ -1049,7 +1132,6 @@ impl<'a> Checker<'a> {
             Statement::Assign { expression, target } => {
                 let expr_ty = self.type_of_expression(expression)?;
 
-                // BAN: Cannot assign to global definitions, externs, or type aliases
                 if self.scope.lookup_definition(target).is_some() {
                     return Err(format!(
                         "in '{}': cannot assign to global constant '@{}'",
@@ -1076,7 +1158,7 @@ impl<'a> Checker<'a> {
                             self.current_file_path, target
                         ));
                     }
-                    if !Self::types_compatible(&expr_ty, &info.ty) {
+                    if !self.are_types_compatible(&expr_ty, &info.ty)? {
                         return Err(format!(
                             "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
                             self.current_file_path, target, info.ty, expr_ty
@@ -1086,10 +1168,11 @@ impl<'a> Checker<'a> {
                         info_mut.is_initialized = true;
                     }
                 } else {
+                    let resolved_expr_ty = self.resolve_type(&expr_ty)?;
                     self.local_scopes.last_mut().unwrap().insert(
                         target.clone(),
                         BindingInfo {
-                            ty: expr_ty,
+                            ty: resolved_expr_ty,
                             is_mutable: false,
                             is_initialized: true,
                         },
@@ -1099,7 +1182,7 @@ impl<'a> Checker<'a> {
 
             Statement::Return(expr) => {
                 let actual = self.type_of_expression(expr)?;
-                if !Self::types_compatible(&actual, expected_type) {
+                if !self.are_types_compatible(&actual, expected_type)? {
                     return Err(format!(
                         "in '{}': return type mismatch: expected {:?}, found {:?}",
                         self.current_file_path, expected_type, actual

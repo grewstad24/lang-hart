@@ -1,6 +1,45 @@
 @main
-do to Number
+do to s32
+        (
+                @name "bob"
+                @details (
+                        @age 50
+                        @id "bob123"
+                )
+        ) `print_user()
+
         return 0
 done
 
-@type Number s32
+@type User
+(
+        name :: String
+        details :: (
+                age :: s32
+                id :: String
+        )
+)
+
+@val print_user
+do (user :: User)
+        print_string("Name: ")
+        print_string(user.name)
+
+        2 `times(
+                pr_nl
+        )
+
+        print_string("Details: ")
+
+        pr_nl()
+
+        print_string("    Age: ")
+        print_s32(user.details.age)
+
+        pr_nl()
+
+        print_string("    ID: ")
+        print_string(user.details.id)
+
+        pr_nl()
+done

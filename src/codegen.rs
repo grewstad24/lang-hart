@@ -12,7 +12,8 @@ use inkwell::{AddressSpace, IntPredicate};
 use crate::sema::Checker;
 use crate::syntax::{
     BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
-    IfCondition, Program, Signature, Statement, Type, UnaryOperator,
+    IfCondition, Program, Signature, Statement, StructFieldInit, StructFieldType, Type,
+    UnaryOperator,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,11 @@ enum Binding<'ctx> {
     Array {
         ty: Type,
         value: ArrayValue<'ctx>,
+        storage: Option<PointerValue<'ctx>>,
+    },
+    Struct {
+        ty: Type,
+        value: StructValue<'ctx>,
         storage: Option<PointerValue<'ctx>>,
     },
     Pointer {
@@ -610,8 +616,23 @@ impl<'ctx> Codegen<'ctx> {
                 })
             }
             Expression::String(value) => self.codegen_string_literal(value),
+            Expression::Struct(fields) => self.codegen_struct_literal(fields),
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
+                    if let Type::Struct(_) = &local.ty {
+                        let loaded = self
+                            .builder
+                            .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
+                            .map_err(|e| e.to_string())?
+                            .into_struct_value();
+
+                        return Ok(Binding::Struct {
+                            ty: local.ty.clone(),
+                            value: loaded,
+                            storage: Some(local.alloca),
+                        });
+                    }
+
                     let loaded = self
                         .builder
                         .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
@@ -620,6 +641,20 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 if let Some(global_var) = self.global_vars.get(name) {
+                    if let Type::Struct(_) = &global_var.ty {
+                        let loaded = self
+                            .builder
+                            .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
+                            .map_err(|e| e.to_string())?
+                            .into_struct_value();
+
+                        return Ok(Binding::Struct {
+                            ty: global_var.ty.clone(),
+                            value: loaded,
+                            storage: Some(global_var.pointer),
+                        });
+                    }
+
                     let loaded = self
                         .builder
                         .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
@@ -706,6 +741,44 @@ impl<'ctx> Codegen<'ctx> {
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
             Expression::Decay(expression) => self.codegen_decay(expression),
         }
+    }
+
+    fn codegen_struct_literal(
+        &mut self,
+        fields: &[StructFieldInit],
+    ) -> Result<Binding<'ctx>, String> {
+        let mut field_types = Vec::with_capacity(fields.len());
+        let mut field_values = Vec::with_capacity(fields.len());
+
+        for f in fields {
+            let binding = self.codegen_expression(&f.value)?;
+            let ty = self.binding_type(&binding)?;
+            let val = self.binding_basic_value(&binding)?;
+
+            field_types.push(StructFieldType {
+                name: f.name.clone(),
+                ty,
+            });
+            field_values.push(val);
+        }
+
+        let struct_type = Type::Struct(field_types);
+        let llvm_struct_type = self.llvm_type(&struct_type)?.into_struct_type();
+
+        let mut struct_val = llvm_struct_type.get_undef();
+        for (i, val) in field_values.into_iter().enumerate() {
+            struct_val = self
+                .builder
+                .build_insert_value(struct_val, val, i as u32, &format!("struct_fld_{}", i))
+                .map_err(|e| e.to_string())?
+                .into_struct_value();
+        }
+
+        Ok(Binding::Struct {
+            ty: struct_type,
+            value: struct_val,
+            storage: None,
+        })
     }
 
     fn codegen_if_expression(&mut self, arms: &[IfArm]) -> Result<Binding<'ctx>, String> {
@@ -827,6 +900,64 @@ impl<'ctx> Codegen<'ctx> {
         let binding = self.codegen_expression(expression)?;
 
         match binding {
+            Binding::Struct {
+                ref ty,
+                value,
+                storage,
+            } => {
+                let fields = match ty {
+                    Type::Struct(flds) => flds,
+                    _ => return Err("expected struct type".to_string()),
+                };
+
+                let (idx, field_type) = fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, f)| f.name == field)
+                    .map(|(i, f)| (i, f.ty.clone()))
+                    .ok_or_else(|| format!("unknown struct field '{}'", field))?;
+
+                if let Type::Struct(_) = &field_type {
+                    if let Some(storage_ptr) = storage {
+                        let llvm_struct_ty = self.llvm_type(ty)?.into_struct_type();
+                        let field_gep = self
+                            .builder
+                            .build_struct_gep(llvm_struct_ty, storage_ptr, idx as u32, field)
+                            .map_err(|e| e.to_string())?;
+
+                        let loaded = self
+                            .builder
+                            .build_load(self.llvm_type(&field_type)?, field_gep, field)
+                            .map_err(|e| e.to_string())?
+                            .into_struct_value();
+
+                        return Ok(Binding::Struct {
+                            ty: field_type,
+                            value: loaded,
+                            storage: Some(field_gep),
+                        });
+                    }
+                }
+
+                if let Some(storage_ptr) = storage {
+                    let llvm_struct_ty = self.llvm_type(ty)?.into_struct_type();
+                    let field_gep = self
+                        .builder
+                        .build_struct_gep(llvm_struct_ty, storage_ptr, idx as u32, field)
+                        .map_err(|e| e.to_string())?;
+                    let loaded = self
+                        .builder
+                        .build_load(self.llvm_type(&field_type)?, field_gep, field)
+                        .map_err(|e| e.to_string())?;
+                    self.binding_from_basic_value(&field_type, loaded)
+                } else {
+                    let extracted = self
+                        .builder
+                        .build_extract_value(value, idx as u32, field)
+                        .map_err(|e| e.to_string())?;
+                    self.binding_from_basic_value(&field_type, extracted)
+                }
+            }
             Binding::Slice {
                 ty: Type::Slice { element },
                 value,
@@ -1020,11 +1151,12 @@ impl<'ctx> Codegen<'ctx> {
             }
             Type::Pointer { .. }
             | Type::Slice { .. }
+            | Type::Struct { .. }
             | Type::Function { .. }
             | Type::Void
             | Type::Alias(_) => {
                 return Err(
-                    "array literals of pointers, slices, functions, aliases, or void are not supported"
+                    "array literals of pointers, slices, structs, functions, aliases, or void are not supported"
                         .to_string(),
                 );
             }
@@ -1683,6 +1815,11 @@ impl<'ctx> Codegen<'ctx> {
                     value: value.into_int_value(),
                 })
             }
+            Type::Struct { .. } => Ok(Binding::Struct {
+                ty: ty.clone(),
+                value: value.into_struct_value(),
+                storage: None,
+            }),
             Type::Array { .. } => Ok(Binding::Array {
                 ty: ty.clone(),
                 value: value.into_array_value(),
@@ -1710,6 +1847,7 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Integer { ty, .. } => Ok(ty.clone()),
             Binding::Boolean { .. } => Ok(Type::Bool),
             Binding::Array { ty, .. } => Ok(ty.clone()),
+            Binding::Struct { ty, .. } => Ok(ty.clone()),
             Binding::Pointer { ty, .. } => Ok(ty.clone()),
             Binding::Slice { ty, .. } => Ok(ty.clone()),
             Binding::Function { signature, .. } => {
@@ -1730,6 +1868,7 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Integer { value, .. } => Ok((*value).into()),
             Binding::Boolean { value } => Ok((*value).into()),
             Binding::Array { value, .. } => Ok((*value).into()),
+            Binding::Struct { value, .. } => Ok((*value).into()),
             Binding::Pointer { value, .. } => Ok((*value).into()),
             Binding::Slice { value, .. } => Ok((*value).into()),
             Binding::Function { value, .. } => {
@@ -1773,6 +1912,13 @@ impl<'ctx> Codegen<'ctx> {
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
             Type::U8 => Ok(self.context.i8_type().into()),
             Type::Bool => Ok(self.context.bool_type().into()),
+            Type::Struct(fields) => {
+                let field_llvm_types: Vec<BasicTypeEnum<'ctx>> = fields
+                    .iter()
+                    .map(|f| self.llvm_type(&f.ty))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(self.context.struct_type(&field_llvm_types, false).into())
+            }
             Type::Array { element, size } => {
                 Ok(self.llvm_type(element)?.array_type(*size as u32).into())
             }
@@ -1793,6 +1939,14 @@ impl<'ctx> Codegen<'ctx> {
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),
             Type::U8 => Ok(self.context.i8_type().const_zero().into()),
             Type::Bool => Ok(self.context.bool_type().const_zero().into()),
+            Type::Struct(fields) => {
+                let struct_llvm_type = self.llvm_type(ty)?.into_struct_type();
+                let field_zeroes = fields
+                    .iter()
+                    .map(|f| self.zero_value(&f.ty))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(struct_llvm_type.const_named_struct(&field_zeroes).into())
+            }
             Type::Array { element, size } => {
                 let array_type = self
                     .llvm_type(&Type::Array {
