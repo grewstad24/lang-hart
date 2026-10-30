@@ -655,6 +655,17 @@ impl Parser {
         self.tokens.get(self.cursor).unwrap_or(&Token::Eof)
     }
 
+    fn peek_non_newline(&self) -> &Token {
+        let mut idx = self.cursor;
+        while idx < self.tokens.len() {
+            if self.tokens[idx] != Token::Newline {
+                return &self.tokens[idx];
+            }
+            idx += 1;
+        }
+        &Token::Eof
+    }
+
     fn advance(&mut self) -> &Token {
         if self.cursor < self.tokens.len() {
             self.cursor += 1;
@@ -667,6 +678,7 @@ impl Parser {
     }
 
     fn expect(&mut self, expected: Token) -> Result<(), String> {
+        self.skip_newlines();
         let current = self.peek().clone();
         if current == expected {
             self.advance();
@@ -677,6 +689,7 @@ impl Parser {
     }
 
     fn expect_identifier(&mut self) -> Result<String, String> {
+        self.skip_newlines();
         match self.peek().clone() {
             Token::Identifier(name) => {
                 self.advance();
@@ -796,6 +809,20 @@ impl Parser {
         let mut expression = self.parse_additive()?;
 
         loop {
+            if self.is(Token::Newline) {
+                match self.peek_non_newline() {
+                    Token::Equal
+                    | Token::NotEqual
+                    | Token::Less
+                    | Token::LessEqual
+                    | Token::Greater
+                    | Token::GreaterEqual => {
+                        self.skip_newlines();
+                    }
+                    _ => break,
+                }
+            }
+
             let operator = match self.peek() {
                 Token::Equal => ComparisonOperator::Equal,
                 Token::NotEqual => ComparisonOperator::NotEqual,
@@ -807,6 +834,7 @@ impl Parser {
             };
 
             self.advance();
+            self.skip_newlines();
             let right = self.parse_additive()?;
             expression = Expression::Comparison {
                 left: Box::new(expression),
@@ -822,6 +850,15 @@ impl Parser {
         let mut expression = self.parse_multiplicative()?;
 
         loop {
+            if self.is(Token::Newline) {
+                match self.peek_non_newline() {
+                    Token::Plus | Token::Minus => {
+                        self.skip_newlines();
+                    }
+                    _ => break,
+                }
+            }
+
             let operator = match self.peek() {
                 Token::Plus => BinaryOperator::Add,
                 Token::Minus => BinaryOperator::Subtract,
@@ -829,6 +866,7 @@ impl Parser {
             };
 
             self.advance();
+            self.skip_newlines();
             let right = self.parse_multiplicative()?;
             expression = Expression::Binary {
                 left: Box::new(expression),
@@ -844,6 +882,15 @@ impl Parser {
         let mut expression = self.parse_unary()?;
 
         loop {
+            if self.is(Token::Newline) {
+                match self.peek_non_newline() {
+                    Token::Star | Token::Slash | Token::Percent => {
+                        self.skip_newlines();
+                    }
+                    _ => break,
+                }
+            }
+
             let operator = match self.peek() {
                 Token::Star => BinaryOperator::Multiply,
                 Token::Slash => BinaryOperator::Divide,
@@ -852,6 +899,7 @@ impl Parser {
             };
 
             self.advance();
+            self.skip_newlines();
             let right = self.parse_unary()?;
             expression = Expression::Binary {
                 left: Box::new(expression),
@@ -867,6 +915,7 @@ impl Parser {
         match self.peek() {
             Token::Plus => {
                 self.advance();
+                self.skip_newlines();
                 Ok(Expression::Unary {
                     operator: UnaryOperator::Plus,
                     operand: Box::new(self.parse_unary()?),
@@ -874,6 +923,7 @@ impl Parser {
             }
             Token::Minus => {
                 self.advance();
+                self.skip_newlines();
                 Ok(Expression::Unary {
                     operator: UnaryOperator::Minus,
                     operand: Box::new(self.parse_unary()?),
@@ -881,6 +931,7 @@ impl Parser {
             }
             Token::Ampersand => {
                 self.advance();
+                self.skip_newlines();
                 Ok(Expression::AddressOf(Box::new(self.parse_unary()?)))
             }
             _ => self.parse_postfix(),
@@ -891,6 +942,20 @@ impl Parser {
         let mut expression = self.parse_primary()?;
 
         loop {
+            if self.is(Token::Newline) {
+                match self.peek_non_newline() {
+                    Token::Caret
+                    | Token::LParen
+                    | Token::Dot
+                    | Token::LBracket
+                    | Token::Backtick
+                    | Token::As => {
+                        self.skip_newlines();
+                    }
+                    _ => break,
+                }
+            }
+
             match self.peek() {
                 Token::Caret => {
                     self.advance();
@@ -906,6 +971,7 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.advance();
+                    self.skip_newlines();
                     let name = self.expect_identifier()?;
                     expression = Expression::Member {
                         expression: Box::new(expression),
@@ -914,6 +980,7 @@ impl Parser {
                 }
                 Token::LBracket => {
                     self.advance();
+                    self.skip_newlines();
                     let index = self.parse_expression()?;
                     self.expect(Token::RBracket)?;
                     expression = Expression::Index {
@@ -923,6 +990,7 @@ impl Parser {
                 }
                 Token::Backtick => {
                     self.advance();
+                    self.skip_newlines();
                     let method_name = self.expect_identifier()?;
                     self.expect(Token::LParen)?;
                     let mut arguments = vec![expression];
@@ -935,6 +1003,7 @@ impl Parser {
                 }
                 Token::As => {
                     self.advance();
+                    self.skip_newlines();
                     let ty = self.parse_type()?;
                     expression = Expression::Cast {
                         expression: Box::new(expression),
@@ -954,12 +1023,18 @@ impl Parser {
 
         while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
             arguments.push(self.parse_expression()?);
-            self.skip_newlines();
 
-            if self.is(Token::Comma) {
+            let mut had_delimiter = false;
+            while self.is(Token::Comma) || self.is(Token::Newline) {
+                had_delimiter = true;
                 self.advance();
-                self.skip_newlines();
-            } else if !self.is(closing_token.clone()) {
+            }
+
+            if self.is(closing_token.clone()) {
+                break;
+            }
+
+            if !had_delimiter {
                 break;
             }
         }
@@ -992,17 +1067,21 @@ impl Parser {
             }
             Token::LParen => {
                 self.advance();
+                self.skip_newlines();
                 if self.is_signature_start() {
                     let sig = self.parse_signature_inner()?;
                     self.expect(Token::RParen)?;
+                    self.skip_newlines();
                     let is_variadic = if self.is(Token::PlusPlus) {
                         self.advance();
+                        self.skip_newlines();
                         true
                     } else {
                         false
                     };
                     let return_type = if self.is(Token::To) {
                         self.advance();
+                        self.skip_newlines();
                         Box::new(self.parse_type()?)
                     } else {
                         Box::new(Type::Void)
@@ -1035,7 +1114,7 @@ impl Parser {
             if self.tokens[idx] == Token::ColonColon {
                 return true;
             }
-            if self.tokens[idx] == Token::RParen || self.tokens[idx] == Token::Newline {
+            if self.tokens[idx] == Token::RParen || self.tokens[idx] == Token::Eof {
                 break;
             }
             idx += 1;
@@ -1045,23 +1124,36 @@ impl Parser {
 
     fn parse_signature_inner(&mut self) -> Result<Vec<Parameter>, String> {
         let mut parameters = Vec::new();
+        self.skip_newlines();
+
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
             let name = self.expect_identifier()?;
             self.expect(Token::ColonColon)?;
+            self.skip_newlines();
             let ty = self.parse_type()?;
             parameters.push(Parameter { name, ty });
 
-            if self.is(Token::Comma) {
+            let mut had_delimiter = false;
+            while self.is(Token::Comma) || self.is(Token::Newline) {
+                had_delimiter = true;
                 self.advance();
-            } else {
+            }
+
+            if self.is(Token::RParen) {
+                break;
+            }
+
+            if !had_delimiter {
                 break;
             }
         }
+
         Ok(parameters)
     }
 
     fn parse_block(&mut self) -> Result<Expression, String> {
         self.expect(Token::Do)?;
+        self.skip_newlines();
 
         let signature = if self.is(Token::LParen) || self.is(Token::To) {
             let mut parameters = Vec::new();
@@ -1069,10 +1161,12 @@ impl Parser {
                 self.advance();
                 parameters = self.parse_signature_inner()?;
                 self.expect(Token::RParen)?;
+                self.skip_newlines();
             }
 
             let return_type = if self.is(Token::To) {
                 self.advance();
+                self.skip_newlines();
                 Box::new(self.parse_type()?)
             } else {
                 Box::new(Type::Void)
@@ -1155,6 +1249,7 @@ impl Parser {
                 self.advance();
                 let name = self.expect_identifier()?;
                 self.expect(Token::ColonColon)?;
+                self.skip_newlines();
                 let ty = self.parse_type()?;
                 self.consume_optional_newline();
                 Ok(Statement::Declare { name, ty })
@@ -1162,14 +1257,21 @@ impl Parser {
             Token::DoIf => self.parse_doif_statement(),
             Token::Return => {
                 self.advance();
+                self.skip_newlines();
                 let expr = self.parse_expression()?;
                 self.consume_optional_newline();
                 Ok(Statement::Return(expr))
             }
             _ => {
                 let expression = self.parse_expression()?;
+
+                if self.is(Token::Newline) && self.peek_non_newline() == &Token::Arrow {
+                    self.skip_newlines();
+                }
+
                 if self.is(Token::Arrow) {
                     self.advance();
+                    self.skip_newlines();
                     let target = self.expect_identifier()?;
                     if self.is(Token::Arrow) {
                         return Err(
@@ -1231,6 +1333,7 @@ impl Parser {
     }
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
+        self.skip_newlines();
         match self.peek().clone() {
             Token::Atom(name) => {
                 self.advance();
@@ -1270,6 +1373,7 @@ impl Parser {
             }
             Token::Star => {
                 self.advance();
+                self.skip_newlines();
                 let inner = self.parse_type()?;
                 Ok(Type::Pointer {
                     element: Box::new(inner),
@@ -1277,8 +1381,10 @@ impl Parser {
             }
             Token::LBracket => {
                 self.advance();
+                self.skip_newlines();
                 if self.is(Token::RBracket) {
                     self.advance();
+                    self.skip_newlines();
                     let inner = self.parse_type()?;
                     Ok(Type::Slice {
                         element: Box::new(inner),
@@ -1292,6 +1398,7 @@ impl Parser {
                         token => return Err(format!("expected array size, found {:?}", token)),
                     };
                     self.expect(Token::RBracket)?;
+                    self.skip_newlines();
                     let inner = self.parse_type()?;
                     Ok(Type::Array {
                         element: Box::new(inner),
@@ -1301,20 +1408,24 @@ impl Parser {
             }
             Token::LParen => {
                 self.advance();
+                self.skip_newlines();
                 let mut parameters = Vec::new();
                 if !self.is(Token::RParen) {
                     parameters = self.parse_signature_inner()?;
                 }
                 self.expect(Token::RParen)?;
+                self.skip_newlines();
                 let param_types = parameters.into_iter().map(|p| p.ty).collect();
                 let is_variadic = if self.is(Token::PlusPlus) {
                     self.advance();
+                    self.skip_newlines();
                     true
                 } else {
                     false
                 };
                 let return_type = if self.is(Token::To) {
                     self.advance();
+                    self.skip_newlines();
                     Box::new(self.parse_type()?)
                 } else {
                     Box::new(Type::Void)

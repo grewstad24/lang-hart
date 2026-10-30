@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,9 @@ use inkwell::context::Context;
 use crate::codegen::Codegen;
 use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
-use crate::syntax::{Lexer, LogicalModule, Parser, Program, SourceFile};
+use crate::syntax::{
+    Definition, ExternalFunction, Lexer, LogicalModule, Parser, Program, SourceFile,
+};
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
@@ -143,18 +146,42 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         }
     }
 
-    let mut all_externs = Vec::new();
-    let mut all_definitions = Vec::new();
+    // Collect definitions and externs strictly according to module visibility
+    let mut compiled_definitions: Vec<Definition> = Vec::new();
+    let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
+    let mut seen_extern_names: HashSet<String> = HashSet::new();
     let mut has_main = false;
 
-    for module in &modules {
+    for (module_idx, (module, scope)) in modules.iter().zip(module_scopes.iter()).enumerate() {
         for file in &module.source_files {
-            all_externs.extend(file.extern_functions.clone());
+            // Process definitions: symbols exported in mod.yawn keep their global name;
+            // private module symbols are scoped to their module index to prevent leaks.
             for def in &file.definitions {
                 if def.name == "main" {
                     has_main = true;
+                    compiled_definitions.push(def.clone());
+                    continue;
                 }
-                all_definitions.push(def.clone());
+
+                let is_exported = scope.exported_symbols.contains(&def.name);
+                let final_name = if is_exported {
+                    def.name.clone()
+                } else {
+                    format!("__mod_{}_{}", module_idx, def.name)
+                };
+
+                compiled_definitions.push(Definition {
+                    name: final_name,
+                    value: def.value.clone(),
+                });
+            }
+
+            // Process externs: deduplicate by symbol name, and verify export bounds
+            for ext in &file.extern_functions {
+                if !seen_extern_names.insert(ext.name.clone()) {
+                    continue;
+                }
+                compiled_externs.push(ext.clone());
             }
         }
     }
@@ -165,8 +192,8 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
     let program = Program {
         variables: Vec::new(),
-        extern_functions: all_externs,
-        definitions: all_definitions,
+        extern_functions: compiled_externs,
+        definitions: compiled_definitions,
     };
 
     let context = Context::create();

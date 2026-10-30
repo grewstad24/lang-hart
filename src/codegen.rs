@@ -43,6 +43,7 @@ enum Binding<'ctx> {
         value: StructValue<'ctx>,
     },
     Function {
+        signature: Signature,
         value: FunctionValue<'ctx>,
     },
 }
@@ -65,6 +66,7 @@ pub struct Codegen<'ctx> {
     builder: Builder<'ctx>,
 
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
+    scope_stack_ptrs: Vec<PointerValue<'ctx>>,
     global_vars: HashMap<String, GlobalVar<'ctx>>,
     extern_functions: HashMap<String, Signature>,
     atom_table: HashMap<String, u32>,
@@ -81,6 +83,7 @@ impl<'ctx> Codegen<'ctx> {
             module: context.create_module(module_name),
             builder: context.create_builder(),
             local_scopes: Vec::new(),
+            scope_stack_ptrs: Vec::new(),
             global_vars: HashMap::new(),
             extern_functions: HashMap::new(),
             atom_table: HashMap::new(),
@@ -148,11 +151,13 @@ impl<'ctx> Codegen<'ctx> {
             .into_pointer_value();
 
         self.local_scopes.push(HashMap::new());
+        self.scope_stack_ptrs.push(stack_ptr);
         Ok(stack_ptr)
     }
 
     fn exit_scope(&mut self, stack_ptr: PointerValue<'ctx>) -> Result<(), String> {
         self.local_scopes.pop();
+        self.scope_stack_ptrs.pop();
 
         if let Some(bb) = self.builder.get_insert_block() {
             if bb.get_terminator().is_none() {
@@ -160,6 +165,20 @@ impl<'ctx> Codegen<'ctx> {
                 self.builder
                     .build_call(stackrestore, &[stack_ptr.into()], "")
                     .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn exit_current_scope(&mut self) -> Result<(), String> {
+        if let Some(&stack_ptr) = self.scope_stack_ptrs.last() {
+            if let Some(bb) = self.builder.get_insert_block() {
+                if bb.get_terminator().is_none() {
+                    let stackrestore = self.get_stackrestore_intrinsic();
+                    self.builder
+                        .build_call(stackrestore, &[stack_ptr.into()], "")
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
         Ok(())
@@ -288,6 +307,7 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.position_at_end(entry);
 
         let previous_scopes = std::mem::take(&mut self.local_scopes);
+        let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let stack_ptr = self.enter_scope()?;
 
         if let Some(sig) = signature {
@@ -349,9 +369,11 @@ impl<'ctx> Codegen<'ctx> {
             }
         } else {
             self.local_scopes.pop();
+            self.scope_stack_ptrs.pop();
         }
 
         self.local_scopes = previous_scopes;
+        self.scope_stack_ptrs = previous_stack_ptrs;
         Ok(())
     }
 
@@ -364,6 +386,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(entry);
         let previous_scopes = std::mem::take(&mut self.local_scopes);
+        let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let stack_ptr = self.enter_scope()?;
 
         if let Expression::Block { body, .. } = &main_def.value {
@@ -389,9 +412,11 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
         } else {
             self.local_scopes.pop();
+            self.scope_stack_ptrs.pop();
         }
 
         self.local_scopes = previous_scopes;
+        self.scope_stack_ptrs = previous_stack_ptrs;
         Ok(())
     }
 
@@ -468,6 +493,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Statement::Return(expression) => {
                 let binding = self.codegen_expression(expression)?;
+                self.exit_current_scope()?;
                 self.build_return(&binding)
             }
             Statement::If { arms } => self.codegen_doif_statement(arms),
@@ -602,7 +628,19 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 if let Some(function) = self.module.get_function(name) {
-                    return Ok(Binding::Function { value: function });
+                    let sig = if let Some(sig) = self.extern_functions.get(name) {
+                        sig.clone()
+                    } else {
+                        Signature {
+                            parameters: vec![],
+                            return_type: Box::new(Type::Void),
+                            is_variadic: false,
+                        }
+                    };
+                    return Ok(Binding::Function {
+                        signature: sig,
+                        value: function,
+                    });
                 }
 
                 Err(format!("unknown identifier '{}'", name))
@@ -623,7 +661,16 @@ impl<'ctx> Codegen<'ctx> {
                     self.builder.position_at_end(bb);
                 }
 
-                Ok(Binding::Function { value: function })
+                let sig = signature.clone().unwrap_or(Signature {
+                    parameters: vec![],
+                    return_type: Box::new(Type::Void),
+                    is_variadic: false,
+                });
+
+                Ok(Binding::Function {
+                    signature: sig,
+                    value: function,
+                })
             }
             Expression::If { arms } => self.codegen_if_expression(arms),
             Expression::Array(elements) => self.codegen_array_literal(elements),
@@ -1155,7 +1202,9 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        if Checker::is_integer_type(&source_type) && matches!(target_type, Type::Pointer { .. }) {
+        if Checker::is_integer_type(&source_type)
+            && matches!(target_type, Type::Pointer { .. } | Type::Function { .. })
+        {
             let int_val = self.binding_int_value(&binding)?;
             let ptr_type = self.llvm_type(&target_type)?.into_pointer_type();
             let ptr_val = self
@@ -1169,11 +1218,13 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        if matches!(source_type, Type::Pointer { .. }) && Checker::is_integer_type(&target_type) {
+        if matches!(source_type, Type::Pointer { .. } | Type::Function { .. })
+            && Checker::is_integer_type(&target_type)
+        {
             let ptr_val = match binding {
                 Binding::Pointer { value, .. } => value,
-                Binding::Function { value } => value.as_global_value().as_pointer_value(),
-                _ => return Err("expected pointer binding".to_string()),
+                Binding::Function { value, .. } => value.as_global_value().as_pointer_value(),
+                _ => return Err("expected pointer or function binding".to_string()),
             };
             let int_type = self.llvm_type(&target_type)?.into_int_type();
             let int_val = self
@@ -1235,18 +1286,21 @@ impl<'ctx> Codegen<'ctx> {
         let (function_ptr, ret_ty, fn_type) = match target {
             Expression::Identifier(name) => {
                 if let Some(func) = self.module.get_function(name) {
-                    let return_type = if let Some(sig) = self.extern_functions.get(name) {
-                        (*sig.return_type).clone()
+                    let (return_type, fn_type) = if let Some(sig) = self.extern_functions.get(name)
+                    {
+                        let fn_ty = self.signature_to_function_type(Some(sig))?;
+                        ((*sig.return_type).clone(), fn_ty)
                     } else {
-                        match func.get_type().get_return_type() {
+                        let ret = match func.get_type().get_return_type() {
                             Some(_) => Type::S32,
                             None => Type::Void,
-                        }
+                        };
+                        (ret, func.get_type())
                     };
                     Ok((
                         func.as_global_value().as_pointer_value(),
                         return_type,
-                        func.get_type(),
+                        fn_type,
                     ))
                 } else if let Some(local) = self.lookup_local(name) {
                     let loaded = self
@@ -1255,19 +1309,7 @@ impl<'ctx> Codegen<'ctx> {
                         .map_err(|e| e.to_string())?
                         .into_pointer_value();
 
-                    let ret_ty = match &local.ty {
-                        Type::Pointer { element } => match element.as_ref() {
-                            Type::Function { return_type, .. } => *return_type.clone(),
-                            _ => Type::Void,
-                        },
-                        _ => Type::Void,
-                    };
-
-                    let fn_type = match self.llvm_type(&ret_ty) {
-                        Ok(b) => b.fn_type(&[], true),
-                        Err(_) => self.context.void_type().fn_type(&[], true),
-                    };
-
+                    let (ret_ty, fn_type) = self.function_type_info(&local.ty)?;
                     Ok((loaded, ret_ty, fn_type))
                 } else if let Some(global_var) = self.global_vars.get(name) {
                     let loaded = self
@@ -1280,19 +1322,7 @@ impl<'ctx> Codegen<'ctx> {
                         .map_err(|e| e.to_string())?
                         .into_pointer_value();
 
-                    let ret_ty = match &global_var.ty {
-                        Type::Pointer { element } => match element.as_ref() {
-                            Type::Function { return_type, .. } => *return_type.clone(),
-                            _ => Type::Void,
-                        },
-                        _ => Type::Void,
-                    };
-
-                    let fn_type = match self.llvm_type(&ret_ty) {
-                        Ok(b) => b.fn_type(&[], true),
-                        Err(_) => self.context.void_type().fn_type(&[], true),
-                    };
-
+                    let (ret_ty, fn_type) = self.function_type_info(&global_var.ty)?;
                     Ok((loaded, ret_ty, fn_type))
                 } else {
                     Err(format!("unknown function or callable variable '{}'", name))
@@ -1301,29 +1331,16 @@ impl<'ctx> Codegen<'ctx> {
             expr => {
                 let target_binding = self.codegen_expression(expr)?;
                 match target_binding {
-                    Binding::Function { value } => {
-                        let return_type = match value.get_type().get_return_type() {
-                            Some(_) => Type::S32,
-                            None => Type::Void,
-                        };
+                    Binding::Function { signature, value } => {
+                        let fn_type = self.signature_to_function_type(Some(&signature))?;
                         Ok((
                             value.as_global_value().as_pointer_value(),
-                            return_type,
-                            value.get_type(),
+                            *signature.return_type,
+                            fn_type,
                         ))
                     }
                     Binding::Pointer { value, ty } => {
-                        let ret_ty = match ty {
-                            Type::Pointer { element } => match *element {
-                                Type::Function { return_type, .. } => *return_type,
-                                _ => Type::Void,
-                            },
-                            _ => Type::Void,
-                        };
-                        let fn_type = match self.llvm_type(&ret_ty) {
-                            Ok(b) => b.fn_type(&[], true),
-                            Err(_) => self.context.void_type().fn_type(&[], true),
-                        };
+                        let (ret_ty, fn_type) = self.function_type_info(&ty)?;
                         Ok((value, ret_ty, fn_type))
                     }
                     _ => Err("called target is not callable".to_string()),
@@ -1351,6 +1368,38 @@ impl<'ctx> Codegen<'ctx> {
                 .ok_or_else(|| "call did not return a value".to_string())?;
 
             self.binding_from_basic_value(&ret_ty, return_value)
+        }
+    }
+
+    fn function_type_info(&self, ty: &Type) -> Result<(Type, FunctionType<'ctx>), String> {
+        match ty {
+            Type::Function {
+                parameters,
+                return_type,
+                is_variadic,
+            } => {
+                let param_types = parameters
+                    .iter()
+                    .map(|p| {
+                        let llvm_ty = self.llvm_type(p)?;
+                        Ok(BasicMetadataTypeEnum::from(llvm_ty))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                let fn_type = if **return_type == Type::Void {
+                    self.context.void_type().fn_type(&param_types, *is_variadic)
+                } else {
+                    self.llvm_type(return_type)?
+                        .fn_type(&param_types, *is_variadic)
+                };
+
+                Ok((*(return_type.clone()), fn_type))
+            }
+            Type::Pointer { element } => self.function_type_info(element),
+            _ => Err(format!(
+                "type {:?} is not a function or function pointer",
+                ty
+            )),
         }
     }
 
@@ -1654,13 +1703,14 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Array { ty, .. } => Ok(ty.clone()),
             Binding::Pointer { ty, .. } => Ok(ty.clone()),
             Binding::Slice { ty, .. } => Ok(ty.clone()),
-            Binding::Function { .. } => Ok(Type::Pointer {
-                element: Box::new(Type::Function {
-                    parameters: vec![],
-                    return_type: Box::new(Type::Void),
-                    is_variadic: false,
-                }),
-            }),
+            Binding::Function { signature, .. } => {
+                let parameters = signature.parameters.iter().map(|p| p.ty.clone()).collect();
+                Ok(Type::Function {
+                    parameters,
+                    return_type: signature.return_type.clone(),
+                    is_variadic: signature.is_variadic,
+                })
+            }
         }
     }
 
@@ -1673,7 +1723,9 @@ impl<'ctx> Codegen<'ctx> {
             Binding::Array { value, .. } => Ok((*value).into()),
             Binding::Pointer { value, .. } => Ok((*value).into()),
             Binding::Slice { value, .. } => Ok((*value).into()),
-            Binding::Function { value } => Ok(value.as_global_value().as_pointer_value().into()),
+            Binding::Function { value, .. } => {
+                Ok(value.as_global_value().as_pointer_value().into())
+            }
         }
     }
 

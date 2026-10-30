@@ -16,7 +16,7 @@ pub struct ModuleScope {
     pub dir_path: String,
     pub definitions: HashMap<String, SymbolProvenance<Definition>>,
     pub extern_functions: HashMap<String, SymbolProvenance<ExternalFunction>>,
-    pub exported_symbols: Vec<String>,
+    pub exported_symbols: HashSet<String>,
 }
 
 impl ModuleScope {
@@ -25,7 +25,7 @@ impl ModuleScope {
             dir_path,
             definitions: HashMap::new(),
             extern_functions: HashMap::new(),
-            exported_symbols: Vec::new(),
+            exported_symbols: HashSet::new(),
         }
     }
 
@@ -59,6 +59,7 @@ impl ModuleResolver {
         mut self,
         modules: &[LogicalModule],
     ) -> Result<Vec<ModuleScope>, String> {
+        // Step 1: Collect exports strictly declared in mod.yawn
         for module in modules {
             for export_rule in &module.exports {
                 let target_ns = NamespacePath::from_segments(export_rule.to.clone());
@@ -117,9 +118,18 @@ impl ModuleResolver {
 
         let mut resolved_scopes = Vec::new();
 
+        // Step 2: Build isolated module scopes
         for module in modules {
             let mut scope = ModuleScope::new(module.dir_path.clone());
 
+            // Add exports to tracked set
+            for export_rule in &module.exports {
+                for sym in &export_rule.symbols {
+                    scope.exported_symbols.insert(sym.clone());
+                }
+            }
+
+            // Populate file-local definitions and externs
             for file in &module.source_files {
                 for def in &file.definitions {
                     if let Some(existing) = scope.definitions.get(&def.name) {
@@ -138,6 +148,12 @@ impl ModuleResolver {
                 }
 
                 for ext in &file.extern_functions {
+                    if let Some(existing) = scope.extern_functions.get(&ext.name) {
+                        return Err(format!(
+                            "duplicate extern function '{}' in '{}', already defined in '{}'",
+                            ext.name, file.file_path, existing.originating_file
+                        ));
+                    }
                     scope.extern_functions.insert(
                         ext.name.clone(),
                         SymbolProvenance {
@@ -148,10 +164,7 @@ impl ModuleResolver {
                 }
             }
 
-            for export_rule in &module.exports {
-                scope.exported_symbols.extend(export_rule.symbols.clone());
-            }
-
+            // Import strictly from namespaces declared in mod.yawn
             let mut imports = vec![NamespacePath::root()];
             for imp in &module.imports {
                 imports.push(NamespacePath::from_segments(imp.clone()));
@@ -441,20 +454,7 @@ impl<'a> Checker<'a> {
 
                 if self.scope.definitions.contains_key(name) {
                     let def_type = self.resolve_definition(name)?;
-                    return match def_type {
-                        Type::Function {
-                            parameters,
-                            return_type,
-                            is_variadic,
-                        } => Ok(Type::Pointer {
-                            element: Box::new(Type::Function {
-                                parameters,
-                                return_type,
-                                is_variadic,
-                            }),
-                        }),
-                        other => Ok(other),
-                    };
+                    return Ok(def_type);
                 }
 
                 if let Some(ext) = self.scope.lookup_extern(name) {
@@ -464,12 +464,10 @@ impl<'a> Checker<'a> {
                         .iter()
                         .map(|p| p.ty.clone())
                         .collect();
-                    return Ok(Type::Pointer {
-                        element: Box::new(Type::Function {
-                            parameters: param_types,
-                            return_type: ext.signature.return_type.clone(),
-                            is_variadic: ext.signature.is_variadic,
-                        }),
+                    return Ok(Type::Function {
+                        parameters: param_types,
+                        return_type: ext.signature.return_type.clone(),
+                        is_variadic: ext.signature.is_variadic,
                     });
                 }
 
@@ -763,7 +761,7 @@ impl<'a> Checker<'a> {
 
                 for (arg, expected_ty) in arguments.iter().zip(param_types.iter()) {
                     let arg_ty = self.type_of_expression(arg)?;
-                    if arg_ty != *expected_ty {
+                    if !Self::types_compatible(&arg_ty, expected_ty) {
                         return Err(format!(
                             "in '{}': argument type mismatch: expected {:?}, found {:?}",
                             self.current_file_path, expected_ty, arg_ty
@@ -869,6 +867,30 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub fn types_compatible(provided: &Type, expected: &Type) -> bool {
+        if provided == expected {
+            return true;
+        }
+
+        match (provided, expected) {
+            (Type::Function { .. }, Type::Pointer { element }) => {
+                if let Type::Function { .. } = element.as_ref() {
+                    provided == element.as_ref()
+                } else {
+                    false
+                }
+            }
+            (Type::Pointer { element }, Type::Function { .. }) => {
+                if let Type::Function { .. } = element.as_ref() {
+                    element.as_ref() == expected
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn statement_definitely_returns(stmt: &Statement) -> bool {
         match stmt {
             Statement::Return(_) => true,
@@ -924,7 +946,7 @@ impl<'a> Checker<'a> {
                             self.current_file_path, target
                         ));
                     }
-                    if expr_ty != info.ty {
+                    if !Self::types_compatible(&expr_ty, &info.ty) {
                         return Err(format!(
                             "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
                             self.current_file_path, target, info.ty, expr_ty
@@ -947,7 +969,7 @@ impl<'a> Checker<'a> {
 
             Statement::Return(expr) => {
                 let actual = self.type_of_expression(expr)?;
-                if actual != *expected_type {
+                if !Self::types_compatible(&actual, expected_type) {
                     return Err(format!(
                         "in '{}': return type mismatch: expected {:?}, found {:?}",
                         self.current_file_path, expected_type, actual
@@ -1020,8 +1042,10 @@ impl<'a> Checker<'a> {
             return true;
         }
 
-        if (matches!(source, Type::Pointer { .. }) && Self::is_integer_type(target))
-            || (Self::is_integer_type(source) && matches!(target, Type::Pointer { .. }))
+        if (matches!(source, Type::Pointer { .. } | Type::Function { .. })
+            && Self::is_integer_type(target))
+            || (Self::is_integer_type(source)
+                && matches!(target, Type::Pointer { .. } | Type::Function { .. }))
         {
             return true;
         }

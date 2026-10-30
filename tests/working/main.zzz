@@ -1,6 +1,10 @@
 @main
 do to s32
-        5 `add(5) `sub(4) `mul(10) `div(2) -> x
+        5       `
+        add(5)  `
+        sub(4)  `
+        mul(10) `
+        div(2)  -> x
 
         x `times (do
                 print_string("repeating")
