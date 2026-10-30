@@ -287,8 +287,12 @@ impl Parser {
         self.expect(Token::End)?;
         self.consume_optional_newline();
 
+        // Synthesize fallback `else => {}` if none was explicitly written
         if !has_else {
-            return Err("'doif' statement requires a fallback 'else' arm".to_string());
+            arms.push(DoIfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Statement::Compound(Vec::new())),
+            });
         }
 
         Ok(Statement::If { arms })

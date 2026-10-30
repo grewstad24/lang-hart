@@ -1,7 +1,2 @@
 @extern write
 (fd :: s32, buf :: *u8, bytes :: u64) to s64
-
-@val write_fd
-do (fd :: s32, buf :: *u8, count :: u64) to s64
-        return write (fd, buf, count)
-done

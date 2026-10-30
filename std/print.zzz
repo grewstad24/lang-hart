@@ -2,18 +2,16 @@
 (ptr :: *u8)++ to s32
 
 @val print_string
-do (s :: []u8) to s32
+do (s :: []u8)
         printf ("%s"^, s^)
-        pr_nl()
-        return 0
 done
 
 @val print_s32
-do (num :: s32) to s32
-        return printf ("%d"^, num)
+do (num :: s32)
+        printf ("%d"^, num)
 done
 
 @val pr_nl
-do () to s32
-        return printf ("\n"^)
+do
+        printf ("\n"^)
 done

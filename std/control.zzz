@@ -1,0 +1,15 @@
+@val times
+do (count :: s32, fn :: ())
+        doif
+                count > 0 => {
+                        fn()
+                        times(count - 1, fn)
+                }
+        end
+done
+
+@val loop
+do (fn :: ())
+        fn()
+        loop(fn)
+done
