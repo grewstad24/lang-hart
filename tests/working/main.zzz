@@ -1,21 +1,6 @@
 @main
-do to s32
-        5       `
-        add(5)  `
-        sub(4)  `
-        mul(10) `
-        div(2)  -> x
-
-        x `times (do
-                print_string("repeating")
-                pr_nl()
-        done)
-
-        do
-                print_string("hello")
-        done -> y
-
-        y()
-
+do to Number
         return 0
 done
+
+@type Number s32

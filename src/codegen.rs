@@ -1018,9 +1018,13 @@ impl<'ctx> Codegen<'ctx> {
                     .into_array_type()
                     .const_array(&values)
             }
-            Type::Pointer { .. } | Type::Slice { .. } | Type::Function { .. } | Type::Void => {
+            Type::Pointer { .. }
+            | Type::Slice { .. }
+            | Type::Function { .. }
+            | Type::Void
+            | Type::Alias(_) => {
                 return Err(
-                    "array literals of pointers, slices, functions, or void are not supported"
+                    "array literals of pointers, slices, functions, aliases, or void are not supported"
                         .to_string(),
                 );
             }
@@ -1396,6 +1400,10 @@ impl<'ctx> Codegen<'ctx> {
                 Ok((*(return_type.clone()), fn_type))
             }
             Type::Pointer { element } => self.function_type_info(element),
+            Type::Alias(name) => Err(format!(
+                "unresolved type alias '{}' in function_type_info",
+                name
+            )),
             _ => Err(format!(
                 "type {:?} is not a function or function pointer",
                 ty
@@ -1661,6 +1669,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         match ty {
             Type::Void => Ok(Binding::Void),
+            Type::Alias(name) => Err(format!("unresolved type alias '{}' in binding", name)),
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
                 value: value.into_int_value(),
@@ -1757,6 +1766,7 @@ impl<'ctx> Codegen<'ctx> {
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void type is not a basic type in LLVM".to_string()),
+            Type::Alias(name) => Err(format!("unresolved type alias '{}' in llvm_type", name)),
             Type::Atom(_) => Ok(self.context.i32_type().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
@@ -1776,6 +1786,7 @@ impl<'ctx> Codegen<'ctx> {
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void has no zero value".to_string()),
+            Type::Alias(name) => Err(format!("unresolved type alias '{}' in zero_value", name)),
             Type::Atom(_) => Ok(self.context.i32_type().const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),

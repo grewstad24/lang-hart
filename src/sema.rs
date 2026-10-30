@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Statement, Type,
+    NamespacePath, Parameter, Signature, SourceFile, Statement, Type, TypeAlias,
 };
 
 #[derive(Debug, Clone)]
@@ -16,6 +16,7 @@ pub struct ModuleScope {
     pub dir_path: String,
     pub definitions: HashMap<String, SymbolProvenance<Definition>>,
     pub extern_functions: HashMap<String, SymbolProvenance<ExternalFunction>>,
+    pub type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
     pub exported_symbols: HashSet<String>,
 }
 
@@ -25,6 +26,7 @@ impl ModuleScope {
             dir_path,
             definitions: HashMap::new(),
             extern_functions: HashMap::new(),
+            type_aliases: HashMap::new(),
             exported_symbols: HashSet::new(),
         }
     }
@@ -36,6 +38,10 @@ impl ModuleScope {
     pub fn lookup_extern(&self, name: &str) -> Option<&ExternalFunction> {
         self.extern_functions.get(name).map(|p| &p.item)
     }
+
+    pub fn lookup_type_alias(&self, name: &str) -> Option<&TypeAlias> {
+        self.type_aliases.get(name).map(|p| &p.item)
+    }
 }
 
 pub struct ModuleResolver {
@@ -46,6 +52,7 @@ pub struct ModuleResolver {
 struct ExportRegistry {
     definitions: HashMap<String, SymbolProvenance<Definition>>,
     extern_functions: HashMap<String, SymbolProvenance<ExternalFunction>>,
+    type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
 }
 
 impl ModuleResolver {
@@ -59,7 +66,6 @@ impl ModuleResolver {
         mut self,
         modules: &[LogicalModule],
     ) -> Result<Vec<ModuleScope>, String> {
-        // Step 1: Collect exports strictly declared in mod.yawn
         for module in modules {
             for export_rule in &module.exports {
                 let target_ns = NamespacePath::from_segments(export_rule.to.clone());
@@ -71,6 +77,7 @@ impl ModuleResolver {
                 for sym in &export_rule.symbols {
                     let mut found_def = None;
                     let mut found_ext = None;
+                    let mut found_alias = None;
 
                     for file in &module.source_files {
                         if let Some(def) = file.definitions.iter().find(|d| d.name == *sym) {
@@ -84,6 +91,14 @@ impl ModuleResolver {
                         {
                             found_ext = Some(SymbolProvenance {
                                 item: ext.clone(),
+                                originating_file: file.file_path.clone(),
+                            });
+                            break;
+                        } else if let Some(alias) =
+                            file.type_aliases.iter().find(|a| a.name == *sym)
+                        {
+                            found_alias = Some(SymbolProvenance {
+                                item: alias.clone(),
                                 originating_file: file.file_path.clone(),
                             });
                             break;
@@ -106,6 +121,14 @@ impl ModuleResolver {
                             ));
                         }
                         registry.extern_functions.insert(sym.clone(), prov);
+                    } else if let Some(prov) = found_alias {
+                        if let Some(existing) = registry.type_aliases.get(sym) {
+                            return Err(format!(
+                                "export collision in namespace '{}': type alias '{}' in '{}' conflicts with '{}'",
+                                target_ns, sym, prov.originating_file, existing.originating_file
+                            ));
+                        }
+                        registry.type_aliases.insert(sym.clone(), prov);
                     } else {
                         return Err(format!(
                             "export error in '{}/mod.yawn': symbol '{}' is not defined in any .zzz file in this directory",
@@ -118,18 +141,15 @@ impl ModuleResolver {
 
         let mut resolved_scopes = Vec::new();
 
-        // Step 2: Build isolated module scopes
         for module in modules {
             let mut scope = ModuleScope::new(module.dir_path.clone());
 
-            // Add exports to tracked set
             for export_rule in &module.exports {
                 for sym in &export_rule.symbols {
                     scope.exported_symbols.insert(sym.clone());
                 }
             }
 
-            // Populate file-local definitions and externs
             for file in &module.source_files {
                 for def in &file.definitions {
                     if let Some(existing) = scope.definitions.get(&def.name) {
@@ -162,9 +182,24 @@ impl ModuleResolver {
                         },
                     );
                 }
+
+                for alias in &file.type_aliases {
+                    if let Some(existing) = scope.type_aliases.get(&alias.name) {
+                        return Err(format!(
+                            "duplicate type alias '{}' in '{}', already defined in '{}'",
+                            alias.name, file.file_path, existing.originating_file
+                        ));
+                    }
+                    scope.type_aliases.insert(
+                        alias.name.clone(),
+                        SymbolProvenance {
+                            item: alias.clone(),
+                            originating_file: file.file_path.clone(),
+                        },
+                    );
+                }
             }
 
-            // Import strictly from namespaces declared in mod.yawn
             let mut imports = vec![NamespacePath::root()];
             for imp in &module.imports {
                 imports.push(NamespacePath::from_segments(imp.clone()));
@@ -180,6 +215,11 @@ impl ModuleResolver {
                     for (name, prov) in &exported.extern_functions {
                         if !scope.extern_functions.contains_key(name) {
                             scope.extern_functions.insert(name.clone(), prov.clone());
+                        }
+                    }
+                    for (name, prov) in &exported.type_aliases {
+                        if !scope.type_aliases.contains_key(name) {
+                            scope.type_aliases.insert(name.clone(), prov.clone());
                         }
                     }
                 }
@@ -242,6 +282,57 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub fn resolve_type(&self, ty: &Type) -> Result<Type, String> {
+        let mut visited = HashSet::new();
+        self.resolve_type_inner(ty, &mut visited)
+    }
+
+    fn resolve_type_inner(&self, ty: &Type, visited: &mut HashSet<String>) -> Result<Type, String> {
+        match ty {
+            Type::Alias(name) => {
+                if !visited.insert(name.clone()) {
+                    return Err(format!(
+                        "in '{}': recursive cycle in type alias '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+                let alias = self.scope.lookup_type_alias(name).ok_or_else(|| {
+                    format!("in '{}': unknown type '{}'", self.current_file_path, name)
+                })?;
+                let resolved = self.resolve_type_inner(&alias.target, visited)?;
+                visited.remove(name);
+                Ok(resolved)
+            }
+            Type::Pointer { element } => Ok(Type::Pointer {
+                element: Box::new(self.resolve_type_inner(element, visited)?),
+            }),
+            Type::Array { element, size } => Ok(Type::Array {
+                element: Box::new(self.resolve_type_inner(element, visited)?),
+                size: *size,
+            }),
+            Type::Slice { element } => Ok(Type::Slice {
+                element: Box::new(self.resolve_type_inner(element, visited)?),
+            }),
+            Type::Function {
+                parameters,
+                return_type,
+                is_variadic,
+            } => {
+                let params = parameters
+                    .iter()
+                    .map(|p| self.resolve_type_inner(p, visited))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret = self.resolve_type_inner(return_type, visited)?;
+                Ok(Type::Function {
+                    parameters: params,
+                    return_type: Box::new(ret),
+                    is_variadic: *is_variadic,
+                })
+            }
+            concrete => Ok(concrete.clone()),
+        }
+    }
+
     fn predeclare_scope_signatures(&mut self) {
         for (name, prov) in &self.scope.extern_functions {
             self.resolved_extern_functions
@@ -275,6 +366,10 @@ impl<'a> Checker<'a> {
     pub fn check_file(&mut self, file: &SourceFile) -> Result<(), String> {
         self.current_file_path = file.file_path.clone();
 
+        for alias in &file.type_aliases {
+            self.resolve_type(&Type::Alias(alias.name.clone()))?;
+        }
+
         for ext in &file.extern_functions {
             self.resolve_external_function(&ext.name)?;
         }
@@ -307,7 +402,8 @@ impl<'a> Checker<'a> {
                                 self.current_file_path, p.name
                             ));
                         }
-                        if p.ty == Type::Void {
+                        let resolved_param_ty = self.resolve_type(&p.ty)?;
+                        if resolved_param_ty == Type::Void {
                             self.local_scopes.pop();
                             return Err(format!(
                                 "in '{}': block parameter '{}' cannot be void",
@@ -317,13 +413,13 @@ impl<'a> Checker<'a> {
                         self.local_scopes.last_mut().unwrap().insert(
                             p.name.clone(),
                             BindingInfo {
-                                ty: p.ty.clone(),
+                                ty: resolved_param_ty,
                                 is_mutable: false,
                                 is_initialized: true,
                             },
                         );
                     }
-                    expected_return = *sig.return_type.clone();
+                    expected_return = self.resolve_type(sig.return_type.as_ref())?;
                 }
 
                 let validate_res = self.validate_block(body, &expected_return);
@@ -368,7 +464,8 @@ impl<'a> Checker<'a> {
                     self.current_file_path, p.name, name
                 ));
             }
-            if p.ty == Type::Void {
+            let resolved_p_ty = self.resolve_type(&p.ty)?;
+            if resolved_p_ty == Type::Void {
                 return Err(format!(
                     "in '{}': parameter '{}' in extern function '{}' cannot be void",
                     self.current_file_path, p.name, name
@@ -376,13 +473,13 @@ impl<'a> Checker<'a> {
             }
             parameters.push(Parameter {
                 name: p.name.clone(),
-                ty: p.ty.clone(),
+                ty: resolved_p_ty,
             });
         }
 
         let signature = Signature {
             parameters,
-            return_type: raw.signature.return_type.clone(),
+            return_type: Box::new(self.resolve_type(raw.signature.return_type.as_ref())?),
             is_variadic: raw.signature.is_variadic,
         };
 
@@ -415,7 +512,7 @@ impl<'a> Checker<'a> {
         let ty_result = self.type_of_expression(&def.value);
         self.resolving_definitions.remove(name);
 
-        let ty = ty_result?;
+        let ty = self.resolve_type(&ty_result?)?;
         self.resolved_definitions
             .insert(name.to_string(), ty.clone());
         Ok(ty)
@@ -448,6 +545,13 @@ impl<'a> Checker<'a> {
             }),
 
             Expression::Identifier(name) => {
+                if self.scope.lookup_type_alias(name).is_some() {
+                    return Err(format!(
+                        "in '{}': type alias '{}' cannot be used as an expression",
+                        self.current_file_path, name
+                    ));
+                }
+
                 if let Some(info) = self.lookup_binding(name) {
                     return Ok(info.ty);
                 }
@@ -462,11 +566,12 @@ impl<'a> Checker<'a> {
                         .signature
                         .parameters
                         .iter()
-                        .map(|p| p.ty.clone())
-                        .collect();
+                        .map(|p| self.resolve_type(&p.ty))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let ret_ty = self.resolve_type(ext.signature.return_type.as_ref())?;
                     return Ok(Type::Function {
                         parameters: param_types,
-                        return_type: ext.signature.return_type.clone(),
+                        return_type: Box::new(ret_ty),
                         is_variadic: ext.signature.is_variadic,
                     });
                 }
@@ -488,17 +593,19 @@ impl<'a> Checker<'a> {
                             self.current_file_path, p.name
                         ));
                     }
-                    if p.ty == Type::Void {
+                    let resolved_p_ty = self.resolve_type(&p.ty)?;
+                    if resolved_p_ty == Type::Void {
                         return Err(format!(
                             "in '{}': parameter '{}' cannot be void",
                             self.current_file_path, p.name
                         ));
                     }
-                    param_types.push(p.ty.clone());
+                    param_types.push(resolved_p_ty);
                 }
+                let ret_ty = self.resolve_type(sig.return_type.as_ref())?;
                 Ok(Type::Function {
                     parameters: param_types,
-                    return_type: sig.return_type.clone(),
+                    return_type: Box::new(ret_ty),
                     is_variadic: sig.is_variadic,
                 })
             }
@@ -520,7 +627,8 @@ impl<'a> Checker<'a> {
                                 self.current_file_path, p.name
                             ));
                         }
-                        if p.ty == Type::Void {
+                        let resolved_p_ty = self.resolve_type(&p.ty)?;
+                        if resolved_p_ty == Type::Void {
                             self.local_scopes.pop();
                             return Err(format!(
                                 "in '{}': block parameter '{}' cannot be void",
@@ -530,14 +638,14 @@ impl<'a> Checker<'a> {
                         self.local_scopes.last_mut().unwrap().insert(
                             p.name.clone(),
                             BindingInfo {
-                                ty: p.ty.clone(),
+                                ty: resolved_p_ty.clone(),
                                 is_mutable: false,
                                 is_initialized: true,
                             },
                         );
-                        param_types.push(p.ty.clone());
+                        param_types.push(resolved_p_ty);
                     }
-                    expected_return = *sig.return_type.clone();
+                    expected_return = self.resolve_type(sig.return_type.as_ref())?;
                     is_variadic = sig.is_variadic;
                 }
 
@@ -588,7 +696,7 @@ impl<'a> Checker<'a> {
 
                     let arm_ty = self.type_of_expression(&arm.body)?;
                     if let Some(target_ty) = &expected_ty {
-                        if arm_ty != *target_ty {
+                        if !Self::types_compatible(&arm_ty, target_ty) {
                             return Err(format!(
                                 "in '{}': mismatched arm types in 'if': expected {:?}, found {:?}",
                                 self.current_file_path, target_ty, arm_ty
@@ -613,7 +721,7 @@ impl<'a> Checker<'a> {
                 let element_type = self.type_of_expression(&elements[0])?;
                 for element in &elements[1..] {
                     let ty = self.type_of_expression(element)?;
-                    if ty != element_type {
+                    if !Self::types_compatible(&ty, &element_type) {
                         return Err(format!(
                             "in '{}': array elements have mismatched types: expected {:?}, found {:?}",
                             self.current_file_path, element_type, ty
@@ -702,13 +810,14 @@ impl<'a> Checker<'a> {
 
             Expression::Cast { expression, ty } => {
                 let source_type = self.type_of_expression(expression)?;
-                if !Self::is_supported_cast(&source_type, ty) {
+                let resolved_target = self.resolve_type(ty)?;
+                if !Self::is_supported_cast(&source_type, &resolved_target) {
                     return Err(format!(
                         "in '{}': unsupported cast from {:?} to {:?}",
-                        self.current_file_path, source_type, ty
+                        self.current_file_path, source_type, resolved_target
                     ));
                 }
-                Ok(ty.clone())
+                Ok(resolved_target)
             }
 
             Expression::Call { target, arguments } => {
@@ -914,7 +1023,8 @@ impl<'a> Checker<'a> {
             }
 
             Statement::Declare { name, ty } => {
-                if *ty == Type::Void {
+                let resolved_ty = self.resolve_type(ty)?;
+                if resolved_ty == Type::Void {
                     return Err(format!(
                         "in '{}': variable '{}' cannot be declared with type void",
                         self.current_file_path, name
@@ -929,7 +1039,7 @@ impl<'a> Checker<'a> {
                 self.local_scopes.last_mut().unwrap().insert(
                     name.clone(),
                     BindingInfo {
-                        ty: ty.clone(),
+                        ty: resolved_ty,
                         is_mutable: true,
                         is_initialized: false,
                     },
@@ -938,6 +1048,26 @@ impl<'a> Checker<'a> {
 
             Statement::Assign { expression, target } => {
                 let expr_ty = self.type_of_expression(expression)?;
+
+                // BAN: Cannot assign to global definitions, externs, or type aliases
+                if self.scope.lookup_definition(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to global constant '@{}'",
+                        self.current_file_path, target
+                    ));
+                }
+                if self.scope.lookup_extern(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to external function '{}'",
+                        self.current_file_path, target
+                    ));
+                }
+                if self.scope.lookup_type_alias(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to type alias '{}'",
+                        self.current_file_path, target
+                    ));
+                }
 
                 if let Some(info) = self.lookup_binding(target) {
                     if !info.is_mutable {

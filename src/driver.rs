@@ -10,7 +10,8 @@ use crate::codegen::Codegen;
 use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, ExternalFunction, Lexer, LogicalModule, Parser, Program, SourceFile,
+    Definition, ExternalFunction, Lexer, LogicalModule, Parser, Program, SourceFile, Type,
+    TypeAlias,
 };
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
@@ -81,7 +82,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                     .map_err(|e| format!("lexer error in '{}': {}", path.display(), e))?;
 
                 let mut parser = Parser::new(tokens);
-                let (extern_functions, definitions) = parser
+                let (extern_functions, definitions, type_aliases) = parser
                     .parse_file_declarations(&path.display().to_string())
                     .map_err(|e| e)?;
 
@@ -89,6 +90,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                     file_path: path.display().to_string(),
                     extern_functions,
                     definitions,
+                    type_aliases,
                 });
             }
 
@@ -114,6 +116,10 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
     }
 
     Ok(modules)
+}
+
+fn canonicalize_type(ty: &Type, checker: &Checker) -> Result<Type, String> {
+    checker.resolve_type(ty)
 }
 
 pub fn compile_project(project_dir: &Path) -> Result<(), String> {
@@ -146,16 +152,15 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         }
     }
 
-    // Collect definitions and externs strictly according to module visibility
     let mut compiled_definitions: Vec<Definition> = Vec::new();
     let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
     let mut seen_extern_names: HashSet<String> = HashSet::new();
     let mut has_main = false;
 
     for (module_idx, (module, scope)) in modules.iter().zip(module_scopes.iter()).enumerate() {
+        let checker = Checker::new(scope);
+
         for file in &module.source_files {
-            // Process definitions: symbols exported in mod.yawn keep their global name;
-            // private module symbols are scoped to their module index to prevent leaks.
             for def in &file.definitions {
                 if def.name == "main" {
                     has_main = true;
@@ -176,12 +181,33 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 });
             }
 
-            // Process externs: deduplicate by symbol name, and verify export bounds
             for ext in &file.extern_functions {
                 if !seen_extern_names.insert(ext.name.clone()) {
                     continue;
                 }
-                compiled_externs.push(ext.clone());
+
+                let resolved_params = ext
+                    .signature
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        Ok(crate::syntax::Parameter {
+                            name: p.name.clone(),
+                            ty: canonicalize_type(&p.ty, &checker)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                let resolved_ret = canonicalize_type(ext.signature.return_type.as_ref(), &checker)?;
+
+                compiled_externs.push(ExternalFunction {
+                    name: ext.name.clone(),
+                    signature: crate::syntax::Signature {
+                        parameters: resolved_params,
+                        return_type: Box::new(resolved_ret),
+                        is_variadic: ext.signature.is_variadic,
+                    },
+                });
             }
         }
     }

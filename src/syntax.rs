@@ -56,6 +56,7 @@ pub enum Type {
     U64,
     Bool,
     Atom(String),
+    Alias(String),
     Pointer {
         element: Box<Type>,
     },
@@ -212,6 +213,12 @@ pub struct ExternalFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TypeAlias {
+    pub name: String,
+    pub target: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Variable {
     pub name: String,
     pub ty: Type,
@@ -223,6 +230,7 @@ pub struct SourceFile {
     pub file_path: String,
     pub extern_functions: Vec<ExternalFunction>,
     pub definitions: Vec<Definition>,
+    pub type_aliases: Vec<TypeAlias>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -714,9 +722,10 @@ impl Parser {
     pub fn parse_file_declarations(
         &mut self,
         file_name: &str,
-    ) -> Result<(Vec<ExternalFunction>, Vec<Definition>), String> {
+    ) -> Result<(Vec<ExternalFunction>, Vec<Definition>, Vec<TypeAlias>), String> {
         let mut extern_functions = Vec::new();
         let mut definitions = Vec::new();
+        let mut type_aliases = Vec::new();
 
         self.skip_newlines();
 
@@ -736,7 +745,7 @@ impl Parser {
                         }
                         token => {
                             return Err(format!(
-                                "in '{}': expected directive after '@' (@val, @extern, @main), found {:?}",
+                                "in '{}': expected directive after '@' (@val, @extern, @type, @main), found {:?}",
                                 file_name, token
                             ));
                         }
@@ -750,6 +759,14 @@ impl Parser {
                             let value = self.parse_expression()?;
                             self.consume_optional_newline();
                             definitions.push(Definition { name, value });
+                        }
+                        "type" => {
+                            self.skip_newlines();
+                            let name = self.expect_identifier()?;
+                            self.skip_newlines();
+                            let target = self.parse_type()?;
+                            self.consume_optional_newline();
+                            type_aliases.push(TypeAlias { name, target });
                         }
                         "extern" => {
                             self.skip_newlines();
@@ -798,7 +815,7 @@ impl Parser {
             self.skip_newlines();
         }
 
-        Ok((extern_functions, definitions))
+        Ok((extern_functions, definitions, type_aliases))
     }
 
     pub fn parse_expression(&mut self) -> Result<Expression, String> {
@@ -1335,6 +1352,10 @@ impl Parser {
     pub fn parse_type(&mut self) -> Result<Type, String> {
         self.skip_newlines();
         match self.peek().clone() {
+            Token::Identifier(name) => {
+                self.advance();
+                Ok(Type::Alias(name))
+            }
             Token::Atom(name) => {
                 self.advance();
                 Ok(Type::Atom(name))
