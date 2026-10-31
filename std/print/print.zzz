@@ -6,12 +6,36 @@ do (s :: []u8)
         printf ("%s"^, s^)
 done
 
-@val print_s32
-do (num :: s32)
-        printf ("%d"^, num)
+@type Printable
+String | Integer
+
+@val print_int
+do (num :: Integer)
+        match num with z
+                s32 => printf ("%d"^, z)
+                s16 => printf ("%d"^, z as s32)
+                s64 => printf ("%lld"^, z)
+                u16 => printf ("%u"^, z as u32)
+                u32 => printf ("%u"^, z)
+                u64 => printf ("%llu"^, z)
+        over
 done
 
 @val pr_nl
 do
         printf ("\n"^)
+done
+
+@val print
+do ( x :: Printable )
+        match x with z
+                String => print_string(z)
+                Integer => print_int(z)
+        over
+done
+
+@val println
+do ( x :: Printable )
+        print(x)
+        pr_nl()
 done

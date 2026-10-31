@@ -85,6 +85,7 @@ pub enum Type {
         return_type: Box<Type>,
         is_variadic: bool,
     },
+    Union(Vec<Type>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,6 +147,12 @@ pub struct DoIfArm {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub variant_type: Type,
+    pub body: Box<Expression>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     Integer(i64),
     String(Vec<u8>),
@@ -193,6 +200,11 @@ pub enum Expression {
     },
     If {
         arms: Vec<IfArm>,
+    },
+    Match {
+        target: Box<Expression>,
+        binding_name: String,
+        arms: Vec<MatchArm>,
     },
 }
 
@@ -273,6 +285,9 @@ pub enum Token {
     DoIf,
     Else,
     End,
+    Match,
+    With,
+    Over,
     Return,
     To,
     As,
@@ -589,6 +604,9 @@ impl Lexer {
             "doif" => Token::DoIf,
             "else" => Token::Else,
             "end" => Token::End,
+            "match" => Token::Match,
+            "with" => Token::With,
+            "over" => Token::Over,
             "return" => Token::Return,
             "to" => Token::To,
             "as" => Token::As,
@@ -765,6 +783,18 @@ impl Parser {
             Token::End => {
                 self.advance();
                 Ok("end".to_string())
+            }
+            Token::Match => {
+                self.advance();
+                Ok("match".to_string())
+            }
+            Token::With => {
+                self.advance();
+                Ok("with".to_string())
+            }
+            Token::Over => {
+                self.advance();
+                Ok("over".to_string())
             }
             Token::Return => {
                 self.advance();
@@ -1058,33 +1088,25 @@ impl Parser {
                 self.skip_newlines();
                 Ok(Expression::AddressOf(Box::new(self.parse_unary()?)))
             }
-            _ => self.parse_postfix(),
+            _ => {
+                let expr = self.parse_primary()?;
+                self.parse_postfix(expr)
+            }
         }
     }
 
-    fn parse_postfix(&mut self) -> Result<Expression, String> {
-        let mut expression = self.parse_primary()?;
-
+    fn parse_postfix(&mut self, mut expression: Expression) -> Result<Expression, String> {
         loop {
             if self.is(Token::Newline) {
                 match self.peek_non_newline() {
-                    Token::Caret
-                    | Token::LParen
-                    | Token::Dot
-                    | Token::LBracket
-                    | Token::Backtick
-                    | Token::As => {
+                    Token::Dot | Token::Backtick | Token::As => {
                         self.skip_newlines();
                     }
                     _ => break,
                 }
             }
 
-            match self.peek() {
-                Token::Caret => {
-                    self.advance();
-                    expression = Expression::Decay(Box::new(expression));
-                }
+            match self.peek().clone() {
                 Token::LParen => {
                     self.advance();
                     let arguments = self.parse_argument_list(Token::RParen)?;
@@ -1093,24 +1115,28 @@ impl Parser {
                         arguments,
                     };
                 }
-                Token::Dot => {
-                    self.advance();
-                    self.skip_newlines();
-                    let name = self.expect_identifier()?;
-                    expression = Expression::Member {
-                        expression: Box::new(expression),
-                        field: name,
-                    };
-                }
                 Token::LBracket => {
                     self.advance();
                     self.skip_newlines();
                     let index = self.parse_expression()?;
+                    self.skip_newlines();
                     self.expect(Token::RBracket)?;
                     expression = Expression::Index {
                         expression: Box::new(expression),
                         index: Box::new(index),
                     };
+                }
+                Token::Dot => {
+                    self.advance();
+                    let field = self.expect_identifier()?;
+                    expression = Expression::Member {
+                        expression: Box::new(expression),
+                        field,
+                    };
+                }
+                Token::Caret => {
+                    self.advance();
+                    expression = Expression::Decay(Box::new(expression));
                 }
                 Token::Backtick => {
                     self.advance();
@@ -1128,10 +1154,10 @@ impl Parser {
                 Token::As => {
                     self.advance();
                     self.skip_newlines();
-                    let ty = self.parse_type()?;
+                    let target_ty = self.parse_type()?;
                     expression = Expression::Cast {
                         expression: Box::new(expression),
-                        ty,
+                        ty: target_ty,
                     };
                 }
                 _ => break,
@@ -1140,7 +1166,6 @@ impl Parser {
 
         Ok(expression)
     }
-
     fn parse_argument_list(&mut self, closing_token: Token) -> Result<Vec<Expression>, String> {
         let mut arguments = Vec::new();
         self.skip_newlines();
@@ -1148,17 +1173,12 @@ impl Parser {
         while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
             arguments.push(self.parse_expression()?);
 
-            let mut had_delimiter = false;
             while self.is(Token::Comma) || self.is(Token::Newline) {
-                had_delimiter = true;
                 self.advance();
             }
+            self.skip_newlines();
 
             if self.is(closing_token.clone()) {
-                break;
-            }
-
-            if !had_delimiter {
                 break;
             }
         }
@@ -1181,17 +1201,12 @@ impl Parser {
             let value = self.parse_expression()?;
             fields.push(StructFieldInit { name, value });
 
-            let mut had_delimiter = false;
             while self.is(Token::Comma) || self.is(Token::Newline) {
-                had_delimiter = true;
                 self.advance();
             }
+            self.skip_newlines();
 
             if self.is(closing_token.clone()) {
-                break;
-            }
-
-            if !had_delimiter {
                 break;
             }
         }
@@ -1280,8 +1295,43 @@ impl Parser {
             }
             Token::Do => self.parse_block(),
             Token::If => self.parse_if_expression(),
+            Token::Match => self.parse_match_expression(),
             token => Err(format!("unexpected token in expression: {:?}", token)),
         }
+    }
+
+    fn parse_match_expression(&mut self) -> Result<Expression, String> {
+        self.expect(Token::Match)?;
+        self.skip_newlines();
+
+        let target = self.parse_expression()?;
+        self.skip_newlines();
+
+        self.expect(Token::With)?;
+        self.skip_newlines();
+
+        let binding_name = self.expect_identifier()?;
+        self.skip_newlines();
+
+        let mut arms = Vec::new();
+
+        while !self.is(Token::Over) && !self.is(Token::Eof) {
+            let variant_type = self.parse_type()?;
+            self.expect(Token::FatArrow)?;
+            self.skip_newlines();
+
+            let body = Box::new(self.parse_expression()?);
+            arms.push(MatchArm { variant_type, body });
+            self.skip_newlines();
+        }
+
+        self.expect(Token::Over)?;
+
+        Ok(Expression::Match {
+            target: Box::new(target),
+            binding_name,
+            arms,
+        })
     }
 
     fn is_signature_start(&self) -> bool {
@@ -1309,17 +1359,12 @@ impl Parser {
             let ty = self.parse_type()?;
             parameters.push(Parameter { name, ty });
 
-            let mut had_delimiter = false;
             while self.is(Token::Comma) || self.is(Token::Newline) {
-                had_delimiter = true;
                 self.advance();
             }
+            self.skip_newlines();
 
             if self.is(Token::RParen) {
-                break;
-            }
-
-            if !had_delimiter {
                 break;
             }
         }
@@ -1509,6 +1554,24 @@ impl Parser {
     }
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
+        let first = self.parse_single_type()?;
+        self.skip_newlines();
+
+        if self.is(Token::Pipe) {
+            let mut variants = vec![first];
+            while self.is(Token::Pipe) {
+                self.advance();
+                self.skip_newlines();
+                variants.push(self.parse_single_type()?);
+                self.skip_newlines();
+            }
+            Ok(Type::Union(variants))
+        } else {
+            Ok(first)
+        }
+    }
+
+    fn parse_single_type(&mut self) -> Result<Type, String> {
         self.skip_newlines();
         match self.peek().clone() {
             Token::Fn => {
@@ -1517,7 +1580,6 @@ impl Parser {
                 self.expect(Token::LBrace)?;
                 self.skip_newlines();
 
-                // Fn{(param :: Ty) to Ret} or Fn{() to Ret} or Fn{()}
                 let mut parameters = Vec::new();
                 if self.is(Token::LParen) {
                     self.advance();
@@ -1599,7 +1661,13 @@ impl Parser {
             Token::Star => {
                 self.advance();
                 self.skip_newlines();
-                let inner = self.parse_type()?;
+                if self.is(Token::Fn) {
+                    return Err(
+                        "functions are code pointers by default; '*Fn' is not allowed, use 'Fn{...}'"
+                            .to_string(),
+                    );
+                }
+                let inner = self.parse_single_type()?;
                 Ok(Type::Pointer {
                     element: Box::new(inner),
                 })
@@ -1610,7 +1678,7 @@ impl Parser {
                 if self.is(Token::RBracket) {
                     self.advance();
                     self.skip_newlines();
-                    let inner = self.parse_type()?;
+                    let inner = self.parse_single_type()?;
                     Ok(Type::Slice {
                         element: Box::new(inner),
                     })
@@ -1624,7 +1692,7 @@ impl Parser {
                     };
                     self.expect(Token::RBracket)?;
                     self.skip_newlines();
-                    let inner = self.parse_type()?;
+                    let inner = self.parse_single_type()?;
                     Ok(Type::Array {
                         element: Box::new(inner),
                         size,

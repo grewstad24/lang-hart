@@ -1,10 +1,20 @@
 @main
 do to s32
+        10 -> x
+        20 as s16 -> y
+        30 as s64 -> z
+
+        println(x)
+        println(y)
+        println(z)
+
+        pr_nl()
+
         (
                 @name "bob"
                 @details (
                         @age 50
-                        @id "bob123"
+                        @id "bob345"
                 )
         ) `print_user()
 
@@ -21,25 +31,21 @@ done
 )
 
 @val print_user
-do (user :: User)
-        print_string("Name: ")
-        print_string(user.name)
-
-        2 `times(
-                pr_nl
-        )
-
-        print_string("Details: ")
+do ( user :: User )
+        print("Name: ")
+        println(user.name)
 
         pr_nl()
 
-        print_string("    Age: ")
-        print_s32(user.details.age)
+        println("Details: ")
+        print("    Age: ")
+        println(user.details.age)
 
-        pr_nl()
+        print("    ID: ")
+        println(user.details.id)
+done
 
-        print_string("    ID: ")
-        print_string(user.details.id)
-
-        pr_nl()
+@val print_s32
+do ( num :: s32 )
+        print(num)
 done

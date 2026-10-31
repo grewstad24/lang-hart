@@ -1,6 +1,6 @@
 @export [
         (
-                @symbol ["print_string", "print_s32", "pr_nl"]
+                @symbol ["print", "pr_nl", "Printable", "println"]
                 @to ["print"]
         )
 ]

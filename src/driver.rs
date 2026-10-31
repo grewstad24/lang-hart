@@ -10,8 +10,8 @@ use crate::codegen::Codegen;
 use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, Parameter,
-    Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
+    Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
+    Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
 };
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
@@ -290,6 +290,25 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
                 arms: resolved_arms,
             })
         }
+        Expression::Match {
+            target,
+            binding_name,
+            arms,
+        } => {
+            let resolved_target = canonicalize_expression(target, checker)?;
+            let mut resolved_arms = Vec::with_capacity(arms.len());
+            for arm in arms {
+                resolved_arms.push(MatchArm {
+                    variant_type: canonicalize_type(&arm.variant_type, checker)?,
+                    body: Box::new(canonicalize_expression(&arm.body, checker)?),
+                });
+            }
+            Ok(Expression::Match {
+                target: Box::new(resolved_target),
+                binding_name: binding_name.clone(),
+                arms: resolved_arms,
+            })
+        }
     }
 }
 
@@ -302,7 +321,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     }
     search_dirs.push(project_dir.to_path_buf());
 
-    let modules = discover_logical_modules(&search_dirs)
+    let mut modules = discover_logical_modules(&search_dirs)
         .map_err(|error| format!("module discovery error: {}", error))?;
 
     if modules.is_empty() {
@@ -314,9 +333,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         .resolve_modules(&modules)
         .map_err(|error| format!("namespace resolution error: {}", error))?;
 
-    for (module, scope) in modules.iter().zip(module_scopes.iter()) {
+    for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
-        for file in &module.source_files {
+        for file in &mut module.source_files {
             checker
                 .check_file(file)
                 .map_err(|error| format!("type error: {}", error))?;

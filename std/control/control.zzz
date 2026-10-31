@@ -24,3 +24,18 @@ do (fn :: Fn{()})
         fn()
         loop(fn)
 done
+
+@val iter
+do ( fn :: Fn{(count :: s32)}, num :: s32 )
+    iter_helper(0, num - 1, fn)
+done
+
+@val iter_helper
+do (curr :: s32, max :: s32, fn :: Fn{(count :: s32)})
+    doif
+        curr <= max => {
+                fn(curr)
+                iter_helper(curr + 1, max, fn)
+        }
+    end
+done

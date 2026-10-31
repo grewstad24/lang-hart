@@ -1,6 +1,6 @@
 @export [
         (
-                @symbol ["String"]
+                @symbol ["String", "Integer"]
                 @to []
         )
 ]

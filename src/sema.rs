@@ -282,6 +282,60 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub fn canonical_type_key(ty: &Type) -> String {
+        match ty {
+            Type::Void => "00_void".to_string(),
+            Type::Bool => "01_bool".to_string(),
+            Type::U8 => "02_u8".to_string(),
+            Type::U16 => "03_u16".to_string(),
+            Type::U32 => "04_u32".to_string(),
+            Type::U64 => "05_u64".to_string(),
+            Type::S16 => "06_s16".to_string(),
+            Type::S32 => "07_s32".to_string(),
+            Type::S64 => "08_s64".to_string(),
+            Type::Atom(name) => format!("09_atom_{}", name),
+            Type::Alias(name) => format!("10_alias_{}", name),
+            Type::Pointer { element } => format!("11_ptr_{}", Self::canonical_type_key(element)),
+            Type::Slice { element } => format!("12_slice_{}", Self::canonical_type_key(element)),
+            Type::Array { element, size } => {
+                format!("13_arr_{}_{}", size, Self::canonical_type_key(element))
+            }
+            Type::Struct(fields) => {
+                let inner = fields
+                    .iter()
+                    .map(|f| format!("{}:{}", f.name, Self::canonical_type_key(&f.ty)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("14_struct_{{{}}}", inner)
+            }
+            Type::Function {
+                parameters,
+                return_type,
+                is_variadic,
+            } => {
+                let params = parameters
+                    .iter()
+                    .map(Self::canonical_type_key)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "15_fn_({})_{}_{}",
+                    params,
+                    Self::canonical_type_key(return_type),
+                    is_variadic
+                )
+            }
+            Type::Union(variants) => {
+                let inner = variants
+                    .iter()
+                    .map(Self::canonical_type_key)
+                    .collect::<Vec<_>>()
+                    .join("|");
+                format!("16_union_{}", inner)
+            }
+        }
+    }
+
     pub fn resolve_type(&self, ty: &Type) -> Result<Type, String> {
         let mut visited = HashSet::new();
         self.resolve_type_inner(ty, &mut visited)
@@ -341,6 +395,41 @@ impl<'a> Checker<'a> {
                     is_variadic: *is_variadic,
                 })
             }
+            Type::Union(variants) => {
+                let mut flat = Vec::new();
+                for v in variants {
+                    let resolved = self.resolve_type_inner(v, visited)?;
+                    if let Type::Union(inner) = resolved {
+                        flat.extend(inner);
+                    } else {
+                        flat.push(resolved);
+                    }
+                }
+
+                let mut unique: Vec<Type> = Vec::new();
+                for v in flat {
+                    if !unique.contains(&v) {
+                        unique.push(v);
+                    }
+                }
+
+                if unique.len() > 256 {
+                    return Err(format!(
+                        "in '{}': sum type exceeds maximum of 256 variants (found {})",
+                        self.current_file_path,
+                        unique.len()
+                    ));
+                }
+
+                unique
+                    .sort_by(|a, b| Self::canonical_type_key(a).cmp(&Self::canonical_type_key(b)));
+
+                if unique.len() == 1 {
+                    Ok(unique.into_iter().next().unwrap())
+                } else {
+                    Ok(Type::Union(unique))
+                }
+            }
             concrete => Ok(concrete.clone()),
         }
     }
@@ -378,7 +467,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub fn check_file(&mut self, file: &SourceFile) -> Result<(), String> {
+    pub fn check_file(&mut self, file: &mut SourceFile) -> Result<(), String> {
         self.current_file_path = file.file_path.clone();
 
         for alias in &file.type_aliases {
@@ -389,19 +478,19 @@ impl<'a> Checker<'a> {
             self.resolve_external_function(&ext.name)?;
         }
 
-        for def in &file.definitions {
+        for def in &mut file.definitions {
             self.check_definition_body(def)?;
         }
 
         Ok(())
     }
 
-    fn check_definition_body(&mut self, def: &Definition) -> Result<(), String> {
+    fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
         if !self.checked_bodies.insert(def.name.clone()) {
             return Ok(());
         }
 
-        match &def.value {
+        match &mut def.value {
             Expression::Block { signature, body } => {
                 let mut expected_return = Type::Void;
 
@@ -524,7 +613,8 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        let ty_result = self.type_of_expression(&def.value);
+        let mut expr_clone = def.value.clone();
+        let ty_result = self.type_of_expression(&mut expr_clone);
         self.resolving_definitions.remove(name);
 
         let ty = self.resolve_type(&ty_result?)?;
@@ -547,7 +637,7 @@ impl<'a> Checker<'a> {
             .find_map(|s| s.get_mut(name))
     }
 
-    fn type_of_expression(&mut self, expression: &Expression) -> Result<Type, String> {
+    pub fn type_of_expression(&mut self, expression: &mut Expression) -> Result<Type, String> {
         match expression {
             Expression::Integer(_) => Ok(Type::S32),
             Expression::Boolean(_) => Ok(Type::Bool),
@@ -570,7 +660,7 @@ impl<'a> Checker<'a> {
                             self.current_file_path, field.name
                         ));
                     }
-                    let field_ty = self.type_of_expression(&field.value)?;
+                    let field_ty = self.type_of_expression(&mut field.value)?;
                     struct_fields.push(StructFieldType {
                         name: field.name.clone(),
                         ty: field_ty,
@@ -707,10 +797,11 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
+                let num_arms = arms.len();
                 let mut expected_ty: Option<Type> = None;
 
-                for (i, arm) in arms.iter().enumerate() {
-                    match &arm.condition {
+                for (i, arm) in arms.iter_mut().enumerate() {
+                    match &mut arm.condition {
                         IfCondition::Expression(cond) => {
                             let cond_ty = self.type_of_expression(cond)?;
                             if cond_ty != Type::Bool {
@@ -721,7 +812,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                         IfCondition::Else => {
-                            if i != arms.len() - 1 {
+                            if i != num_arms - 1 {
                                 return Err(format!(
                                     "in '{}': fallback 'else' arm must be the final arm in if",
                                     self.current_file_path
@@ -730,7 +821,7 @@ impl<'a> Checker<'a> {
                         }
                     }
 
-                    let arm_ty = self.type_of_expression(&arm.body)?;
+                    let arm_ty = self.type_of_expression(&mut arm.body)?;
                     if let Some(target_ty) = &expected_ty {
                         if !self.are_types_compatible(&arm_ty, target_ty)? {
                             return Err(format!(
@@ -746,6 +837,94 @@ impl<'a> Checker<'a> {
                 Ok(expected_ty.unwrap_or(Type::Void))
             }
 
+            Expression::Match {
+                target,
+                binding_name,
+                arms,
+            } => {
+                let raw_target_ty = self.type_of_expression(target)?;
+                let target_ty = self.resolve_type(&raw_target_ty)?;
+                let target_variants = match &target_ty {
+                    Type::Union(vars) => vars.clone(),
+                    other => {
+                        return Err(format!(
+                            "in '{}': match target must evaluate to a sum type, found {:?}",
+                            self.current_file_path, other
+                        ));
+                    }
+                };
+
+                if arms.is_empty() {
+                    return Err(format!(
+                        "in '{}': match expression must have at least one arm",
+                        self.current_file_path
+                    ));
+                }
+
+                let mut unhandled = target_variants.clone();
+                let mut result_type: Option<Type> = None;
+
+                for arm in arms {
+                    let arm_var_ty = self.resolve_type(&arm.variant_type)?;
+
+                    let covered_variants = match &arm_var_ty {
+                        Type::Union(inner) => inner.clone(),
+                        single => vec![single.clone()],
+                    };
+
+                    for v in &covered_variants {
+                        if !target_variants.contains(v) {
+                            return Err(format!(
+                                "in '{}': match arm variant {:?} is not a member of sum type {:?}",
+                                self.current_file_path, v, target_ty
+                            ));
+                        }
+
+                        let pos = unhandled.iter().position(|u| u == v).ok_or_else(|| {
+                            format!(
+                                "in '{}': unreachable or duplicate match arm for variant {:?}",
+                                self.current_file_path, v
+                            )
+                        })?;
+                        unhandled.remove(pos);
+                    }
+
+                    self.local_scopes.push(HashMap::new());
+                    self.local_scopes.last_mut().unwrap().insert(
+                        binding_name.clone(),
+                        BindingInfo {
+                            ty: arm_var_ty,
+                            is_mutable: false,
+                            is_initialized: true,
+                        },
+                    );
+
+                    let arm_res_ty = self.type_of_expression(&mut arm.body);
+                    self.local_scopes.pop();
+                    let arm_ty = self.resolve_type(&arm_res_ty?)?;
+
+                    if let Some(expected) = &result_type {
+                        if !self.are_types_compatible(&arm_ty, expected)? {
+                            return Err(format!(
+                                "in '{}': match arm result type mismatch: expected {:?}, found {:?}",
+                                self.current_file_path, expected, arm_ty
+                            ));
+                        }
+                    } else {
+                        result_type = Some(arm_ty);
+                    }
+                }
+
+                if !unhandled.is_empty() {
+                    return Err(format!(
+                        "in '{}': non-exhaustive match expression: missing cases for {:?}",
+                        self.current_file_path, unhandled
+                    ));
+                }
+
+                Ok(result_type.unwrap_or(Type::Void))
+            }
+
             Expression::Array(elements) => {
                 if elements.is_empty() {
                     return Err(format!(
@@ -754,8 +933,8 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                let element_type = self.type_of_expression(&elements[0])?;
-                for element in &elements[1..] {
+                let element_type = self.type_of_expression(&mut elements[0])?;
+                for element in &mut elements[1..] {
                     let ty = self.type_of_expression(element)?;
                     if !self.are_types_compatible(&ty, &element_type)? {
                         return Err(format!(
@@ -865,19 +1044,6 @@ impl<'a> Checker<'a> {
                         return_type,
                         is_variadic,
                     } => (parameters.clone(), *return_type.clone(), *is_variadic),
-                    Type::Pointer { element } => match element.as_ref() {
-                        Type::Function {
-                            parameters,
-                            return_type,
-                            is_variadic,
-                        } => (parameters.clone(), *return_type.clone(), *is_variadic),
-                        _ => {
-                            return Err(format!(
-                                "in '{}': cannot call non-function type {:?}",
-                                self.current_file_path, target_type
-                            ));
-                        }
-                    },
                     _ => {
                         return Err(format!(
                             "in '{}': cannot call non-function type {:?}",
@@ -904,9 +1070,11 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                for (arg, expected_ty) in arguments.iter().zip(param_types.iter()) {
+                for (arg, expected_ty) in arguments.iter_mut().zip(param_types.iter()) {
                     let arg_ty = self.type_of_expression(arg)?;
-                    if !self.are_types_compatible(&arg_ty, expected_ty)? {
+                    let res_expected = self.resolve_type(expected_ty)?;
+
+                    if !self.are_types_compatible(&arg_ty, &res_expected)? {
                         return Err(format!(
                             "in '{}': argument type mismatch: expected {:?}, found {:?}",
                             self.current_file_path, expected_ty, arg_ty
@@ -914,7 +1082,7 @@ impl<'a> Checker<'a> {
                     }
                 }
 
-                for arg in arguments.iter().skip(param_types.len()) {
+                for arg in arguments.iter_mut().skip(param_types.len()) {
                     let _ = self.type_of_expression(arg)?;
                 }
 
@@ -1037,6 +1205,15 @@ impl<'a> Checker<'a> {
             return true;
         }
 
+        // Subset Union Subtyping: A <= B if all variants in A are in B
+        if let Type::Union(expected_vars) = expected {
+            if let Type::Union(provided_vars) = provided {
+                return provided_vars.iter().all(|pv| expected_vars.contains(pv));
+            } else {
+                return expected_vars.contains(provided);
+            }
+        }
+
         match (provided, expected) {
             (Type::Struct(fields1), Type::Struct(fields2)) => {
                 if fields1.len() != fields2.len() {
@@ -1065,19 +1242,25 @@ impl<'a> Checker<'a> {
             (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
                 Self::types_compatible(e1, e2)
             }
-            (Type::Function { .. }, Type::Pointer { element }) => {
-                if let Type::Function { .. } = element.as_ref() {
-                    provided == element.as_ref()
-                } else {
-                    false
-                }
-            }
-            (Type::Pointer { element }, Type::Function { .. }) => {
-                if let Type::Function { .. } = element.as_ref() {
-                    element.as_ref() == expected
-                } else {
-                    false
-                }
+            (
+                Type::Function {
+                    parameters: p1,
+                    return_type: r1,
+                    is_variadic: v1,
+                },
+                Type::Function {
+                    parameters: p2,
+                    return_type: r2,
+                    is_variadic: v2,
+                },
+            ) => {
+                v1 == v2
+                    && p1.len() == p2.len()
+                    && p1
+                        .iter()
+                        .zip(p2.iter())
+                        .all(|(a, b)| Self::types_compatible(a, b))
+                    && Self::types_compatible(r1, r2)
             }
             _ => false,
         }
@@ -1097,7 +1280,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn validate_statement(&mut self, stmt: &Statement, expected_type: &Type) -> Result<(), String> {
+    fn validate_statement(
+        &mut self,
+        stmt: &mut Statement,
+        expected_type: &Type,
+    ) -> Result<(), String> {
         match stmt {
             Statement::Compound(stmts) => {
                 for s in stmts {
@@ -1196,7 +1383,7 @@ impl<'a> Checker<'a> {
 
             Statement::If { arms } => {
                 for arm in arms {
-                    if let IfCondition::Expression(cond) = &arm.condition {
+                    if let IfCondition::Expression(cond) = &mut arm.condition {
                         let cond_ty = self.type_of_expression(cond)?;
                         if cond_ty != Type::Bool {
                             return Err(format!(
@@ -1205,7 +1392,7 @@ impl<'a> Checker<'a> {
                             ));
                         }
                     }
-                    self.validate_statement(&arm.body, expected_type)?;
+                    self.validate_statement(&mut arm.body, expected_type)?;
                 }
             }
         }
@@ -1214,10 +1401,10 @@ impl<'a> Checker<'a> {
 
     fn validate_block(
         &mut self,
-        statements: &[Statement],
+        statements: &mut [Statement],
         expected_type: &Type,
     ) -> Result<(), String> {
-        for stmt in statements {
+        for stmt in statements.iter_mut() {
             self.validate_statement(stmt, expected_type)?;
         }
 
@@ -1243,6 +1430,22 @@ impl<'a> Checker<'a> {
     pub fn is_supported_cast(source: &Type, target: &Type) -> bool {
         if source == target {
             return true;
+        }
+
+        if let Type::Union(target_vars) = target {
+            if let Type::Union(source_vars) = source {
+                if source_vars.iter().all(|sv| target_vars.contains(sv)) {
+                    return true;
+                }
+            } else if target_vars.contains(source) {
+                return true;
+            }
+        }
+
+        if let Type::Union(variants) = source {
+            if variants.contains(target) {
+                return true;
+            }
         }
 
         if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
