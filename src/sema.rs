@@ -55,6 +55,92 @@ struct ExportRegistry {
     type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
 }
 
+pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAlias>) -> Type {
+    let mut visited = HashSet::new();
+
+    fn expand(
+        t: &Type,
+        aliases: &HashMap<String, TypeAlias>,
+        visited: &mut HashSet<String>,
+    ) -> Type {
+        match t {
+            Type::Alias(name) => {
+                if !visited.insert(name.clone()) {
+                    return t.clone();
+                }
+                let res = if let Some(alias) = aliases.get(name) {
+                    expand(&alias.target, aliases, visited)
+                } else {
+                    t.clone()
+                };
+                visited.remove(name);
+                res
+            }
+            Type::Union(variants) => {
+                let mut flat = Vec::new();
+                for v in variants {
+                    let res = expand(v, aliases, visited);
+                    if let Type::Union(inner) = res {
+                        flat.extend(inner);
+                    } else {
+                        flat.push(res);
+                    }
+                }
+                let mut unique = Vec::new();
+                for v in flat {
+                    if !unique.contains(&v) {
+                        unique.push(v);
+                    }
+                }
+                unique.sort_by_key(Checker::canonical_type_key);
+                if unique.len() == 1 {
+                    unique.remove(0)
+                } else {
+                    Type::Union(unique)
+                }
+            }
+            Type::Struct(fields) => {
+                let flds = fields
+                    .iter()
+                    .map(|f| StructFieldType {
+                        name: f.name.clone(),
+                        ty: expand(&f.ty, aliases, visited),
+                    })
+                    .collect();
+                Type::Struct(flds)
+            }
+            Type::Pointer { element } => Type::Pointer {
+                element: Box::new(expand(element, aliases, visited)),
+            },
+            Type::Slice { element } => Type::Slice {
+                element: Box::new(expand(element, aliases, visited)),
+            },
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(expand(element, aliases, visited)),
+                size: *size,
+            },
+            Type::Function {
+                parameters,
+                return_type,
+                is_variadic,
+            } => {
+                let params = parameters
+                    .iter()
+                    .map(|p| expand(p, aliases, visited))
+                    .collect();
+                Type::Function {
+                    parameters: params,
+                    return_type: Box::new(expand(return_type, aliases, visited)),
+                    is_variadic: *is_variadic,
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    expand(ty, aliases, &mut visited)
+}
+
 impl ModuleResolver {
     pub fn new() -> Self {
         Self {
@@ -67,6 +153,13 @@ impl ModuleResolver {
         modules: &[LogicalModule],
     ) -> Result<Vec<ModuleScope>, String> {
         for module in modules {
+            let mut module_aliases = HashMap::new();
+            for file in &module.source_files {
+                for alias in &file.type_aliases {
+                    module_aliases.insert(alias.name.clone(), alias.clone());
+                }
+            }
+
             for export_rule in &module.exports {
                 let target_ns = NamespacePath::from_segments(export_rule.to.clone());
                 let registry = self
@@ -81,24 +174,49 @@ impl ModuleResolver {
 
                     for file in &module.source_files {
                         if let Some(def) = file.definitions.iter().find(|d| d.name == *sym) {
+                            let mut resolved_def = def.clone();
+                            if let Expression::Block {
+                                signature: Some(ref mut sig),
+                                ..
+                            } = resolved_def.value
+                            {
+                                for p in &mut sig.parameters {
+                                    p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
+                                }
+                                *sig.return_type =
+                                    expand_type_aliases_with_map(&sig.return_type, &module_aliases);
+                            }
                             found_def = Some(SymbolProvenance {
-                                item: def.clone(),
+                                item: resolved_def,
                                 originating_file: file.file_path.clone(),
                             });
                             break;
                         } else if let Some(ext) =
                             file.extern_functions.iter().find(|e| e.name == *sym)
                         {
+                            let mut resolved_ext = ext.clone();
+                            for p in &mut resolved_ext.signature.parameters {
+                                p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
+                            }
+                            *resolved_ext.signature.return_type = expand_type_aliases_with_map(
+                                &resolved_ext.signature.return_type,
+                                &module_aliases,
+                            );
                             found_ext = Some(SymbolProvenance {
-                                item: ext.clone(),
+                                item: resolved_ext,
                                 originating_file: file.file_path.clone(),
                             });
                             break;
                         } else if let Some(alias) =
                             file.type_aliases.iter().find(|a| a.name == *sym)
                         {
+                            let mut resolved_alias = alias.clone();
+                            resolved_alias.target = expand_type_aliases_with_map(
+                                &resolved_alias.target,
+                                &module_aliases,
+                            );
                             found_alias = Some(SymbolProvenance {
-                                item: alias.clone(),
+                                item: resolved_alias,
                                 originating_file: file.file_path.clone(),
                             });
                             break;
@@ -434,6 +552,96 @@ impl<'a> Checker<'a> {
         }
     }
 
+    pub fn unify_to_sum_type(&self, types: &[Type]) -> Result<Type, String> {
+        if types.is_empty() {
+            return Ok(Type::Void);
+        }
+
+        let mut flattened = Vec::new();
+        for t in types {
+            let resolved = self.resolve_type(t)?;
+            match resolved {
+                Type::Union(variants) => {
+                    for v in variants {
+                        flattened.push(self.resolve_type(&v)?);
+                    }
+                }
+                other => flattened.push(other),
+            }
+        }
+
+        let mut unique: Vec<Type> = Vec::new();
+        for t in flattened {
+            if !unique.iter().any(|u| u == &t) {
+                unique.push(t);
+            }
+        }
+
+        if unique.len() == 1 {
+            return Ok(unique.remove(0));
+        }
+
+        unique.sort_by_key(Self::canonical_type_key);
+        Ok(Type::Union(unique))
+    }
+
+    /// Coerces an expression in-place to match `expected_ty` (resolved).
+    /// Handles both Union upcasting and Array-Literal-to-Slice-of-Union element coercion.
+    fn coerce_expression_to_type(
+        &mut self,
+        expr: &mut Expression,
+        actual_ty: &Type,
+        expected_ty: &Type,
+    ) -> Result<Type, String> {
+        let res_actual = self.resolve_type(actual_ty)?;
+        let res_expected = self.resolve_type(expected_ty)?;
+
+        if res_actual == res_expected {
+            return Ok(res_actual);
+        }
+
+        // Case 1: Array literal `[e1, e2, ...]` passed to `[]ExpectedElem`
+        // If each element is compatible with `ExpectedElem`, coerce the elements in-place!
+        if let (
+            Expression::Array(elements),
+            Type::Slice {
+                element: expected_elem,
+            },
+        ) = (&mut *expr, &res_expected)
+        {
+            let mut all_compatible = true;
+            for el in elements.iter_mut() {
+                let el_ty = self.type_of_expression(el)?;
+                if !self.are_types_compatible(&el_ty, expected_elem)? {
+                    all_compatible = false;
+                    break;
+                }
+            }
+
+            if all_compatible {
+                for el in elements.iter_mut() {
+                    let el_ty = self.type_of_expression(el)?;
+                    self.coerce_expression_to_type(el, &el_ty, expected_elem)?;
+                }
+                return Ok(res_expected);
+            }
+        }
+
+        // Case 2: Value or Sub-Union passed to a Union
+        if let Type::Union(_) = res_expected {
+            if Self::types_compatible(&res_actual, &res_expected) {
+                let orig = std::mem::replace(expr, Expression::Boolean(false));
+                *expr = Expression::Cast {
+                    expression: Box::new(orig),
+                    ty: res_expected.clone(),
+                };
+                return Ok(res_expected);
+            }
+        }
+
+        Ok(res_actual)
+    }
+
     fn predeclare_scope_signatures(&mut self) {
         for (name, prov) in &self.scope.extern_functions {
             self.resolved_extern_functions
@@ -470,12 +678,13 @@ impl<'a> Checker<'a> {
     pub fn check_file(&mut self, file: &mut SourceFile) -> Result<(), String> {
         self.current_file_path = file.file_path.clone();
 
-        for alias in &file.type_aliases {
-            self.resolve_type(&Type::Alias(alias.name.clone()))?;
+        for alias in &mut file.type_aliases {
+            alias.target = self.resolve_type(&alias.target)?;
         }
 
-        for ext in &file.extern_functions {
-            self.resolve_external_function(&ext.name)?;
+        for ext in &mut file.extern_functions {
+            let resolved_sig = self.resolve_external_function(&ext.name)?;
+            ext.signature = resolved_sig;
         }
 
         for def in &mut file.definitions {
@@ -498,7 +707,7 @@ impl<'a> Checker<'a> {
 
                 if let Some(sig) = signature {
                     let mut seen_params = HashSet::new();
-                    for p in &sig.parameters {
+                    for p in &mut sig.parameters {
                         if !seen_params.insert(p.name.clone()) {
                             self.local_scopes.pop();
                             return Err(format!(
@@ -514,6 +723,7 @@ impl<'a> Checker<'a> {
                                 self.current_file_path, p.name
                             ));
                         }
+                        p.ty = resolved_param_ty.clone();
                         self.local_scopes.last_mut().unwrap().insert(
                             p.name.clone(),
                             BindingInfo {
@@ -524,6 +734,7 @@ impl<'a> Checker<'a> {
                         );
                     }
                     expected_return = self.resolve_type(sig.return_type.as_ref())?;
+                    *sig.return_type = expected_return.clone();
                 }
 
                 let validate_res = self.validate_block(body, &expected_return);
@@ -540,10 +751,6 @@ impl<'a> Checker<'a> {
     }
 
     fn resolve_external_function(&mut self, name: &str) -> Result<Signature, String> {
-        if let Some(signature) = self.resolved_extern_functions.get(name) {
-            return Ok(signature.clone());
-        }
-
         let raw = self.scope.lookup_extern(name).ok_or_else(|| {
             format!(
                 "in '{}': unknown external function '{}'",
@@ -712,7 +919,7 @@ impl<'a> Checker<'a> {
                 let mut param_types = Vec::new();
                 let mut seen_params = HashSet::new();
 
-                for p in &sig.parameters {
+                for p in &mut sig.parameters {
                     if !seen_params.insert(p.name.clone()) {
                         return Err(format!(
                             "in '{}': duplicate parameter name '{}' in signature",
@@ -726,9 +933,11 @@ impl<'a> Checker<'a> {
                             self.current_file_path, p.name
                         ));
                     }
+                    p.ty = resolved_p_ty.clone();
                     param_types.push(resolved_p_ty);
                 }
                 let ret_ty = self.resolve_type(sig.return_type.as_ref())?;
+                *sig.return_type = ret_ty.clone();
                 Ok(Type::Function {
                     parameters: param_types,
                     return_type: Box::new(ret_ty),
@@ -745,7 +954,7 @@ impl<'a> Checker<'a> {
 
                 if let Some(sig) = signature {
                     let mut seen_params = HashSet::new();
-                    for p in &sig.parameters {
+                    for p in &mut sig.parameters {
                         if !seen_params.insert(p.name.clone()) {
                             self.local_scopes.pop();
                             return Err(format!(
@@ -761,6 +970,7 @@ impl<'a> Checker<'a> {
                                 self.current_file_path, p.name
                             ));
                         }
+                        p.ty = resolved_p_ty.clone();
                         self.local_scopes.last_mut().unwrap().insert(
                             p.name.clone(),
                             BindingInfo {
@@ -772,6 +982,7 @@ impl<'a> Checker<'a> {
                         param_types.push(resolved_p_ty);
                     }
                     expected_return = self.resolve_type(sig.return_type.as_ref())?;
+                    *sig.return_type = expected_return.clone();
                     is_variadic = sig.is_variadic;
                 }
 
@@ -798,7 +1009,7 @@ impl<'a> Checker<'a> {
                 }
 
                 let num_arms = arms.len();
-                let mut expected_ty: Option<Type> = None;
+                let mut arm_types = Vec::new();
 
                 for (i, arm) in arms.iter_mut().enumerate() {
                     match &mut arm.condition {
@@ -822,19 +1033,28 @@ impl<'a> Checker<'a> {
                     }
 
                     let arm_ty = self.type_of_expression(&mut arm.body)?;
-                    if let Some(target_ty) = &expected_ty {
-                        if !self.are_types_compatible(&arm_ty, target_ty)? {
-                            return Err(format!(
-                                "in '{}': mismatched arm types in 'if': expected {:?}, found {:?}",
-                                self.current_file_path, target_ty, arm_ty
-                            ));
+                    arm_types.push(self.resolve_type(&arm_ty)?);
+                }
+
+                let unified_return_ty = self.unify_to_sum_type(&arm_types)?;
+
+                if let Type::Union(_) = unified_return_ty {
+                    for (i, arm) in arms.iter_mut().enumerate() {
+                        let arm_ty = &arm_types[i];
+                        if arm_ty != &unified_return_ty {
+                            let orig = std::mem::replace(
+                                &mut arm.body,
+                                Box::new(Expression::Boolean(false)),
+                            );
+                            arm.body = Box::new(Expression::Cast {
+                                expression: orig,
+                                ty: unified_return_ty.clone(),
+                            });
                         }
-                    } else {
-                        expected_ty = Some(arm_ty);
                     }
                 }
 
-                Ok(expected_ty.unwrap_or(Type::Void))
+                Ok(unified_return_ty)
             }
 
             Expression::Match {
@@ -862,10 +1082,11 @@ impl<'a> Checker<'a> {
                 }
 
                 let mut unhandled = target_variants.clone();
-                let mut result_type: Option<Type> = None;
+                let mut arm_types = Vec::new();
 
-                for arm in arms {
+                for arm in arms.iter_mut() {
                     let arm_var_ty = self.resolve_type(&arm.variant_type)?;
+                    arm.variant_type = arm_var_ty.clone();
 
                     let covered_variants = match &arm_var_ty {
                         Type::Union(inner) => inner.clone(),
@@ -902,17 +1123,7 @@ impl<'a> Checker<'a> {
                     let arm_res_ty = self.type_of_expression(&mut arm.body);
                     self.local_scopes.pop();
                     let arm_ty = self.resolve_type(&arm_res_ty?)?;
-
-                    if let Some(expected) = &result_type {
-                        if !self.are_types_compatible(&arm_ty, expected)? {
-                            return Err(format!(
-                                "in '{}': match arm result type mismatch: expected {:?}, found {:?}",
-                                self.current_file_path, expected, arm_ty
-                            ));
-                        }
-                    } else {
-                        result_type = Some(arm_ty);
-                    }
+                    arm_types.push(arm_ty);
                 }
 
                 if !unhandled.is_empty() {
@@ -922,7 +1133,25 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                Ok(result_type.unwrap_or(Type::Void))
+                let unified_return_ty = self.unify_to_sum_type(&arm_types)?;
+
+                if let Type::Union(_) = unified_return_ty {
+                    for (i, arm) in arms.iter_mut().enumerate() {
+                        let arm_ty = &arm_types[i];
+                        if arm_ty != &unified_return_ty {
+                            let orig = std::mem::replace(
+                                &mut arm.body,
+                                Box::new(Expression::Boolean(false)),
+                            );
+                            arm.body = Box::new(Expression::Cast {
+                                expression: orig,
+                                ty: unified_return_ty.clone(),
+                            });
+                        }
+                    }
+                }
+
+                Ok(unified_return_ty)
             }
 
             Expression::Array(elements) => {
@@ -933,25 +1162,35 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                let element_type = self.type_of_expression(&mut elements[0])?;
-                for element in &mut elements[1..] {
-                    let ty = self.type_of_expression(element)?;
-                    if !self.are_types_compatible(&ty, &element_type)? {
-                        return Err(format!(
-                            "in '{}': array elements have mismatched types: expected {:?}, found {:?}",
-                            self.current_file_path, element_type, ty
-                        ));
+                let mut elem_types = Vec::new();
+                for element in elements.iter_mut() {
+                    let t = self.type_of_expression(element)?;
+                    elem_types.push(self.resolve_type(&t)?);
+                }
+
+                let unified_elem_ty = self.unify_to_sum_type(&elem_types)?;
+
+                if let Type::Union(_) = unified_elem_ty {
+                    for (i, element) in elements.iter_mut().enumerate() {
+                        let el_ty = &elem_types[i];
+                        if el_ty != &unified_elem_ty {
+                            let orig = std::mem::replace(element, Expression::Boolean(false));
+                            *element = Expression::Cast {
+                                expression: Box::new(orig),
+                                ty: unified_elem_ty.clone(),
+                            };
+                        }
                     }
                 }
 
-                Ok(Type::Array {
-                    element: Box::new(element_type),
-                    size: elements.len(),
+                Ok(Type::Slice {
+                    element: Box::new(unified_elem_ty),
                 })
             }
 
             Expression::Unary { operator, operand } => {
-                let ty = self.type_of_expression(operand)?;
+                let raw_ty = self.type_of_expression(operand)?;
+                let ty = self.resolve_type(&raw_ty)?;
                 if !Self::is_integer_type(&ty) {
                     return Err(format!(
                         "in '{}': unary operator {:?} requires an integer operand, found {:?}",
@@ -966,8 +1205,10 @@ impl<'a> Checker<'a> {
                 operator,
                 right,
             } => {
-                let left_type = self.type_of_expression(left)?;
-                let right_type = self.type_of_expression(right)?;
+                let raw_left = self.type_of_expression(left)?;
+                let raw_right = self.type_of_expression(right)?;
+                let left_type = self.resolve_type(&raw_left)?;
+                let right_type = self.resolve_type(&raw_right)?;
 
                 if !Self::is_integer_type(&left_type) || !Self::is_integer_type(&right_type) {
                     return Err(format!(
@@ -991,8 +1232,10 @@ impl<'a> Checker<'a> {
                 operator,
                 right,
             } => {
-                let left_type = self.type_of_expression(left)?;
-                let right_type = self.type_of_expression(right)?;
+                let raw_left = self.type_of_expression(left)?;
+                let raw_right = self.type_of_expression(right)?;
+                let left_type = self.resolve_type(&raw_left)?;
+                let right_type = self.resolve_type(&raw_right)?;
 
                 if matches!(left_type, Type::Atom(_)) || matches!(right_type, Type::Atom(_)) {
                     if !matches!(
@@ -1024,8 +1267,10 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Cast { expression, ty } => {
-                let source_type = self.type_of_expression(expression)?;
+                let raw_source = self.type_of_expression(expression)?;
+                let source_type = self.resolve_type(&raw_source)?;
                 let resolved_target = self.resolve_type(ty)?;
+                *ty = resolved_target.clone();
                 if !Self::is_supported_cast(&source_type, &resolved_target) {
                     return Err(format!(
                         "in '{}': unsupported cast from {:?} to {:?}",
@@ -1036,7 +1281,8 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Call { target, arguments } => {
-                let target_type = self.type_of_expression(target)?;
+                let raw_target_ty = self.type_of_expression(target)?;
+                let target_type = self.resolve_type(&raw_target_ty)?;
 
                 let (param_types, return_type, is_variadic) = match &target_type {
                     Type::Function {
@@ -1071,13 +1317,14 @@ impl<'a> Checker<'a> {
                 }
 
                 for (arg, expected_ty) in arguments.iter_mut().zip(param_types.iter()) {
-                    let arg_ty = self.type_of_expression(arg)?;
                     let res_expected = self.resolve_type(expected_ty)?;
+                    let mut arg_ty = self.type_of_expression(arg)?;
+                    arg_ty = self.coerce_expression_to_type(arg, &arg_ty, &res_expected)?;
 
                     if !self.are_types_compatible(&arg_ty, &res_expected)? {
                         return Err(format!(
                             "in '{}': argument type mismatch: expected {:?}, found {:?}",
-                            self.current_file_path, expected_ty, arg_ty
+                            self.current_file_path, res_expected, arg_ty
                         ));
                     }
                 }
@@ -1092,7 +1339,8 @@ impl<'a> Checker<'a> {
             Expression::Index { expression, index } => {
                 let raw_expr_ty = self.type_of_expression(expression)?;
                 let expression_type = self.resolve_type(&raw_expr_ty)?;
-                let index_type = self.type_of_expression(index)?;
+                let raw_idx_ty = self.type_of_expression(index)?;
+                let index_type = self.resolve_type(&raw_idx_ty)?;
 
                 if !Self::is_integer_type(&index_type) {
                     return Err(format!(
@@ -1226,9 +1474,8 @@ impl<'a> Checker<'a> {
                 }
                 true
             }
-            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
-                Self::types_compatible(e1, e2)
-            }
+            // Pointers and Slices require exact element layout equality in memory
+            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => e1 == e2,
             (
                 Type::Array {
                     element: e1,
@@ -1238,10 +1485,8 @@ impl<'a> Checker<'a> {
                     element: e2,
                     size: s2,
                 },
-            ) => s1 == s2 && Self::types_compatible(e1, e2),
-            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
-                Self::types_compatible(e1, e2)
-            }
+            ) => s1 == s2 && e1 == e2,
+            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => e1 == e2,
             (
                 Type::Function {
                     parameters: p1,
@@ -1306,6 +1551,7 @@ impl<'a> Checker<'a> {
                         self.current_file_path, name
                     ));
                 }
+                *ty = resolved_ty.clone();
                 self.local_scopes.last_mut().unwrap().insert(
                     name.clone(),
                     BindingInfo {
@@ -1317,7 +1563,7 @@ impl<'a> Checker<'a> {
             }
 
             Statement::Assign { expression, target } => {
-                let expr_ty = self.type_of_expression(expression)?;
+                let mut expr_ty = self.type_of_expression(expression)?;
 
                 if self.scope.lookup_definition(target).is_some() {
                     return Err(format!(
@@ -1345,12 +1591,14 @@ impl<'a> Checker<'a> {
                             self.current_file_path, target
                         ));
                     }
+                    expr_ty = self.coerce_expression_to_type(expression, &expr_ty, &info.ty)?;
                     if !self.are_types_compatible(&expr_ty, &info.ty)? {
                         return Err(format!(
                             "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
                             self.current_file_path, target, info.ty, expr_ty
                         ));
                     }
+
                     if let Some(info_mut) = self.lookup_binding_mut(target) {
                         info_mut.is_initialized = true;
                     }
@@ -1368,7 +1616,8 @@ impl<'a> Checker<'a> {
             }
 
             Statement::Return(expr) => {
-                let actual = self.type_of_expression(expr)?;
+                let mut actual = self.type_of_expression(expr)?;
+                actual = self.coerce_expression_to_type(expr, &actual, expected_type)?;
                 if !self.are_types_compatible(&actual, expected_type)? {
                     return Err(format!(
                         "in '{}': return type mismatch: expected {:?}, found {:?}",

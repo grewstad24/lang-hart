@@ -26,6 +26,21 @@ do
         printf ("\n"^)
 done
 
+@val printa_helper
+do ( arr :: []Printable, i :: s32 )
+        doif
+                i < arr.len as s32 => {
+                        print(arr[i])
+                        printa_helper(arr, i + 1)
+                }
+        end
+done
+
+@val printa
+do ( arr :: []Printable )
+        printa_helper(arr, 0)
+done
+
 @val print
 do ( x :: Printable )
         match x with z
@@ -37,5 +52,11 @@ done
 @val println
 do ( x :: Printable )
         print(x)
+        pr_nl()
+done
+
+@val printaln
+do ( x :: []Printable )
+        printa(x)
         pr_nl()
 done

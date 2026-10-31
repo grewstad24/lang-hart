@@ -1064,7 +1064,7 @@ impl<'ctx> Codegen<'ctx> {
 
         for (arm, case_bb) in arms.iter().zip(arm_bbs.iter()) {
             self.builder.position_at_end(*case_bb);
-            let stack_ptr = self.enter_scope()?;
+            self.local_scopes.push(HashMap::new());
 
             let arm_llvm_ty = self.llvm_type(&arm.variant_type)?;
             let payload_ptr = self
@@ -1083,7 +1083,6 @@ impl<'ctx> Codegen<'ctx> {
                     .build_store(sub_alloca, sub_union_llvm_ty.const_zero())
                     .map_err(|e| e.to_string())?;
 
-                // Map target_tag -> inner_tag
                 let mut mapping_cases = Vec::new();
                 for (inner_idx, iv) in inner_vars.iter().enumerate() {
                     let target_idx = target_variants.iter().position(|tv| tv == iv).unwrap() as u8;
@@ -1187,12 +1186,11 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             let arm_binding = self.codegen_expression(&arm.body)?;
+            self.local_scopes.pop();
 
             if result_type.is_none() {
                 result_type = Some(self.binding_type(&arm_binding)?);
             }
-
-            self.exit_scope(stack_ptr)?;
 
             let end_bb = self.builder.get_insert_block().unwrap();
             if end_bb.get_terminator().is_none() {
@@ -1425,83 +1423,83 @@ impl<'ctx> Codegen<'ctx> {
             return Err("cannot generate an empty array literal".to_string());
         }
 
-        let first = self.codegen_expression(&elements[0])?;
-        let element_type = self.binding_type(&first)?;
-
         let mut bindings = Vec::with_capacity(elements.len());
-        bindings.push(first);
+        for el in elements {
+            bindings.push(self.codegen_expression(el)?);
+        }
 
-        for element in &elements[1..] {
-            let binding = self.codegen_expression(element)?;
-            let ty = self.binding_type(&binding)?;
-
+        let element_type = self.binding_type(&bindings[0])?;
+        for b in &bindings[1..] {
+            let ty = self.binding_type(b)?;
             if ty != element_type {
                 return Err(format!(
-                    "array literal elements have different types: expected {:?}, found {:?}",
+                    "array literal elements have mismatched types: expected {:?}, found {:?}",
                     element_type, ty
                 ));
             }
-
-            bindings.push(binding);
         }
 
-        let array_value = match &element_type {
-            Type::Atom(_) => {
-                let values = bindings
-                    .iter()
-                    .map(|b| match b {
-                        Binding::Atom { value, .. } => Ok(*value),
-                        _ => Err("expected atom element".to_string()),
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
+        let llvm_elem_ty = self.llvm_type(&element_type)?;
+        let count = elements.len() as u64;
 
-                self.context.i32_type().const_array(&values)
-            }
-            Type::S16
-            | Type::S32
-            | Type::S64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool => {
-                let values = bindings
-                    .iter()
-                    .map(|b| self.binding_int_value(b))
-                    .collect::<Result<Vec<_>, _>>()?;
+        let llvm_arr_ty = llvm_elem_ty.array_type(count as u32);
+        let backing_alloca = self
+            .builder
+            .build_alloca(llvm_arr_ty, "arr_literal_backing")
+            .map_err(|e| e.to_string())?;
 
-                self.llvm_type(&element_type)?
-                    .into_int_type()
-                    .const_array(&values)
-            }
-            Type::Array { .. } => {
-                let values = bindings
-                    .iter()
-                    .map(|b| match b {
-                        Binding::Array { value, .. } => Ok(*value),
-                        _ => Err("expected array element".to_string()),
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
+        let zero = self.context.i64_type().const_zero();
 
-                self.llvm_type(&element_type)?
-                    .into_array_type()
-                    .const_array(&values)
-            }
-            _ => {
-                return Err(
-                    "array literals of pointers, slices, structs, unions, or void are not supported"
-                        .to_string(),
-                );
-            }
+        for (i, b) in bindings.into_iter().enumerate() {
+            let val = self.binding_basic_value(&b)?;
+            let idx = self.context.i64_type().const_int(i as u64, false);
+
+            let slot_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        llvm_arr_ty,
+                        backing_alloca,
+                        &[zero, idx],
+                        &format!("slot_{}", i),
+                    )
+                    .map_err(|e| e.to_string())?
+            };
+            self.builder
+                .build_store(slot_ptr, val)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let first_elem_ptr = unsafe {
+            self.builder
+                .build_gep(
+                    llvm_arr_ty,
+                    backing_alloca,
+                    &[zero, zero],
+                    "slice_first_elem",
+                )
+                .map_err(|e| e.to_string())?
         };
 
-        Ok(Binding::Array {
-            ty: Type::Array {
+        let slice_llvm_ty = self.slice_type();
+        let len_val = self.context.i64_type().const_int(count, false);
+
+        let mut slice_val = slice_llvm_ty.get_undef();
+        slice_val = self
+            .builder
+            .build_insert_value(slice_val, first_elem_ptr, 0, "slice_ptr")
+            .map_err(|e| e.to_string())?
+            .into_struct_value();
+        slice_val = self
+            .builder
+            .build_insert_value(slice_val, len_val, 1, "slice_len")
+            .map_err(|e| e.to_string())?
+            .into_struct_value();
+
+        Ok(Binding::Slice {
+            ty: Type::Slice {
                 element: Box::new(element_type),
-                size: bindings.len(),
             },
-            value: array_value,
-            storage: None,
+            value: slice_val,
         })
     }
 
@@ -1694,7 +1692,6 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
 
             if let Type::Union(source_vars) = &source_type {
-                // Sub-union to super-union: copy payload and translate tag
                 let sub_union_llvm_ty = self.llvm_type(&source_type)?.into_struct_type();
                 let sub_storage = match binding {
                     Binding::Union {
@@ -2508,6 +2505,31 @@ impl<'ctx> Codegen<'ctx> {
         Ok(max_size)
     }
 
+    fn llvm_type_align(&self, ty: &Type) -> Result<u64, String> {
+        match ty {
+            Type::Bool | Type::U8 | Type::Union(_) => Ok(1),
+            Type::S16 | Type::U16 => Ok(2),
+            Type::S32 | Type::U32 | Type::Atom(_) => Ok(4),
+            Type::S64
+            | Type::U64
+            | Type::Pointer { .. }
+            | Type::Function { .. }
+            | Type::Slice { .. } => Ok(8),
+            Type::Array { element, .. } => self.llvm_type_align(element),
+            Type::Struct(fields) => {
+                let mut max_align = 1;
+                for f in fields {
+                    let align = self.llvm_type_align(&f.ty)?;
+                    if align > max_align {
+                        max_align = align;
+                    }
+                }
+                Ok(max_align)
+            }
+            _ => Ok(8),
+        }
+    }
+
     fn llvm_type_size(&self, ty: &Type) -> Result<u64, String> {
         match ty {
             Type::Bool | Type::U8 => Ok(1),
@@ -2517,11 +2539,18 @@ impl<'ctx> Codegen<'ctx> {
             Type::Slice { .. } => Ok(16),
             Type::Array { element, size } => Ok(self.llvm_type_size(element)? * (*size as u64)),
             Type::Struct(fields) => {
-                let mut total = 0;
+                let mut offset = 0u64;
+                let mut max_align = 1u64;
                 for f in fields {
-                    total += self.llvm_type_size(&f.ty)?;
+                    let align = self.llvm_type_align(&f.ty)?;
+                    if align > max_align {
+                        max_align = align;
+                    }
+                    let padding = (align - (offset % align)) % align;
+                    offset += padding + self.llvm_type_size(&f.ty)?;
                 }
-                Ok(total)
+                let tail_padding = (max_align - (offset % max_align)) % max_align;
+                Ok(offset + tail_padding)
             }
             Type::Union(variants) => {
                 let payload = self.union_payload_size(variants)?;

@@ -32,17 +32,10 @@ done
 
 @val print_user
 do ( user :: User )
-        print("Name: ")
-        println(user.name)
-
-        pr_nl()
-
-        println("Details: ")
-        print("    Age: ")
-        println(user.details.age)
-
-        print("    ID: ")
-        println(user.details.id)
+        ["Name: ", user.name]           `printaln()
+        ["Details: "]                   `printaln()
+        ["    Age: ", user.details.age] `printaln()
+        ["    ID: ", user.details.id]   `printaln()
 done
 
 @val print_s32
