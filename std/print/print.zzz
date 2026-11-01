@@ -42,11 +42,12 @@ do ( arr :: []Printable )
 done
 
 @val print
-do ( x :: Printable )
+do ( x :: Printable | []Printable )
         match x with z
-                String  => print_string(z)
-                Integer => print_int(z)
-                :nl     => pr_nl()
+                String          => print_string(z)
+                Integer         => print_int(z)
+                :nl             => pr_nl()
+                []Printable     => printa(z)
         over
 done
 

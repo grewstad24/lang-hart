@@ -1622,6 +1622,214 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
+        if let (Type::Struct(source_fields), Type::Struct(target_fields)) =
+            (&source_type, &target_type)
+        {
+            let source_value = self.binding_basic_value(&binding)?.into_struct_value();
+            let target_llvm_type = self.llvm_type(&target_type)?.into_struct_type();
+            let mut target_value = target_llvm_type.get_undef();
+
+            for (index, (source_field, target_field)) in
+                source_fields.iter().zip(target_fields).enumerate()
+            {
+                let field_value = self
+                    .builder
+                    .build_extract_value(source_value, index as u32, &source_field.name)
+                    .map_err(|error| error.to_string())?;
+                let field_binding = self.binding_from_basic_value(&source_field.ty, field_value)?;
+                let converted = self.codegen_cast(field_binding, target_field.ty.clone())?;
+                target_value = self
+                    .builder
+                    .build_insert_value(
+                        target_value,
+                        self.binding_basic_value(&converted)?,
+                        index as u32,
+                        &target_field.name,
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_struct_value();
+            }
+
+            return Ok(Binding::Struct {
+                ty: target_type,
+                value: target_value,
+                storage: None,
+            });
+        }
+
+        if let (
+            Type::Array {
+                element: source_element,
+                size,
+            },
+            Type::Array {
+                element: target_element,
+                ..
+            },
+        ) = (&source_type, &target_type)
+        {
+            let source_value = self.binding_basic_value(&binding)?.into_array_value();
+            let target_llvm_type = self.llvm_type(&target_type)?.into_array_type();
+            let mut target_value = target_llvm_type.get_undef();
+
+            for index in 0..*size {
+                let element_value = self
+                    .builder
+                    .build_extract_value(source_value, index as u32, "cast_array_element")
+                    .map_err(|error| error.to_string())?;
+                let element_binding =
+                    self.binding_from_basic_value(source_element, element_value)?;
+                let converted = self.codegen_cast(element_binding, (**target_element).clone())?;
+                target_value = self
+                    .builder
+                    .build_insert_value(
+                        target_value,
+                        self.binding_basic_value(&converted)?,
+                        index as u32,
+                        "cast_array_element",
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_array_value();
+            }
+
+            return Ok(Binding::Array {
+                ty: target_type,
+                value: target_value,
+                storage: None,
+            });
+        }
+
+        if let (
+            Type::Slice {
+                element: source_element,
+            },
+            Type::Slice {
+                element: target_element,
+            },
+        ) = (&source_type, &target_type)
+        {
+            let source_value = self.binding_basic_value(&binding)?.into_struct_value();
+            let source_ptr = self
+                .builder
+                .build_extract_value(source_value, 0, "cast_slice_ptr")
+                .map_err(|error| error.to_string())?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_extract_value(source_value, 1, "cast_slice_len")
+                .map_err(|error| error.to_string())?
+                .into_int_value();
+            let target_element_type = self.llvm_type(target_element)?;
+            let target_ptr = self
+                .builder
+                .build_array_alloca(target_element_type, length, "cast_slice_data")
+                .map_err(|error| error.to_string())?;
+
+            let current_block = self
+                .builder
+                .get_insert_block()
+                .ok_or_else(|| "cannot cast slice outside basic block".to_string())?;
+            let function = current_block
+                .get_parent()
+                .ok_or_else(|| "slice cast has no parent function".to_string())?;
+            let condition_block = self.context.append_basic_block(function, "slice.cast.cond");
+            let body_block = self.context.append_basic_block(function, "slice.cast.body");
+            let end_block = self.context.append_basic_block(function, "slice.cast.end");
+            self.builder
+                .build_unconditional_branch(condition_block)
+                .map_err(|error| error.to_string())?;
+
+            self.builder.position_at_end(condition_block);
+            let index = self
+                .builder
+                .build_phi(self.context.i64_type(), "slice.cast.index")
+                .map_err(|error| error.to_string())?;
+            index.add_incoming(&[(&self.context.i64_type().const_zero(), current_block)]);
+            let index_value = index.as_basic_value().into_int_value();
+            let has_next = self
+                .builder
+                .build_int_compare(IntPredicate::ULT, index_value, length, "slice.cast.more")
+                .map_err(|error| error.to_string())?;
+            self.builder
+                .build_conditional_branch(has_next, body_block, end_block)
+                .map_err(|error| error.to_string())?;
+
+            self.builder.position_at_end(body_block);
+            let source_element_type = self.llvm_type(source_element)?;
+            let source_element_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        source_element_type,
+                        source_ptr,
+                        &[index_value],
+                        "slice.cast.src",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            let source_element_value = self
+                .builder
+                .build_load(source_element_type, source_element_ptr, "slice.cast.value")
+                .map_err(|error| error.to_string())?;
+            let source_element_binding =
+                self.binding_from_basic_value(source_element, source_element_value)?;
+            let converted =
+                self.codegen_cast(source_element_binding, (**target_element).clone())?;
+            let target_element_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        target_element_type,
+                        target_ptr,
+                        &[index_value],
+                        "slice.cast.dst",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(target_element_ptr, self.binding_basic_value(&converted)?)
+                .map_err(|error| error.to_string())?;
+            let body_end = self.builder.get_insert_block().unwrap();
+            let next_index = self
+                .builder
+                .build_int_add(
+                    index_value,
+                    self.context.i64_type().const_int(1, false),
+                    "slice.cast.next",
+                )
+                .map_err(|error| error.to_string())?;
+            self.builder
+                .build_unconditional_branch(condition_block)
+                .map_err(|error| error.to_string())?;
+            index.add_incoming(&[(&next_index, body_end)]);
+
+            self.builder.position_at_end(end_block);
+            let target_slice_type = self.llvm_type(&target_type)?.into_struct_type();
+            let slice_value = target_slice_type.get_undef();
+            let slice_value = self
+                .builder
+                .build_insert_value(slice_value, target_ptr, 0, "cast_slice_ptr")
+                .map_err(|error| error.to_string())?
+                .into_struct_value();
+            let slice_value = self
+                .builder
+                .build_insert_value(slice_value, length, 1, "cast_slice_len")
+                .map_err(|error| error.to_string())?
+                .into_struct_value();
+
+            return Ok(Binding::Slice {
+                ty: target_type,
+                value: slice_value,
+            });
+        }
+
+        if let (Type::Pointer { .. }, Type::Pointer { .. }) = (&source_type, &target_type) {
+            if let Binding::Pointer { value, .. } = binding {
+                return Ok(Binding::Pointer {
+                    ty: target_type,
+                    value,
+                });
+            }
+        }
+
         // 1. Variant or Sub-Union -> Union
         if let Type::Union(target_vars) = &target_type {
             let union_llvm_ty = self.llvm_type(&target_type)?.into_struct_type();
@@ -1646,21 +1854,22 @@ impl<'ctx> Codegen<'ctx> {
 
             if let Type::Union(source_vars) = &source_type {
                 let sub_union_llvm_ty = self.llvm_type(&source_type)?.into_struct_type();
-                let sub_storage = match binding {
-                    Binding::Union {
-                        storage: Some(s), ..
-                    } => s,
-                    _ => {
-                        let val = self.binding_basic_value(&binding)?;
-                        let tmp = self
-                            .builder
-                            .build_alloca(sub_union_llvm_ty, "sub_tmp")
-                            .map_err(|e| e.to_string())?;
-                        self.builder
-                            .build_store(tmp, val)
-                            .map_err(|e| e.to_string())?;
-                        tmp
-                    }
+                let sub_storage = if let Binding::Union {
+                    storage: Some(storage),
+                    ..
+                } = &binding
+                {
+                    *storage
+                } else {
+                    let val = self.binding_basic_value(&binding)?;
+                    let tmp = self
+                        .builder
+                        .build_alloca(sub_union_llvm_ty, "sub_tmp")
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_store(tmp, val)
+                        .map_err(|e| e.to_string())?;
+                    tmp
                 };
 
                 let src_tag_ptr = self
@@ -1675,86 +1884,81 @@ impl<'ctx> Codegen<'ctx> {
 
                 let current_bb = self.builder.get_insert_block().unwrap();
                 let current_fn = current_bb.get_parent().unwrap();
-
-                let mut tag_map = Vec::new();
-                for (s_idx, sv) in source_vars.iter().enumerate() {
-                    let t_idx = target_vars.iter().position(|tv| tv == sv).unwrap() as u8;
-                    tag_map.push((s_idx as u8, t_idx));
-                }
-
-                let new_tag_val = if tag_map.len() == 1 {
-                    self.context.i8_type().const_int(tag_map[0].1 as u64, false)
-                } else {
-                    let map_def_bb = self.context.append_basic_block(current_fn, "tag_up.def");
-                    let map_merge_bb = self.context.append_basic_block(current_fn, "tag_up.merge");
-
-                    let mut branches = Vec::new();
-                    for (s_idx, _) in &tag_map {
-                        let cbb = self.context.append_basic_block(current_fn, "tag_up.case");
-                        branches
-                            .push((self.context.i8_type().const_int(*s_idx as u64, false), cbb));
-                    }
-
-                    self.builder
-                        .build_switch(src_tag_val, map_def_bb, &branches)
-                        .map_err(|e| e.to_string())?;
-
-                    let mut phi_incoming = Vec::new();
-                    for ((_, t_idx), (_, cbb)) in tag_map.iter().zip(branches.iter()) {
-                        self.builder.position_at_end(*cbb);
-                        let val = self.context.i8_type().const_int(*t_idx as u64, false);
-                        phi_incoming.push((BasicValueEnum::from(val), *cbb));
-                        self.builder
-                            .build_unconditional_branch(map_merge_bb)
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    self.builder.position_at_end(map_def_bb);
-                    self.builder
-                        .build_unreachable()
-                        .map_err(|e| e.to_string())?;
-
-                    self.builder.position_at_end(map_merge_bb);
-                    let phi = self
-                        .builder
-                        .build_phi(self.context.i8_type(), "promoted_tag")
-                        .map_err(|e| e.to_string())?;
-                    for (val, bb) in &phi_incoming {
-                        phi.add_incoming(&[(val, *bb)]);
-                    }
-                    phi.as_basic_value().into_int_value()
-                };
-
-                self.builder
-                    .build_store(tag_ptr, new_tag_val)
-                    .map_err(|e| e.to_string())?;
-
                 let src_payload_ptr = self
                     .builder
                     .build_struct_gep(sub_union_llvm_ty, sub_storage, 1, "src_payload_ptr")
                     .map_err(|e| e.to_string())?;
-                let copy_size = self
+                let invalid_tag = self
                     .context
-                    .i64_type()
-                    .const_int(self.union_payload_size(source_vars)?, false);
-
+                    .append_basic_block(current_fn, "union.cast.invalid");
+                let merge_block = self
+                    .context
+                    .append_basic_block(current_fn, "union.cast.merge");
+                let mut cases = Vec::with_capacity(source_vars.len());
+                for source_index in 0..source_vars.len() {
+                    let case_block = self
+                        .context
+                        .append_basic_block(current_fn, "union.cast.case");
+                    cases.push((
+                        self.context.i8_type().const_int(source_index as u64, false),
+                        case_block,
+                    ));
+                }
                 self.builder
-                    .build_memcpy(payload_ptr, 1, src_payload_ptr, 1, copy_size)
+                    .build_switch(src_tag_val, invalid_tag, &cases)
                     .map_err(|e| e.to_string())?;
-            } else {
-                let tag_idx = target_vars
-                    .iter()
-                    .position(|v| *v == source_type)
-                    .ok_or_else(|| {
-                        format!("type {:?} not in union {:?}", source_type, target_type)
-                    })? as u8;
 
-                let tag_val = self.context.i8_type().const_int(tag_idx as u64, false);
+                for (source_index, source_variant) in source_vars.iter().enumerate() {
+                    let case_block = cases[source_index].1;
+                    self.builder.position_at_end(case_block);
+                    let target_index = Checker::castable_union_variant(source_variant, target_vars)
+                        .ok_or_else(|| {
+                            format!(
+                                "cannot uniquely promote union variant {:?} into {:?}",
+                                source_variant, target_type
+                            )
+                        })?;
+                    let source_variant_type = self.llvm_type(source_variant)?;
+                    let source_payload = self
+                        .builder
+                        .build_load(source_variant_type, src_payload_ptr, "source_variant")
+                        .map_err(|e| e.to_string())?;
+                    let source_binding =
+                        self.binding_from_basic_value(source_variant, source_payload)?;
+                    let converted =
+                        self.codegen_cast(source_binding, target_vars[target_index].clone())?;
+                    let target_tag = self.context.i8_type().const_int(target_index as u64, false);
+                    self.builder
+                        .build_store(tag_ptr, target_tag)
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_store(payload_ptr, self.binding_basic_value(&converted)?)
+                        .map_err(|e| e.to_string())?;
+                    self.builder
+                        .build_unconditional_branch(merge_block)
+                        .map_err(|e| e.to_string())?;
+                }
+
+                self.builder.position_at_end(invalid_tag);
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| e.to_string())?;
+                self.builder.position_at_end(merge_block);
+            } else {
+                let target_index = Checker::castable_union_variant(&source_type, target_vars)
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot uniquely promote {:?} into union {:?}",
+                            source_type, target_type
+                        )
+                    })?;
+                let converted = self.codegen_cast(binding, target_vars[target_index].clone())?;
+                let tag_val = self.context.i8_type().const_int(target_index as u64, false);
                 self.builder
                     .build_store(tag_ptr, tag_val)
                     .map_err(|e| e.to_string())?;
 
-                let val = self.binding_basic_value(&binding)?;
+                let val = self.binding_basic_value(&converted)?;
                 self.builder
                     .build_store(payload_ptr, val)
                     .map_err(|e| e.to_string())?;
@@ -1775,28 +1979,36 @@ impl<'ctx> Codegen<'ctx> {
 
         // 2. Union -> Variant
         if let Type::Union(variants) = &source_type {
-            let expected_tag = variants
+            let candidates: Vec<usize> = variants
                 .iter()
-                .position(|v| *v == target_type)
-                .ok_or_else(|| format!("type {:?} not in union {:?}", target_type, source_type))?
-                as u8;
+                .enumerate()
+                .filter(|(_, variant)| Checker::is_supported_cast(variant, &target_type))
+                .map(|(index, _)| index)
+                .collect();
+            if candidates.is_empty() {
+                return Err(format!(
+                    "no variant of {:?} can be cast to {:?}",
+                    source_type, target_type
+                ));
+            }
 
             let union_llvm_ty = self.llvm_type(&source_type)?.into_struct_type();
-            let storage = match binding {
-                Binding::Union {
-                    storage: Some(s), ..
-                } => s,
-                _ => {
-                    let val = self.binding_basic_value(&binding)?;
-                    let tmp = self
-                        .builder
-                        .build_alloca(union_llvm_ty, "unbox_tmp")
-                        .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(tmp, val)
-                        .map_err(|e| e.to_string())?;
-                    tmp
-                }
+            let storage = if let Binding::Union {
+                storage: Some(storage),
+                ..
+            } = &binding
+            {
+                *storage
+            } else {
+                let val = self.binding_basic_value(&binding)?;
+                let tmp = self
+                    .builder
+                    .build_alloca(union_llvm_ty, "unbox_tmp")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(tmp, val)
+                    .map_err(|e| e.to_string())?;
+                tmp
             };
 
             let tag_ptr = self
@@ -1808,20 +2020,19 @@ impl<'ctx> Codegen<'ctx> {
                 .build_load(self.context.i8_type(), tag_ptr, "tag")
                 .map_err(|e| e.to_string())?
                 .into_int_value();
-            let expected_val = self.context.i8_type().const_int(expected_tag as u64, false);
-
-            let is_match = self
-                .builder
-                .build_int_compare(IntPredicate::EQ, tag_val, expected_val, "tag_eq")
-                .map_err(|e| e.to_string())?;
-
             let current_bb = self.builder.get_insert_block().unwrap();
             let current_fn = current_bb.get_parent().unwrap();
-            let success_bb = self.context.append_basic_block(current_fn, "unbox.ok");
+            let merge_bb = self.context.append_basic_block(current_fn, "unbox.merge");
             let fail_bb = self.context.append_basic_block(current_fn, "unbox.fail");
-
+            let mut cases = Vec::with_capacity(candidates.len());
+            for index in &candidates {
+                cases.push((
+                    self.context.i8_type().const_int(*index as u64, false),
+                    self.context.append_basic_block(current_fn, "unbox.case"),
+                ));
+            }
             self.builder
-                .build_conditional_branch(is_match, success_bb, fail_bb)
+                .build_switch(tag_val, fail_bb, &cases)
                 .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(fail_bb);
@@ -1838,17 +2049,43 @@ impl<'ctx> Codegen<'ctx> {
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
 
-            self.builder.position_at_end(success_bb);
             let payload_ptr = self
                 .builder
                 .build_struct_gep(union_llvm_ty, storage, 1, "payload_ptr")
                 .map_err(|e| e.to_string())?;
-            let target_llvm_ty = self.llvm_type(&target_type)?;
-            let loaded_val = self
+
+            let mut incoming =
+                Vec::<(BasicValueEnum<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)>::new();
+            for (index, (_, case_bb)) in candidates.iter().zip(cases.iter()) {
+                let source_variant = &variants[*index];
+                self.builder.position_at_end(*case_bb);
+                let source_value = self
+                    .builder
+                    .build_load(
+                        self.llvm_type(source_variant)?,
+                        payload_ptr,
+                        "unboxed_value",
+                    )
+                    .map_err(|e| e.to_string())?;
+                let source_binding = self.binding_from_basic_value(source_variant, source_value)?;
+                let converted = self.codegen_cast(source_binding, target_type.clone())?;
+                let converted_value = self.binding_basic_value(&converted)?;
+                let converted_end = self.builder.get_insert_block().unwrap();
+                self.builder
+                    .build_unconditional_branch(merge_bb)
+                    .map_err(|e| e.to_string())?;
+                incoming.push((converted_value, converted_end));
+            }
+
+            self.builder.position_at_end(merge_bb);
+            let result_phi = self
                 .builder
-                .build_load(target_llvm_ty, payload_ptr, "unboxed_val")
+                .build_phi(self.llvm_type(&target_type)?, "unboxed_result")
                 .map_err(|e| e.to_string())?;
-            return self.binding_from_basic_value(&target_type, loaded_val);
+            for (value, block) in &incoming {
+                result_phi.add_incoming(&[(value, *block)]);
+            }
+            return self.binding_from_basic_value(&target_type, result_phi.as_basic_value());
         }
 
         if Checker::is_integer_type(&source_type)
@@ -2592,5 +2829,93 @@ impl<'ctx> Codegen<'ctx> {
 
     fn is_signed(&self, ty: &Type) -> bool {
         matches!(ty, Type::S16 | Type::S32 | Type::S64)
+    }
+}
+
+#[cfg(test)]
+mod cast_codegen_tests {
+    use super::{Binding, Codegen};
+    use crate::syntax::{StructFieldType, Type};
+    use inkwell::AddressSpace;
+    use inkwell::context::Context;
+    use inkwell::types::BasicType;
+
+    #[test]
+    fn nested_union_struct_cast_generates_valid_llvm() {
+        let context = Context::create();
+        let mut codegen = Codegen::new(&context, "nested_struct_cast");
+        let small_sum = Type::Union(vec![Type::S32, Type::S64]);
+        let large_sum = Type::Union(vec![Type::S16, Type::S32, Type::S64]);
+        let source_type = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: small_sum,
+        }]);
+        let target_type = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: large_sum,
+        }]);
+        let source_llvm_type = codegen.llvm_type(&source_type).unwrap().into_struct_type();
+        let source_union = codegen
+            .llvm_type(&Type::Union(vec![Type::S32, Type::S64]))
+            .unwrap()
+            .const_zero();
+        let source_value = source_llvm_type.const_named_struct(&[source_union]);
+        let function_type = codegen.llvm_type(&target_type).unwrap().fn_type(&[], false);
+        let function = codegen.module.add_function("run", function_type, None);
+        let entry = context.append_basic_block(function, "entry");
+        codegen.builder.position_at_end(entry);
+
+        let converted = codegen
+            .codegen_cast(
+                Binding::Struct {
+                    ty: source_type,
+                    value: source_value,
+                    storage: None,
+                },
+                target_type,
+            )
+            .unwrap();
+        let returned_value = codegen.binding_basic_value(&converted).unwrap();
+        codegen.builder.build_return(Some(&returned_value)).unwrap();
+
+        assert!(codegen.module.verify().is_ok());
+    }
+
+    #[test]
+    fn slice_element_sum_cast_generates_valid_llvm() {
+        let context = Context::create();
+        let mut codegen = Codegen::new(&context, "slice_element_cast");
+        let source_type = Type::Slice {
+            element: Box::new(Type::S32),
+        };
+        let target_type = Type::Slice {
+            element: Box::new(Type::Union(vec![Type::S32, Type::S64])),
+        };
+        let slice_llvm_type = codegen.slice_type();
+        let source_value = slice_llvm_type.const_named_struct(&[
+            context
+                .ptr_type(AddressSpace::default())
+                .const_null()
+                .into(),
+            context.i64_type().const_zero().into(),
+        ]);
+        let function_type = codegen.llvm_type(&target_type).unwrap().fn_type(&[], false);
+        let function = codegen.module.add_function("run", function_type, None);
+        let entry = context.append_basic_block(function, "entry");
+        codegen.builder.position_at_end(entry);
+
+        let converted = codegen
+            .codegen_cast(
+                Binding::Slice {
+                    ty: source_type,
+                    value: source_value,
+                },
+                target_type,
+            )
+            .unwrap();
+        let returned_value = codegen.binding_basic_value(&converted).unwrap();
+        codegen.builder.build_return(Some(&returned_value)).unwrap();
+
+        assert!(codegen.module.verify().is_ok());
     }
 }

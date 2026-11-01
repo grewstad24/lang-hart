@@ -13,6 +13,98 @@ fn expression_span(expression: &Expression) -> Option<&Span> {
     }
 }
 
+#[cfg(test)]
+mod cast_tests {
+    use super::Checker;
+    use crate::syntax::{StructFieldType, Type};
+
+    fn nested_type(sum: Type) -> Type {
+        Type::Pointer {
+            element: Box::new(Type::Slice {
+                element: Box::new(Type::Array {
+                    element: Box::new(Type::Struct(vec![StructFieldType {
+                        name: "payload".to_string(),
+                        ty: sum,
+                    }])),
+                    size: 2,
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn sum_subset_widens_recursively_inside_containers() {
+        let small_sum = Type::Union(vec![Type::S32, Type::Atom("ready".to_string())]);
+        let large_sum = Type::Union(vec![Type::S32, Type::S64, Type::Atom("ready".to_string())]);
+
+        assert!(Checker::types_compatible(
+            &nested_type(small_sum.clone()),
+            &nested_type(large_sum.clone())
+        ));
+        assert!(Checker::is_supported_cast(
+            &nested_type(small_sum),
+            &nested_type(large_sum)
+        ));
+    }
+
+    #[test]
+    fn sum_variant_widens_recursively_inside_structs() {
+        let source = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: Type::Atom("ready".to_string()),
+        }]);
+        let target = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: Type::Union(vec![Type::Atom("ready".to_string()), Type::S32]),
+        }]);
+
+        assert!(Checker::types_compatible(&source, &target));
+        assert!(Checker::is_supported_cast(&source, &target));
+    }
+
+    #[test]
+    fn narrowing_sum_to_variant_is_explicit_only() {
+        let sum = Type::Union(vec![Type::S32, Type::S64]);
+
+        assert!(!Checker::types_compatible(&sum, &Type::S32));
+        assert!(Checker::is_supported_cast(&sum, &Type::S32));
+    }
+
+    #[test]
+    fn implicit_slice_sum_prefers_compatible_union_member() {
+        let printable_variants = vec![
+            Type::U16,
+            Type::U32,
+            Type::U64,
+            Type::S16,
+            Type::S32,
+            Type::S64,
+            Type::Atom("nl".to_string()),
+            Type::Slice {
+                element: Box::new(Type::U8),
+            },
+        ];
+        let source = Type::Slice {
+            element: Box::new(Type::Union(vec![
+                Type::S32,
+                Type::Atom("nl".to_string()),
+                Type::Slice {
+                    element: Box::new(Type::U8),
+                },
+            ])),
+        };
+        let mut target_variants = printable_variants.clone();
+        target_variants.push(Type::Slice {
+            element: Box::new(Type::Union(printable_variants)),
+        });
+
+        assert_eq!(
+            Checker::castable_union_variant(&source, &target_variants),
+            Some(8)
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SymbolProvenance<T> {
     pub item: T,
@@ -602,8 +694,7 @@ impl<'a> Checker<'a> {
         Ok(Type::Union(unique))
     }
 
-    /// Coerces an expression in-place to match `expected_ty` (resolved).
-    /// Handles both Union upcasting and Array-Literal-to-Slice-of-Union element coercion.
+    /// Inserts an explicit cast node for any implicitly compatible type pair.
     fn coerce_expression_to_type(
         &mut self,
         expr: &mut Expression,
@@ -617,43 +708,13 @@ impl<'a> Checker<'a> {
             return Ok(res_actual);
         }
 
-        // Case 1: Array literal `[e1, e2, ...]` passed to `[]ExpectedElem`
-        // If each element is compatible with `ExpectedElem`, coerce the elements in-place!
-        if let (
-            Expression::Array(elements),
-            Type::Slice {
-                element: expected_elem,
-            },
-        ) = (&mut *expr, &res_expected)
-        {
-            let mut all_compatible = true;
-            for el in elements.iter_mut() {
-                let el_ty = self.type_of_expression(el)?;
-                if !self.are_types_compatible(&el_ty, expected_elem)? {
-                    all_compatible = false;
-                    break;
-                }
-            }
-
-            if all_compatible {
-                for el in elements.iter_mut() {
-                    let el_ty = self.type_of_expression(el)?;
-                    self.coerce_expression_to_type(el, &el_ty, expected_elem)?;
-                }
-                return Ok(res_expected);
-            }
-        }
-
-        // Case 2: Value or Sub-Union passed to a Union
-        if let Type::Union(_) = res_expected {
-            if Self::types_compatible(&res_actual, &res_expected) {
-                let orig = std::mem::replace(expr, Expression::Boolean(false));
-                *expr = Expression::Cast {
-                    expression: Box::new(orig),
-                    ty: res_expected.clone(),
-                };
-                return Ok(res_expected);
-            }
+        if Self::types_compatible(&res_actual, &res_expected) {
+            let orig = std::mem::replace(expr, Expression::Boolean(false));
+            *expr = Expression::Cast {
+                expression: Box::new(orig),
+                ty: res_expected.clone(),
+            };
+            return Ok(res_expected);
         }
 
         Ok(res_actual)
@@ -1455,7 +1516,6 @@ impl<'a> Checker<'a> {
                     self.current_file_path
                 )),
             },
-
         }
     }
 
@@ -1470,13 +1530,18 @@ impl<'a> Checker<'a> {
             return true;
         }
 
-        // Subset Union Subtyping: A <= B if all variants in A are in B
         if let Type::Union(expected_vars) = expected {
-            if let Type::Union(provided_vars) = provided {
-                return provided_vars.iter().all(|pv| expected_vars.contains(pv));
-            } else {
-                return expected_vars.contains(provided);
-            }
+            let provided_vars = match provided {
+                Type::Union(variants) => variants.as_slice(),
+                variant => std::slice::from_ref(variant),
+            };
+            return provided_vars.iter().all(|variant| {
+                expected_vars
+                    .iter()
+                    .filter(|target| Self::types_compatible(variant, target))
+                    .count()
+                    == 1
+            });
         }
 
         match (provided, expected) {
@@ -1491,8 +1556,9 @@ impl<'a> Checker<'a> {
                 }
                 true
             }
-            // Pointers and Slices require exact element layout equality in memory
-            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => e1 == e2,
+            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
+                Self::types_compatible(e1, e2)
+            }
             (
                 Type::Array {
                     element: e1,
@@ -1502,8 +1568,10 @@ impl<'a> Checker<'a> {
                     element: e2,
                     size: s2,
                 },
-            ) => s1 == s2 && e1 == e2,
-            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => e1 == e2,
+            ) => s1 == s2 && Self::types_compatible(e1, e2),
+            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
+                Self::types_compatible(e1, e2)
+            }
             (
                 Type::Function {
                     parameters: p1,
@@ -1717,20 +1785,53 @@ impl<'a> Checker<'a> {
             return true;
         }
 
-        if let Type::Union(target_vars) = target {
-            if let Type::Union(source_vars) = source {
-                if source_vars.iter().all(|sv| target_vars.contains(sv)) {
-                    return true;
-                }
-            } else if target_vars.contains(source) {
-                return true;
-            }
+        if let Type::Union(target_variants) = target {
+            let source_variants = match source {
+                Type::Union(variants) => variants.as_slice(),
+                source => std::slice::from_ref(source),
+            };
+            return source_variants
+                .iter()
+                .all(|source| Self::castable_union_variant(source, target_variants).is_some());
         }
 
         if let Type::Union(variants) = source {
-            if variants.contains(target) {
-                return true;
+            return variants
+                .iter()
+                .any(|variant| Self::is_supported_cast(variant, target));
+        }
+
+        match (source, target) {
+            (Type::Struct(source_fields), Type::Struct(target_fields)) => {
+                return source_fields.len() == target_fields.len()
+                    && source_fields
+                        .iter()
+                        .zip(target_fields)
+                        .all(|(source, target)| {
+                            source.name == target.name
+                                && Self::is_supported_cast(&source.ty, &target.ty)
+                        });
             }
+            (
+                Type::Array {
+                    element: source_element,
+                    size: source_size,
+                },
+                Type::Array {
+                    element: target_element,
+                    size: target_size,
+                },
+            ) => {
+                return source_size == target_size
+                    && Self::is_supported_cast(source_element, target_element);
+            }
+            (Type::Slice { element: source }, Type::Slice { element: target }) => {
+                return Self::is_supported_cast(source, target);
+            }
+            (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
+                return Self::types_compatible(source, target);
+            }
+            _ => {}
         }
 
         if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
@@ -1756,5 +1857,32 @@ impl<'a> Checker<'a> {
         }
 
         false
+    }
+
+    pub fn castable_union_variant(source: &Type, targets: &[Type]) -> Option<usize> {
+        if let Some(index) = targets.iter().position(|target| target == source) {
+            return Some(index);
+        }
+        let implicit_matches: Vec<usize> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, target)| Self::types_compatible(source, target).then_some(index))
+            .collect();
+        if implicit_matches.len() == 1 {
+            return Some(implicit_matches[0]);
+        }
+        if !implicit_matches.is_empty() {
+            return None;
+        }
+        let matches: Vec<usize> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, target)| Self::is_supported_cast(source, target).then_some(index))
+            .collect();
+        if matches.len() == 1 {
+            Some(matches[0])
+        } else {
+            None
+        }
     }
 }

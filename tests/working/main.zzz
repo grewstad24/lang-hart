@@ -37,7 +37,7 @@ do ( user :: User )
                 "Details: ",                            :nl,
                 "    Age: ",    user.details.age,       :nl,
                 "    ID: ",     user.details.id,        :nl,
-        ] `printa()
+        ] `print()
 done
 
 @val print_s32
