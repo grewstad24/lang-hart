@@ -1,6 +1,27 @@
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Span {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+pub fn format_error(span: &Span, message: &str) -> String {
+    if message.starts_with(&format!("{}:", span.file)) {
+        message.to_string()
+    } else {
+        let contextual_message = message
+            .strip_prefix(&format!("in '{}': ", span.file))
+            .unwrap_or(message);
+        format!(
+            "{}:{}:{}: error: {}",
+            span.file, span.line, span.col, contextual_message
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NamespacePath {
     pub segments: Vec<String>,
 }
@@ -154,6 +175,10 @@ pub struct MatchArm {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
+    Spanned {
+        expression: Box<Expression>,
+        span: Span,
+    },
     Integer(i64),
     String(Vec<u8>),
     Boolean(bool),
@@ -208,8 +233,32 @@ pub enum Expression {
     },
 }
 
+pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
+    while let Expression::Spanned {
+        expression: inner, ..
+    } = expression
+    {
+        expression = inner;
+    }
+    expression
+}
+
+pub fn unspanned_expression_mut(mut expression: &mut Expression) -> &mut Expression {
+    while let Expression::Spanned {
+        expression: inner, ..
+    } = expression
+    {
+        expression = inner;
+    }
+    expression
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    Spanned {
+        statement: Box<Statement>,
+        span: Span,
+    },
     Declare {
         name: String,
         ty: Type,
@@ -236,12 +285,14 @@ pub struct Definition {
 pub struct ExternalFunction {
     pub name: String,
     pub signature: Signature,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAlias {
     pub name: String,
     pub target: Type,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -338,21 +389,59 @@ pub enum Token {
 
 pub struct Lexer {
     chars: Vec<char>,
+    locations: Vec<(usize, usize)>,
     position: usize,
+    file_path: String,
 }
 
 impl Lexer {
     pub fn new(source: String) -> Self {
+        Self::new_with_file(source, "<input>")
+    }
+
+    pub fn new_with_file(source: String, file_path: impl Into<String>) -> Self {
+        let chars: Vec<char> = source.chars().collect();
+        let mut line = 1;
+        let mut col = 1;
+        let mut locations = Vec::with_capacity(chars.len() + 1);
+        for character in &chars {
+            locations.push((line, col));
+            if *character == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        locations.push((line, col));
         Self {
-            chars: source.chars().collect(),
+            chars,
+            locations,
             position: 0,
+            file_path: file_path.into(),
         }
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<Token>, String> {
+    pub fn tokenize(self) -> Result<Vec<Token>, String> {
+        self.tokenize_with_spans().map(|(tokens, _)| tokens)
+    }
+
+    pub fn tokenize_with_spans(mut self) -> Result<(Vec<Token>, Vec<Span>), String> {
+        let file_path = self.file_path.clone();
+        self.tokenize_inner()
+            .map_err(|message| format_error(&self.span_at(self.position), &message))
+            .map(|(tokens, spans)| {
+                debug_assert!(spans.iter().all(|span| span.file == file_path));
+                (tokens, spans)
+            })
+    }
+
+    fn tokenize_inner(&mut self) -> Result<(Vec<Token>, Vec<Span>), String> {
         let mut tokens = Vec::new();
+        let mut spans = Vec::new();
 
         while self.position < self.chars.len() {
+            let token_start = self.position;
             let character = self.chars[self.position];
 
             match character {
@@ -516,10 +605,24 @@ impl Lexer {
                     ));
                 }
             }
+
+            while spans.len() < tokens.len() {
+                spans.push(self.span_at(token_start));
+            }
         }
 
+        spans.push(self.span_at(self.position));
         tokens.push(Token::Eof);
-        Ok(tokens)
+        Ok((tokens, spans))
+    }
+
+    fn span_at(&self, position: usize) -> Span {
+        let (line, col) = self.locations[position.min(self.locations.len() - 1)];
+        Span {
+            file: self.file_path.clone(),
+            line,
+            col,
+        }
     }
 
     fn skip_comment(&mut self, tokens: &mut Vec<Token>) {
@@ -685,12 +788,41 @@ impl Lexer {
 
 pub struct Parser {
     tokens: Vec<Token>,
+    spans: Vec<Span>,
     cursor: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, cursor: 0 }
+        let spans = vec![
+            Span {
+                file: "<input>".to_string(),
+                line: 1,
+                col: 1,
+            };
+            tokens.len()
+        ];
+        Self {
+            tokens,
+            spans,
+            cursor: 0,
+        }
+    }
+
+    pub fn new_with_spans(tokens: Vec<Token>, spans: Vec<Span>) -> Self {
+        debug_assert_eq!(tokens.len(), spans.len());
+        Self {
+            tokens,
+            spans,
+            cursor: 0,
+        }
+    }
+
+    pub fn current_span(&self) -> &Span {
+        self.spans
+            .get(self.cursor)
+            .or_else(|| self.spans.last())
+            .expect("parser requires an EOF token")
     }
 
     fn peek(&self) -> &Token {
@@ -867,6 +999,7 @@ impl Parser {
         self.skip_newlines();
 
         while !self.is(Token::Eof) {
+            let declaration_span = self.current_span().clone();
             match self.peek() {
                 Token::At => {
                     self.advance();
@@ -903,7 +1036,11 @@ impl Parser {
                             self.skip_newlines();
                             let target = self.parse_type()?;
                             self.consume_optional_newline();
-                            type_aliases.push(TypeAlias { name, target });
+                            type_aliases.push(TypeAlias {
+                                name,
+                                target,
+                                span: declaration_span,
+                            });
                         }
                         "extern" => {
                             self.skip_newlines();
@@ -912,8 +1049,12 @@ impl Parser {
                             let expr = self.parse_expression()?;
                             self.consume_optional_newline();
 
-                            if let Expression::Signature(signature) = expr {
-                                extern_functions.push(ExternalFunction { name, signature });
+                            if let Expression::Signature(signature) = unspanned_expression(&expr) {
+                                extern_functions.push(ExternalFunction {
+                                    name,
+                                    signature: signature.clone(),
+                                    span: declaration_span,
+                                });
                             } else {
                                 return Err(format!(
                                     "in '{}': expected signature for @extern '{}', found {:?}",
@@ -956,7 +1097,12 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self) -> Result<Expression, String> {
-        self.parse_comparison()
+        let span = self.current_span().clone();
+        let expression = self.parse_comparison()?;
+        Ok(Expression::Spanned {
+            expression: Box::new(expression),
+            span,
+        })
     }
 
     fn parse_comparison(&mut self) -> Result<Expression, String> {
@@ -1453,6 +1599,15 @@ impl Parser {
     }
 
     pub fn parse_statement(&mut self) -> Result<Statement, String> {
+        let span = self.current_span().clone();
+        let statement = self.parse_statement_inner()?;
+        Ok(Statement::Spanned {
+            statement: Box::new(statement),
+            span,
+        })
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Statement, String> {
         match self.peek() {
             Token::LBrace => {
                 self.advance();
@@ -1719,5 +1874,92 @@ impl Parser {
             }
             token => Err(format!("expected type, found {:?}", token)),
         }
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::{Expression, Lexer, Parser, Span, Statement, format_error};
+
+    #[test]
+    fn formatter_removes_redundant_file_context() {
+        let span = Span {
+            file: "sample.zzz".to_string(),
+            line: 4,
+            col: 2,
+        };
+
+        assert_eq!(
+            format_error(&span, "in 'sample.zzz': unknown variable 'x'"),
+            "sample.zzz:4:2: error: unknown variable 'x'"
+        );
+    }
+
+    #[test]
+    fn lexer_reports_exact_file_line_and_column() {
+        let error = Lexer::new_with_file("val x\n  ?".to_string(), "sample.zzz")
+            .tokenize()
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            "sample.zzz:2:3: error: unexpected character '?' at position 8"
+        );
+    }
+
+    #[test]
+    fn parser_keeps_expression_start_span() {
+        let (tokens, spans) = Lexer::new_with_file("\n@main 7\n".to_string(), "sample.zzz")
+            .tokenize_with_spans()
+            .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let (_, definitions, _) = parser.parse_file_declarations("sample.zzz").unwrap();
+
+        let Expression::Spanned { span, .. } = &definitions[0].value else {
+            panic!("expected a spanned expression");
+        };
+        assert_eq!(
+            (span.file.as_str(), span.line, span.col),
+            ("sample.zzz", 2, 7)
+        );
+    }
+
+    #[test]
+    fn extern_signatures_survive_expression_spans() {
+        let (tokens, spans) = Lexer::new_with_file(
+            "@extern puts\n(text :: *u8) to s32\n".to_string(),
+            "sample.zzz",
+        )
+        .tokenize_with_spans()
+        .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let (externs, _, _) = parser.parse_file_declarations("sample.zzz").unwrap();
+
+        assert_eq!(externs.len(), 1);
+        assert_eq!(externs[0].name, "puts");
+    }
+
+    #[test]
+    fn parser_keeps_statement_start_span() {
+        let (tokens, spans) =
+            Lexer::new_with_file("\n@main do\n    return 0\ndone\n".to_string(), "sample.zzz")
+                .tokenize_with_spans()
+                .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let (_, definitions, _) = parser.parse_file_declarations("sample.zzz").unwrap();
+
+        let Expression::Spanned { expression, .. } = &definitions[0].value else {
+            panic!("expected a spanned expression");
+        };
+        let Expression::Block { body, .. } = expression.as_ref() else {
+            panic!("expected a block expression");
+        };
+        let Statement::Spanned { span, .. } = &body[0] else {
+            panic!("expected a spanned statement");
+        };
+        assert_eq!(
+            (span.file.as_str(), span.line, span.col),
+            ("sample.zzz", 3, 5)
+        );
     }
 }

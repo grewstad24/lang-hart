@@ -13,7 +13,7 @@ use crate::sema::Checker;
 use crate::syntax::{
     BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
     IfCondition, MatchArm, Program, Signature, Statement, StructFieldInit, StructFieldType, Type,
-    UnaryOperator,
+    UnaryOperator, format_error, unspanned_expression,
 };
 
 #[derive(Debug, Clone)]
@@ -230,7 +230,7 @@ impl<'ctx> Codegen<'ctx> {
             if def.name == "main" {
                 continue;
             }
-            if let Expression::Block { signature, .. } = &def.value {
+            if let Expression::Block { signature, .. } = unspanned_expression(&def.value) {
                 if let Some(sig) = signature {
                     self.function_signatures
                         .insert(def.name.clone(), sig.clone());
@@ -243,7 +243,7 @@ impl<'ctx> Codegen<'ctx> {
         for def in definitions {
             if def.name == "main" {
                 self.codegen_main(def)?;
-            } else if let Expression::Block { signature, body } = &def.value {
+            } else if let Expression::Block { signature, body } = unspanned_expression(&def.value) {
                 self.codegen_named_function(&def.name, signature.as_ref(), body)?;
             } else {
                 let binding = self.codegen_expression(&def.value)?;
@@ -406,7 +406,7 @@ impl<'ctx> Codegen<'ctx> {
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let stack_ptr = self.enter_scope()?;
 
-        if let Expression::Block { body, .. } = &main_def.value {
+        if let Expression::Block { body, .. } = unspanned_expression(&main_def.value) {
             self.codegen_statements(body)?;
         } else {
             return Err("entry point '@main' must evaluate to a block".to_string());
@@ -475,6 +475,9 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_statement(&mut self, statement: &Statement) -> Result<(), String> {
         match statement {
+            Statement::Spanned { statement, span } => self
+                .codegen_statement(statement)
+                .map_err(|error| format_error(span, &error)),
             Statement::Compound(statements) => {
                 self.codegen_statements(statements)?;
                 Ok(())
@@ -632,6 +635,9 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         match expression {
+            Expression::Spanned { expression, span } => self
+                .codegen_expression(expression)
+                .map_err(|error| format_error(span, &error)),
             Expression::Integer(value) => Ok(Binding::Integer {
                 ty: Type::S32,
                 value: self.context.i32_type().const_int(*value as u64, true),

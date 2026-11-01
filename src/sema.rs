@@ -2,8 +2,16 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Statement, StructFieldType, Type, TypeAlias,
+    NamespacePath, Parameter, Signature, SourceFile, Span, Statement, StructFieldType, Type,
+    TypeAlias, format_error, unspanned_expression, unspanned_expression_mut,
 };
+
+fn expression_span(expression: &Expression) -> Option<&Span> {
+    match expression {
+        Expression::Spanned { span, .. } => Some(span),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SymbolProvenance<T> {
@@ -176,9 +184,9 @@ impl ModuleResolver {
                         if let Some(def) = file.definitions.iter().find(|d| d.name == *sym) {
                             let mut resolved_def = def.clone();
                             if let Expression::Block {
-                                signature: Some(ref mut sig),
+                                signature: Some(sig),
                                 ..
-                            } = resolved_def.value
+                            } = unspanned_expression_mut(&mut resolved_def.value)
                             {
                                 for p in &mut sig.parameters {
                                     p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
@@ -225,33 +233,38 @@ impl ModuleResolver {
 
                     if let Some(prov) = found_def {
                         if let Some(existing) = registry.definitions.get(sym) {
-                            return Err(format!(
+                            let message = format!(
                                 "export collision in namespace '{}': symbol '{}' in '{}' conflicts with '{}'",
                                 target_ns, sym, prov.originating_file, existing.originating_file
-                            ));
+                            );
+                            return Err(expression_span(&prov.item.value)
+                                .map_or(message.clone(), |span| format_error(span, &message)));
                         }
                         registry.definitions.insert(sym.clone(), prov);
                     } else if let Some(prov) = found_ext {
                         if let Some(existing) = registry.extern_functions.get(sym) {
-                            return Err(format!(
+                            let message = format!(
                                 "export collision in namespace '{}': extern '{}' in '{}' conflicts with '{}'",
                                 target_ns, sym, prov.originating_file, existing.originating_file
-                            ));
+                            );
+                            return Err(format_error(&prov.item.span, &message));
                         }
                         registry.extern_functions.insert(sym.clone(), prov);
                     } else if let Some(prov) = found_alias {
                         if let Some(existing) = registry.type_aliases.get(sym) {
-                            return Err(format!(
+                            let message = format!(
                                 "export collision in namespace '{}': type alias '{}' in '{}' conflicts with '{}'",
                                 target_ns, sym, prov.originating_file, existing.originating_file
-                            ));
+                            );
+                            return Err(format_error(&prov.item.span, &message));
                         }
                         registry.type_aliases.insert(sym.clone(), prov);
                     } else {
-                        return Err(format!(
+                        let message = format!(
                             "export error in '{}/mod.yawn': symbol '{}' is not defined in any .zzz file in this directory",
                             module.dir_path, sym
-                        ));
+                        );
+                        return Err(format_error(&export_rule.span, &message));
                     }
                 }
             }
@@ -271,10 +284,12 @@ impl ModuleResolver {
             for file in &module.source_files {
                 for def in &file.definitions {
                     if let Some(existing) = scope.definitions.get(&def.name) {
-                        return Err(format!(
+                        let message = format!(
                             "duplicate definition of symbol '{}' in '{}', already defined in '{}'",
                             def.name, file.file_path, existing.originating_file
-                        ));
+                        );
+                        return Err(expression_span(&def.value)
+                            .map_or(message.clone(), |span| format_error(span, &message)));
                     }
                     scope.definitions.insert(
                         def.name.clone(),
@@ -287,10 +302,11 @@ impl ModuleResolver {
 
                 for ext in &file.extern_functions {
                     if let Some(existing) = scope.extern_functions.get(&ext.name) {
-                        return Err(format!(
+                        let message = format!(
                             "duplicate extern function '{}' in '{}', already defined in '{}'",
                             ext.name, file.file_path, existing.originating_file
-                        ));
+                        );
+                        return Err(format_error(&ext.span, &message));
                     }
                     scope.extern_functions.insert(
                         ext.name.clone(),
@@ -303,10 +319,11 @@ impl ModuleResolver {
 
                 for alias in &file.type_aliases {
                     if let Some(existing) = scope.type_aliases.get(&alias.name) {
-                        return Err(format!(
+                        let message = format!(
                             "duplicate type alias '{}' in '{}', already defined in '{}'",
                             alias.name, file.file_path, existing.originating_file
-                        ));
+                        );
+                        return Err(format_error(&alias.span, &message));
                     }
                     scope.type_aliases.insert(
                         alias.name.clone(),
@@ -649,7 +666,7 @@ impl<'a> Checker<'a> {
         }
 
         for (name, prov) in &self.scope.definitions {
-            if let Expression::Block { signature, .. } = &prov.item.value {
+            if let Expression::Block { signature, .. } = unspanned_expression(&prov.item.value) {
                 let mut param_types = Vec::new();
                 let mut expected_return = Type::Void;
                 let mut is_variadic = false;
@@ -679,16 +696,26 @@ impl<'a> Checker<'a> {
         self.current_file_path = file.file_path.clone();
 
         for alias in &mut file.type_aliases {
-            alias.target = self.resolve_type(&alias.target)?;
+            alias.target = self
+                .resolve_type(&alias.target)
+                .map_err(|error| format_error(&alias.span, &error))?;
         }
 
         for ext in &mut file.extern_functions {
-            let resolved_sig = self.resolve_external_function(&ext.name)?;
+            let resolved_sig = self
+                .resolve_external_function(&ext.name)
+                .map_err(|error| format_error(&ext.span, &error))?;
             ext.signature = resolved_sig;
         }
 
         for def in &mut file.definitions {
-            self.check_definition_body(def)?;
+            self.check_definition_body(def).map_err(|error| {
+                if let Expression::Spanned { span, .. } = &def.value {
+                    format_error(span, &error)
+                } else {
+                    error
+                }
+            })?;
         }
 
         Ok(())
@@ -699,7 +726,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        match &mut def.value {
+        match unspanned_expression_mut(&mut def.value) {
             Expression::Block { signature, body } => {
                 let mut expected_return = Type::Void;
 
@@ -846,6 +873,9 @@ impl<'a> Checker<'a> {
 
     pub fn type_of_expression(&mut self, expression: &mut Expression) -> Result<Type, String> {
         match expression {
+            Expression::Spanned { expression, span } => self
+                .type_of_expression(expression)
+                .map_err(|error| format_error(span, &error)),
             Expression::Integer(_) => Ok(Type::S32),
             Expression::Boolean(_) => Ok(Type::Bool),
             Expression::Atom(name) => {
@@ -1513,6 +1543,7 @@ impl<'a> Checker<'a> {
 
     fn statement_definitely_returns(stmt: &Statement) -> bool {
         match stmt {
+            Statement::Spanned { statement, .. } => Self::statement_definitely_returns(statement),
             Statement::Return(_) => true,
             Statement::Compound(stmts) => stmts.iter().any(Self::statement_definitely_returns),
             Statement::If { arms } => {
@@ -1530,7 +1561,25 @@ impl<'a> Checker<'a> {
         stmt: &mut Statement,
         expected_type: &Type,
     ) -> Result<(), String> {
+        if let Statement::Spanned { statement, span } = stmt {
+            return self
+                .validate_statement(statement, expected_type)
+                .map_err(|error| format_error(span, &error));
+        }
+        self.validate_statement_inner(stmt, expected_type)
+    }
+
+    fn validate_statement_inner(
+        &mut self,
+        stmt: &mut Statement,
+        expected_type: &Type,
+    ) -> Result<(), String> {
         match stmt {
+            Statement::Spanned { statement, span } => {
+                return self
+                    .validate_statement(statement, expected_type)
+                    .map_err(|error| format_error(span, &error));
+            }
             Statement::Compound(stmts) => {
                 for s in stmts {
                     self.validate_statement(s, expected_type)?;

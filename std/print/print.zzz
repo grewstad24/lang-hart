@@ -1,16 +1,16 @@
 @extern printf
-(ptr :: *u8)++ to s32
+( ptr :: *u8 )++ to s32
 
 @val print_string
-do (s :: []u8)
-        printf ("%s"^, s^)
+do ( s :: []u8 )
+        printf ("%s".ptr, s.ptr)
 done
 
 @type Printable
 String | Integer
 
 @val print_int
-do (num :: Integer)
+do ( num :: Integer )
         match num with z
                 s32 => printf ("%d"^, z)
                 s16 => printf ("%d"^, z as s32)
@@ -23,7 +23,7 @@ done
 
 @val pr_nl
 do
-        printf ("\n"^)
+        printf ("\n".ptr)
 done
 
 @val printa_helper

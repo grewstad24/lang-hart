@@ -1,9 +1,10 @@
-use crate::syntax::{Expression, Lexer, Parser, Token};
+use crate::syntax::{Expression, Lexer, Parser, Token, format_error};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportRule {
     pub symbols: Vec<String>,
     pub to: Vec<String>,
+    pub span: crate::syntax::Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -14,14 +15,12 @@ pub struct ModConfig {
 
 impl ModConfig {
     pub fn parse_and_validate(source: &str, file_path: &str) -> Result<Self, String> {
-        let tokens = Lexer::new(source.to_string())
-            .tokenize()
-            .map_err(|e| format!("in '{}': lexer error: {}", file_path, e))?;
+        let (tokens, spans) =
+            Lexer::new_with_file(source.to_string(), file_path).tokenize_with_spans()?;
 
-        let mut parser = Parser::new(tokens);
-        let fields = parser
-            .parse_struct_fields(Token::Eof)
-            .map_err(|e| format!("in '{}': {}", file_path, e))?;
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let parsed = parser.parse_struct_fields(Token::Eof);
+        let fields = parsed.map_err(|error| format_error(parser.current_span(), &error))?;
 
         let mut exports = Vec::new();
         let mut imports = Vec::new();
@@ -37,10 +36,11 @@ impl ModConfig {
                     imports = Self::parse_import_directive(&field.value, file_path)?;
                 }
                 other => {
-                    return Err(format!(
-                        "in '{}': unknown directive in mod.yawn: '@{}'",
-                        file_path, other
-                    ));
+                    let error = format!("unknown directive in mod.yawn: '@{}'", other);
+                    if let Expression::Spanned { span, .. } = &field.value {
+                        return Err(format_error(span, &error));
+                    }
+                    return Err(format!("{}: error: {}", file_path, error));
                 }
             }
         }
@@ -49,6 +49,10 @@ impl ModConfig {
     }
 
     fn assert_constant_data_expr(expr: &Expression, file_path: &str) -> Result<(), String> {
+        if let Expression::Spanned { expression, span } = expr {
+            return Self::assert_constant_data_expr(expression, file_path)
+                .map_err(|error| format_error(span, &error));
+        }
         match expr {
             Expression::Integer(_)
             | Expression::String(_)
@@ -92,11 +96,22 @@ impl ModConfig {
         expr: &Expression,
         file_path: &str,
     ) -> Result<Vec<ExportRule>, String> {
+        if let Expression::Spanned { expression, span } = expr {
+            return Self::parse_export_directive(expression, file_path)
+                .map_err(|error| format_error(span, &error));
+        }
         match expr {
             Expression::Array(elements) => {
                 let mut rules = Vec::with_capacity(elements.len());
                 for el in elements {
-                    match el {
+                    let rule_span = match el {
+                        Expression::Spanned { span, .. } => span.clone(),
+                        _ => match expr {
+                            Expression::Spanned { span, .. } => span.clone(),
+                            _ => unreachable!(),
+                        },
+                    };
+                    match crate::syntax::unspanned_expression(el) {
                         Expression::Struct(fields) => {
                             let mut symbols = None;
                             let mut to = None;
@@ -139,7 +154,11 @@ impl ModConfig {
                                 )
                             })?;
 
-                            rules.push(ExportRule { symbols, to });
+                            rules.push(ExportRule {
+                                symbols,
+                                to,
+                                span: rule_span,
+                            });
                         }
                         _ => {
                             return Err(format!(
@@ -164,6 +183,10 @@ impl ModConfig {
         expr: &Expression,
         file_path: &str,
     ) -> Result<Vec<Vec<String>>, String> {
+        if let Expression::Spanned { expression, span } = expr {
+            return Self::parse_import_directive(expression, file_path)
+                .map_err(|error| format_error(span, &error));
+        }
         match expr {
             Expression::Array(elements) => {
                 let mut imports = Vec::with_capacity(elements.len());
@@ -186,6 +209,10 @@ impl ModConfig {
         file_path: &str,
         context: &str,
     ) -> Result<Vec<String>, String> {
+        if let Expression::Spanned { expression, span } = expr {
+            return Self::parse_string_array(expression, file_path, context)
+                .map_err(|error| format_error(span, &error));
+        }
         match expr {
             Expression::Array(elements) => elements
                 .iter()
@@ -199,6 +226,10 @@ impl ModConfig {
     }
 
     fn extract_string(expr: &Expression, file_path: &str, context: &str) -> Result<String, String> {
+        if let Expression::Spanned { expression, span } = expr {
+            return Self::extract_string(expression, file_path, context)
+                .map_err(|error| format_error(span, &error));
+        }
         match expr {
             Expression::Identifier(name) | Expression::Atom(name) => Ok(name.clone()),
             Expression::String(bytes) => String::from_utf8(bytes.clone())

@@ -12,6 +12,7 @@ use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
     Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
     Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
+    format_error,
 };
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
@@ -77,14 +78,13 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                 let code = fs::read_to_string(&path)
                     .map_err(|e| format!("failed to read '{}': {}", path.display(), e))?;
 
-                let tokens = Lexer::new(code)
-                    .tokenize()
-                    .map_err(|e| format!("lexer error in '{}': {}", path.display(), e))?;
+                let (tokens, spans) =
+                    Lexer::new_with_file(code, path.display().to_string()).tokenize_with_spans()?;
 
-                let mut parser = Parser::new(tokens);
-                let (extern_functions, definitions, type_aliases) = parser
-                    .parse_file_declarations(&path.display().to_string())
-                    .map_err(|e| e)?;
+                let mut parser = Parser::new_with_spans(tokens, spans);
+                let parsed = parser.parse_file_declarations(&path.display().to_string());
+                let (extern_functions, definitions, type_aliases) =
+                    parsed.map_err(|error| format_error(parser.current_span(), &error))?;
 
                 source_files.push(SourceFile {
                     file_path: path.display().to_string(),
@@ -141,6 +141,13 @@ fn canonicalize_signature(sig: &Signature, checker: &Checker) -> Result<Signatur
 
 fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Statement, String> {
     match stmt {
+        Statement::Spanned { statement, span } => Ok(Statement::Spanned {
+            statement: Box::new(
+                canonicalize_statement(statement, checker)
+                    .map_err(|error| format_error(span, &error))?,
+            ),
+            span: span.clone(),
+        }),
         Statement::Compound(stmts) => {
             let mut resolved = Vec::with_capacity(stmts.len());
             for s in stmts {
@@ -182,6 +189,13 @@ fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Stateme
 
 fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expression, String> {
     match expr {
+        Expression::Spanned { expression, span } => Ok(Expression::Spanned {
+            expression: Box::new(
+                canonicalize_expression(expression, checker)
+                    .map_err(|error| format_error(span, &error))?,
+            ),
+            span: span.clone(),
+        }),
         Expression::Integer(v) => Ok(Expression::Integer(*v)),
         Expression::String(v) => Ok(Expression::String(v.clone())),
         Expression::Boolean(v) => Ok(Expression::Boolean(*v)),
@@ -321,24 +335,19 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     }
     search_dirs.push(project_dir.to_path_buf());
 
-    let mut modules = discover_logical_modules(&search_dirs)
-        .map_err(|error| format!("module discovery error: {}", error))?;
+    let mut modules = discover_logical_modules(&search_dirs)?;
 
     if modules.is_empty() {
         return Err("no .zzz modules found to compile".to_string());
     }
 
     let resolver = ModuleResolver::new();
-    let module_scopes = resolver
-        .resolve_modules(&modules)
-        .map_err(|error| format!("namespace resolution error: {}", error))?;
+    let module_scopes = resolver.resolve_modules(&modules)?;
 
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
         for file in &mut module.source_files {
-            checker
-                .check_file(file)
-                .map_err(|error| format!("type error: {}", error))?;
+            checker.check_file(file)?;
         }
     }
 
@@ -382,11 +391,13 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     continue;
                 }
 
-                let resolved_sig = canonicalize_signature(&ext.signature, &checker)?;
+                let resolved_sig = canonicalize_signature(&ext.signature, &checker)
+                    .map_err(|error| format_error(&ext.span, &error))?;
 
                 compiled_externs.push(ExternalFunction {
                     name: ext.name.clone(),
                     signature: resolved_sig,
+                    span: ext.span.clone(),
                 });
             }
         }
@@ -405,12 +416,20 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let context = Context::create();
     let codegen = Codegen::new(&context, "main");
 
-    let module = codegen
-        .generate(&program)
-        .map_err(|error| format!("compiler error: {}", error))?;
+    let module = codegen.generate(&program)?;
+
+    let main_span = program
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "main")
+        .and_then(|definition| match &definition.value {
+            Expression::Spanned { span, .. } => Some(span),
+            _ => None,
+        });
 
     if let Err(err) = module.verify() {
-        return Err(format!("llvm verification error:\n{}", err));
+        let message = format!("LLVM verification failed: {}", err);
+        return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
 
     let ir_path = Path::new("main.ll");
@@ -421,10 +440,14 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let status = Command::new("clang")
         .args(["-O3", "main.ll", "-o", "main"])
         .status()
-        .map_err(|e| format!("failed to execute clang: {}", e))?;
+        .map_err(|error| {
+            let message = format!("failed to execute clang: {}", error);
+            main_span.map_or(message.clone(), |span| format_error(span, &message))
+        })?;
 
     if !status.success() {
-        return Err(format!("clang failed with status {}", status));
+        let message = format!("clang failed with status {}", status);
+        return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
 
     println!("built main");
