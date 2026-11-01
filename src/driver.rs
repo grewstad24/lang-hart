@@ -268,9 +268,6 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::AddressOf(e) => Ok(Expression::AddressOf(Box::new(canonicalize_expression(
             e, checker,
         )?))),
-        Expression::Decay(e) => Ok(Expression::Decay(Box::new(canonicalize_expression(
-            e, checker,
-        )?))),
         Expression::Block { signature, body } => {
             let resolved_sig = match signature {
                 Some(sig) => Some(canonicalize_signature(sig, checker)?),

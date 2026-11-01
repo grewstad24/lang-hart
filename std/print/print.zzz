@@ -7,17 +7,17 @@ do ( s :: []u8 )
 done
 
 @type Printable
-String | Integer
+String | Integer | :nl
 
 @val print_int
 do ( num :: Integer )
         match num with z
-                s32 => printf ("%d"^, z)
-                s16 => printf ("%d"^, z as s32)
-                s64 => printf ("%lld"^, z)
-                u16 => printf ("%u"^, z as u32)
-                u32 => printf ("%u"^, z)
-                u64 => printf ("%llu"^, z)
+                s32 => printf ("%d"     .ptr, z)
+                s16 => printf ("%d"     .ptr, z as s32)
+                s64 => printf ("%lld"   .ptr, z)
+                u16 => printf ("%u"     .ptr, z as u32)
+                u32 => printf ("%u"     .ptr, z)
+                u64 => printf ("%llu"   .ptr, z)
         over
 done
 
@@ -44,8 +44,9 @@ done
 @val print
 do ( x :: Printable )
         match x with z
-                String => print_string(z)
+                String  => print_string(z)
                 Integer => print_int(z)
+                :nl     => pr_nl()
         over
 done
 

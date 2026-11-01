@@ -1,5 +1,5 @@
 @main
-do to s32
+do () to s32
         10 -> x
         20 as s16 -> y
         30 as s64 -> z
@@ -32,10 +32,12 @@ done
 
 @val print_user
 do ( user :: User )
-        ["Name: ", user.name]           `printaln()
-        ["Details: "]                   `printaln()
-        ["    Age: ", user.details.age] `printaln()
-        ["    ID: ", user.details.id]   `printaln()
+        [
+                "Name: ",       user.name,              :nl,
+                "Details: ",                            :nl,
+                "    Age: ",    user.details.age,       :nl,
+                "    ID: ",     user.details.id,        :nl,
+        ] `printa()
 done
 
 @val print_s32

@@ -218,7 +218,6 @@ pub enum Expression {
         field: String,
     },
     AddressOf(Box<Expression>),
-    Decay(Box<Expression>),
     Block {
         signature: Option<Signature>,
         body: Vec<Statement>,
@@ -363,7 +362,6 @@ pub enum Token {
     Slash,
     Percent,
     Ampersand,
-    Caret,
     Equal,
     NotEqual,
     Less,
@@ -509,10 +507,6 @@ impl Lexer {
                 '&' => {
                     self.position += 1;
                     tokens.push(Token::Ampersand);
-                }
-                '^' => {
-                    self.position += 1;
-                    tokens.push(Token::Caret);
                 }
                 '.' => {
                     self.position += 1;
@@ -1279,10 +1273,6 @@ impl Parser {
                         expression: Box::new(expression),
                         field,
                     };
-                }
-                Token::Caret => {
-                    self.advance();
-                    expression = Expression::Decay(Box::new(expression));
                 }
                 Token::Backtick => {
                     self.advance();

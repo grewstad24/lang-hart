@@ -1456,19 +1456,6 @@ impl<'a> Checker<'a> {
                 )),
             },
 
-            Expression::Decay(expression) => {
-                let raw_type = self.type_of_expression(expression)?;
-                let inner_type = self.resolve_type(&raw_type)?;
-                match inner_type {
-                    Type::Array { element, .. } => Ok(Type::Pointer { element }),
-                    Type::Slice { element } => Ok(Type::Pointer { element }),
-                    Type::Pointer { .. } => Ok(inner_type),
-                    other => Err(format!(
-                        "in '{}': decay operator '^' expects an array or slice type, found {:?}",
-                        self.current_file_path, other
-                    )),
-                }
-            }
         }
     }
 

@@ -815,7 +815,6 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Index { expression, index } => self.codegen_index(expression, index),
             Expression::Member { expression, field } => self.codegen_member(expression, field),
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
-            Expression::Decay(expression) => self.codegen_decay(expression),
         }
     }
 
@@ -1369,58 +1368,6 @@ impl<'ctx> Codegen<'ctx> {
                 "member access '.{}' unsupported on {:?}",
                 field, other
             )),
-        }
-    }
-
-    fn codegen_decay(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
-        let binding = self.codegen_expression(expression)?;
-
-        match binding {
-            Binding::Slice {
-                ty: Type::Slice { element },
-                value,
-                ..
-            } => {
-                let ptr_val = self
-                    .builder
-                    .build_extract_value(value, 0, "decay_slice_ptr")
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value();
-
-                Ok(Binding::Pointer {
-                    ty: Type::Pointer { element },
-                    value: ptr_val,
-                })
-            }
-            Binding::Array {
-                ty: Type::Array { ref element, size },
-                ..
-            } => {
-                let elem_clone = (*element).clone();
-                let storage = self.array_storage(binding, &elem_clone, size)?;
-                let llvm_array_type = self
-                    .llvm_type(&Type::Array {
-                        element: elem_clone.clone(),
-                        size,
-                    })?
-                    .into_array_type();
-
-                let zero = self.context.i64_type().const_zero();
-                let pointer = unsafe {
-                    self.builder
-                        .build_gep(llvm_array_type, storage, &[zero, zero], "decayptr")
-                        .map_err(|error| error.to_string())?
-                };
-
-                Ok(Binding::Pointer {
-                    ty: Type::Pointer {
-                        element: elem_clone,
-                    },
-                    value: pointer,
-                })
-            }
-            Binding::Pointer { .. } => Ok(binding),
-            other => Err(format!("cannot decay non-array/slice binding: {:?}", other)),
         }
     }
 
