@@ -15,8 +15,8 @@ fn expression_span(expression: &Expression) -> Option<&Span> {
 
 #[cfg(test)]
 mod cast_tests {
-    use super::Checker;
-    use crate::syntax::{StructFieldType, Type};
+    use super::{Checker, ModuleScope};
+    use crate::syntax::{Lexer, Parser, SourceFile, StructFieldType, Type};
 
     fn nested_type(sum: Type) -> Type {
         Type::Pointer {
@@ -102,6 +102,68 @@ mod cast_tests {
             Checker::castable_union_variant(&source, &target_variants),
             Some(8)
         );
+    }
+
+    fn check_source(source: &str) -> Result<(), String> {
+        let (tokens, spans) =
+            Lexer::new_with_file(source.to_string(), "flow.zzz").tokenize_with_spans()?;
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let (extern_functions, definitions, type_aliases) =
+            parser.parse_file_declarations("flow.zzz")?;
+        let mut file = SourceFile {
+            file_path: "flow.zzz".to_string(),
+            extern_functions,
+            definitions,
+            type_aliases,
+        };
+        let scope = ModuleScope::new("flow".to_string());
+        Checker::new(&scope).check_file(&mut file)
+    }
+
+    #[test]
+    fn mutable_read_before_assignment_is_rejected() {
+        let error =
+            check_source("@main\ndo to s32\n    var value :: s32\n    return value\ndone\n")
+                .unwrap_err();
+
+        assert!(error.contains("flow.zzz:4:12: error:"));
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn assignment_before_read_is_accepted() {
+        check_source(
+            "@main\ndo to s32\n    var value :: s32\n    1 -> value\n    return value\ndone\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn assignment_in_every_if_branch_is_definite() {
+        check_source(
+            "@main\ndo to s32\n    var value :: s32\n    doif true => 1 -> value else => 2 -> value end\n    return value\ndone\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn assignment_in_only_one_if_branch_is_not_definite() {
+        let error = check_source(
+            "@main\ndo to s32\n    var value :: s32\n    doif true => 1 -> value else => 0 end\n    return value\ndone\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn loop_assignment_is_not_definite_after_loop() {
+        let error = check_source(
+            "@main\ndo to s32\n    var value :: s32\n    dotimes 1 => 1 -> value\n    return value\ndone\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
     }
 }
 
@@ -517,9 +579,11 @@ impl<'a> Checker<'a> {
             Type::U16 => "03_u16".to_string(),
             Type::U32 => "04_u32".to_string(),
             Type::U64 => "05_u64".to_string(),
+            Type::USize => "05a_usize".to_string(),
             Type::S16 => "06_s16".to_string(),
             Type::S32 => "07_s32".to_string(),
             Type::S64 => "08_s64".to_string(),
+            Type::SSize => "08a_ssize".to_string(),
             Type::Atom(name) => format!("09_atom_{}", name),
             Type::Alias(name) => format!("10_alias_{}", name),
             Type::Pointer { element } => format!("11_ptr_{}", Self::canonical_type_key(element)),
@@ -932,6 +996,35 @@ impl<'a> Checker<'a> {
             .find_map(|s| s.get_mut(name))
     }
 
+    fn initialization_state(&self) -> Vec<HashMap<String, bool>> {
+        self.local_scopes
+            .iter()
+            .map(|scope| {
+                scope
+                    .iter()
+                    .map(|(name, binding)| (name.clone(), binding.is_initialized))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn restore_initialization_state(&mut self, scopes: Vec<HashMap<String, BindingInfo>>) {
+        self.local_scopes = scopes;
+    }
+
+    fn merge_initialization_states(&mut self, paths: &[Vec<HashMap<String, bool>>]) {
+        for (scope_index, scope) in self.local_scopes.iter_mut().enumerate() {
+            for (name, binding) in scope {
+                binding.is_initialized = paths.iter().all(|path| {
+                    path.get(scope_index)
+                        .and_then(|state| state.get(name))
+                        .copied()
+                        .unwrap_or(false)
+                });
+            }
+        }
+    }
+
     pub fn type_of_expression(&mut self, expression: &mut Expression) -> Result<Type, String> {
         match expression {
             Expression::Spanned { expression, span } => self
@@ -977,6 +1070,12 @@ impl<'a> Checker<'a> {
                 }
 
                 if let Some(info) = self.lookup_binding(name) {
+                    if info.is_mutable && !info.is_initialized {
+                        return Err(format!(
+                            "in '{}': mutable variable '{}' may be read before it is initialized",
+                            self.current_file_path, name
+                        ));
+                    }
                     return Ok(info.ty);
                 }
 
@@ -1041,6 +1140,7 @@ impl<'a> Checker<'a> {
                 let mut expected_return = Type::Void;
                 let mut is_variadic = false;
 
+                let enclosing_scopes = self.local_scopes.clone();
                 self.local_scopes.push(HashMap::new());
 
                 if let Some(sig) = signature {
@@ -1078,7 +1178,7 @@ impl<'a> Checker<'a> {
                 }
 
                 let validate_res = self.validate_block(body, &expected_return);
-                self.local_scopes.pop();
+                self.local_scopes = enclosing_scopes;
                 validate_res?;
 
                 Ok(Type::Function {
@@ -1478,7 +1578,7 @@ impl<'a> Checker<'a> {
                     }
                     Type::Slice { element } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer { element }),
-                        "len" => Ok(Type::U64),
+                        "len" => Ok(Type::USize),
                         _ => Err(format!(
                             "in '{}': unknown slice member '.{}'",
                             self.current_file_path, field
@@ -1486,7 +1586,7 @@ impl<'a> Checker<'a> {
                     },
                     Type::Array { element, .. } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer { element }),
-                        "len" => Ok(Type::U64),
+                        "len" => Ok(Type::USize),
                         _ => Err(format!(
                             "in '{}': unknown array member '.{}'",
                             self.current_file_path, field
@@ -1663,7 +1763,10 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                self.validate_statement(body, expected_type)?;
+                let scopes_before_loop = self.local_scopes.clone();
+                let body_result = self.validate_statement(body, expected_type);
+                self.restore_initialization_state(scopes_before_loop);
+                body_result?;
             }
             Statement::Declare { name, ty } => {
                 let resolved_ty = self.resolve_type(ty)?;
@@ -1759,7 +1862,15 @@ impl<'a> Checker<'a> {
             }
 
             Statement::If { arms } => {
+                let scopes_before_if = self.local_scopes.clone();
+                let initial_state = self.initialization_state();
+                let has_else = arms
+                    .iter()
+                    .any(|arm| matches!(arm.condition, IfCondition::Else));
+                let mut reachable_states = Vec::new();
+
                 for arm in arms {
+                    self.local_scopes = scopes_before_if.clone();
                     if let IfCondition::Expression(cond) = &mut arm.condition {
                         let cond_ty = self.type_of_expression(cond)?;
                         if cond_ty != Type::Bool {
@@ -1770,6 +1881,18 @@ impl<'a> Checker<'a> {
                         }
                     }
                     self.validate_statement(&mut arm.body, expected_type)?;
+                    if !Self::statement_definitely_returns(&arm.body) {
+                        reachable_states.push(self.initialization_state());
+                    }
+                }
+
+                if !has_else {
+                    reachable_states.push(initial_state);
+                }
+
+                self.local_scopes = scopes_before_if;
+                if !reachable_states.is_empty() {
+                    self.merge_initialization_states(&reachable_states);
                 }
             }
         }
@@ -1800,7 +1923,15 @@ impl<'a> Checker<'a> {
     pub fn is_integer_type(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::S16 | Type::S32 | Type::S64 | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            Type::S16
+                | Type::S32
+                | Type::S64
+                | Type::SSize
+                | Type::U8
+                | Type::U16
+                | Type::U32
+                | Type::U64
+                | Type::USize
         )
     }
 

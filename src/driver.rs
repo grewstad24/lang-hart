@@ -4,7 +4,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use inkwell::OptimizationLevel;
 use inkwell::context::Context;
+use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
 
 use crate::codegen::Codegen;
 use crate::config::ModConfig;
@@ -14,6 +16,8 @@ use crate::syntax::{
     Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
     format_error,
 };
+
+pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
@@ -434,8 +438,32 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         definitions: compiled_definitions,
     };
 
+    Target::initialize_all(&InitializationConfig::default());
+    let target_triple = TargetTriple::create(DEFAULT_TARGET_TRIPLE);
+    let target = Target::from_triple(&target_triple).map_err(|error| {
+        format!(
+            "failed to initialize target '{}': {}",
+            DEFAULT_TARGET_TRIPLE, error
+        )
+    })?;
+    let target_machine = target
+        .create_target_machine(
+            &target_triple,
+            "generic",
+            "",
+            OptimizationLevel::Default,
+            RelocMode::Static,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| {
+            format!(
+                "failed to create target machine for '{}'",
+                DEFAULT_TARGET_TRIPLE
+            )
+        })?;
+
     let context = Context::create();
-    let codegen = Codegen::new(&context, "main");
+    let codegen = Codegen::new(&context, "main", &target_machine);
 
     let module = codegen.generate(&program)?;
 
@@ -462,10 +490,11 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let musl_lib_str = musl_lib
         .to_str()
         .ok_or_else(|| "invalid UTF-8 in musl library path".to_string())?;
+    let target_argument = format!("--target={}", DEFAULT_TARGET_TRIPLE);
 
     let status = Command::new("clang")
         .args([
-            "--target=x86_64-unknown-linux-musl",
+            target_argument.as_str(),
             "-O3",
             "-static",
             "-B",

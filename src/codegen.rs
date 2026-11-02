@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::targets::{TargetData, TargetMachine};
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType,
+};
 use inkwell::values::{
     ArrayValue, BasicValueEnum, FunctionValue, IntValue, PointerValue, StructValue,
 };
@@ -75,6 +78,7 @@ pub struct Codegen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
+    target_data: TargetData,
 
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
     scope_stack_ptrs: Vec<PointerValue<'ctx>>,
@@ -89,11 +93,17 @@ pub struct Codegen<'ctx> {
 }
 
 impl<'ctx> Codegen<'ctx> {
-    pub fn new(context: &'ctx Context, module_name: &str) -> Self {
+    pub fn new(context: &'ctx Context, module_name: &str, target_machine: &TargetMachine) -> Self {
+        let module = context.create_module(module_name);
+        let target_data = target_machine.get_target_data();
+        module.set_triple(&target_machine.get_triple());
+        module.set_data_layout(&target_data.get_data_layout());
+
         Self {
             context,
-            module: context.create_module(module_name),
+            module,
             builder: context.create_builder(),
+            target_data,
             local_scopes: Vec::new(),
             scope_stack_ptrs: Vec::new(),
             global_vars: HashMap::new(),
@@ -104,6 +114,16 @@ impl<'ctx> Codegen<'ctx> {
             branch_counter: 0,
             anon_counter: 0,
         }
+    }
+
+    fn ptr_sized_int_type(&self) -> IntType<'ctx> {
+        self.context
+            .ptr_sized_int_type(&self.target_data, Some(AddressSpace::default()))
+    }
+
+    fn ptr_byte_size(&self) -> u64 {
+        self.target_data
+            .get_pointer_byte_size(Some(AddressSpace::default())) as u64
     }
 
     pub fn generate(mut self, program: &Program) -> Result<Module<'ctx>, String> {
@@ -502,15 +522,22 @@ impl<'ctx> Codegen<'ctx> {
             Statement::DoTimes { count, body } => {
                 let count_binding = self.codegen_expression(count)?;
                 let count_val = self.binding_int_value(&count_binding)?;
+                let count_is_signed = self.is_signed(&self.binding_type(&count_binding)?);
 
-                let limit_i64 = self
-                    .builder
-                    .build_int_z_extend_or_bit_cast(
+                let limit = if count_is_signed {
+                    self.builder.build_int_s_extend_or_bit_cast(
                         count_val,
-                        self.context.i64_type(),
+                        self.ptr_sized_int_type(),
                         "dotimes_limit",
                     )
-                    .map_err(|e| e.to_string())?;
+                } else {
+                    self.builder.build_int_z_extend_or_bit_cast(
+                        count_val,
+                        self.ptr_sized_int_type(),
+                        "dotimes_limit",
+                    )
+                }
+                .map_err(|e| e.to_string())?;
 
                 let current_block = self
                     .builder
@@ -535,11 +562,14 @@ impl<'ctx> Codegen<'ctx> {
 
                 let counter_alloca = self
                     .builder
-                    .build_alloca(self.context.i64_type(), &format!("dotimes.counter.{}", id))
+                    .build_alloca(
+                        self.ptr_sized_int_type(),
+                        &format!("dotimes.counter.{}", id),
+                    )
                     .map_err(|e| e.to_string())?;
 
                 self.builder
-                    .build_store(counter_alloca, self.context.i64_type().const_zero())
+                    .build_store(counter_alloca, self.ptr_sized_int_type().const_zero())
                     .map_err(|e| e.to_string())?;
 
                 self.builder
@@ -550,13 +580,22 @@ impl<'ctx> Codegen<'ctx> {
                 self.builder.position_at_end(cond_bb);
                 let current_idx = self
                     .builder
-                    .build_load(self.context.i64_type(), counter_alloca, "i")
+                    .build_load(self.ptr_sized_int_type(), counter_alloca, "i")
                     .map_err(|e| e.to_string())?
                     .into_int_value();
 
                 let has_next = self
                     .builder
-                    .build_int_compare(IntPredicate::SLT, current_idx, limit_i64, "dotimes_cmp")
+                    .build_int_compare(
+                        if count_is_signed {
+                            IntPredicate::SLT
+                        } else {
+                            IntPredicate::ULT
+                        },
+                        current_idx,
+                        limit,
+                        "dotimes_cmp",
+                    )
                     .map_err(|e| e.to_string())?;
 
                 self.builder
@@ -571,14 +610,14 @@ impl<'ctx> Codegen<'ctx> {
                     if bb.get_terminator().is_none() {
                         let cur = self
                             .builder
-                            .build_load(self.context.i64_type(), counter_alloca, "cur_i")
+                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
                             .map_err(|e| e.to_string())?
                             .into_int_value();
                         let next = self
                             .builder
                             .build_int_add(
                                 cur,
-                                self.context.i64_type().const_int(1, false),
+                                self.ptr_sized_int_type().const_int(1, false),
                                 "next_i",
                             )
                             .map_err(|e| e.to_string())?;
@@ -1248,7 +1287,7 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 let sub_payload_size = self.union_payload_size(inner_vars)?;
-                let copy_size = self.context.i64_type().const_int(sub_payload_size, false);
+                let copy_size = self.ptr_sized_int_type().const_int(sub_payload_size, false);
 
                 self.builder
                     .build_memcpy(sub_payload_ptr, 1, payload_ptr, 1, copy_size)
@@ -1419,7 +1458,7 @@ impl<'ctx> Codegen<'ctx> {
                         .into_int_value();
 
                     Ok(Binding::Integer {
-                        ty: Type::U64,
+                        ty: Type::USize,
                         value: len_val,
                     })
                 }
@@ -1432,7 +1471,7 @@ impl<'ctx> Codegen<'ctx> {
                 "ptr" => {
                     let elem_clone = (*element).clone();
                     let storage = self.array_storage(binding, &elem_clone, size)?;
-                    let zero = self.context.i64_type().const_zero();
+                    let zero = self.ptr_sized_int_type().const_zero();
                     let llvm_array_type = self
                         .llvm_type(&Type::Array {
                             element: elem_clone.clone(),
@@ -1454,8 +1493,8 @@ impl<'ctx> Codegen<'ctx> {
                     })
                 }
                 "len" => Ok(Binding::Integer {
-                    ty: Type::U64,
-                    value: self.context.i64_type().const_int(size as u64, false),
+                    ty: Type::USize,
+                    value: self.ptr_sized_int_type().const_int(size as u64, false),
                 }),
                 _ => Err(format!("unknown array member '.{}'", field)),
             },
@@ -1496,11 +1535,11 @@ impl<'ctx> Codegen<'ctx> {
             .build_alloca(llvm_arr_ty, "arr_literal_backing")
             .map_err(|e| e.to_string())?;
 
-        let zero = self.context.i64_type().const_zero();
+        let zero = self.ptr_sized_int_type().const_zero();
 
         for (i, b) in bindings.into_iter().enumerate() {
             let val = self.binding_basic_value(&b)?;
-            let idx = self.context.i64_type().const_int(i as u64, false);
+            let idx = self.ptr_sized_int_type().const_int(i as u64, false);
 
             let slot_ptr = unsafe {
                 self.builder
@@ -1529,7 +1568,7 @@ impl<'ctx> Codegen<'ctx> {
         };
 
         let slice_llvm_ty = self.slice_type();
-        let len_val = self.context.i64_type().const_int(count, false);
+        let len_val = self.ptr_sized_int_type().const_int(count, false);
 
         let mut slice_val = slice_llvm_ty.get_undef();
         slice_val = self
@@ -1853,9 +1892,9 @@ impl<'ctx> Codegen<'ctx> {
             self.builder.position_at_end(condition_block);
             let index = self
                 .builder
-                .build_phi(self.context.i64_type(), "slice.cast.index")
+                .build_phi(self.ptr_sized_int_type(), "slice.cast.index")
                 .map_err(|error| error.to_string())?;
-            index.add_incoming(&[(&self.context.i64_type().const_zero(), current_block)]);
+            index.add_incoming(&[(&self.ptr_sized_int_type().const_zero(), current_block)]);
             let index_value = index.as_basic_value().into_int_value();
             let has_next = self
                 .builder
@@ -1903,7 +1942,7 @@ impl<'ctx> Codegen<'ctx> {
                 .builder
                 .build_int_add(
                     index_value,
-                    self.context.i64_type().const_int(1, false),
+                    self.ptr_sized_int_type().const_int(1, false),
                     "slice.cast.next",
                 )
                 .map_err(|error| error.to_string())?;
@@ -2439,7 +2478,7 @@ impl<'ctx> Codegen<'ctx> {
         let index_value = self.binding_int_value(&index_binding)?;
         let index_i64 = self
             .builder
-            .build_int_z_extend_or_bit_cast(index_value, self.context.i64_type(), "idx64")
+            .build_int_z_extend_or_bit_cast(index_value, self.ptr_sized_int_type(), "idxptr")
             .map_err(|e| e.to_string())?;
 
         match self.binding_type(&binding)? {
@@ -2461,7 +2500,7 @@ impl<'ctx> Codegen<'ctx> {
                         .build_gep(
                             llvm_array_type,
                             storage,
-                            &[self.context.i64_type().const_zero(), index_i64],
+                            &[self.ptr_sized_int_type().const_zero(), index_i64],
                             "indexptr",
                         )
                         .map_err(|error| error.to_string())?
@@ -2534,7 +2573,11 @@ impl<'ctx> Codegen<'ctx> {
                 let index_value = self.binding_int_value(&index_binding)?;
                 let index_i64 = self
                     .builder
-                    .build_int_z_extend_or_bit_cast(index_value, self.context.i64_type(), "idx64")
+                    .build_int_z_extend_or_bit_cast(
+                        index_value,
+                        self.ptr_sized_int_type(),
+                        "idxptr",
+                    )
                     .map_err(|e| e.to_string())?;
 
                 match self.binding_type(&binding)? {
@@ -2556,7 +2599,7 @@ impl<'ctx> Codegen<'ctx> {
                                 .build_gep(
                                     llvm_array_type,
                                     storage,
-                                    &[self.context.i64_type().const_zero(), index_i64],
+                                    &[self.ptr_sized_int_type().const_zero(), index_i64],
                                     "addressptr",
                                 )
                                 .map_err(|error| error.to_string())?
@@ -2639,7 +2682,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn slice_type(&self) -> StructType<'ctx> {
         let ptr_type = self.context.ptr_type(AddressSpace::default());
-        let len_type = self.context.i64_type();
+        let len_type = self.ptr_sized_int_type();
         self.context
             .struct_type(&[ptr_type.into(), len_type.into()], false)
     }
@@ -2668,7 +2711,9 @@ impl<'ctx> Codegen<'ctx> {
 
         let slice_llvm_type = self.slice_type();
         let ptr = global.as_pointer_value();
-        let len = self.context.i64_type().const_int(value.len() as u64, false);
+        let len = self
+            .ptr_sized_int_type()
+            .const_int(value.len() as u64, false);
 
         let slice_val = slice_llvm_type.const_named_struct(&[ptr.into(), len.into()]);
 
@@ -2695,12 +2740,18 @@ impl<'ctx> Codegen<'ctx> {
             Type::Bool => Ok(Binding::Boolean {
                 value: value.into_int_value(),
             }),
-            Type::S16 | Type::S32 | Type::S64 | Type::U8 | Type::U16 | Type::U32 | Type::U64 => {
-                Ok(Binding::Integer {
-                    ty: ty.clone(),
-                    value: value.into_int_value(),
-                })
-            }
+            Type::S16
+            | Type::S32
+            | Type::S64
+            | Type::SSize
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::USize => Ok(Binding::Integer {
+                ty: ty.clone(),
+                value: value.into_int_value(),
+            }),
             Type::Struct { .. } => Ok(Binding::Struct {
                 ty: ty.clone(),
                 value: value.into_struct_value(),
@@ -2797,67 +2848,60 @@ impl<'ctx> Codegen<'ctx> {
 
     fn union_payload_size(&self, variants: &[Type]) -> Result<u64, String> {
         let mut max_size = 0;
+        let mut max_alignment = 1;
         for v in variants {
             let size = self.llvm_type_size(v)?;
             if size > max_size {
                 max_size = size;
             }
+            max_alignment = max_alignment.max(self.llvm_type_align(v)?);
         }
-        Ok(max_size)
+        let padding = (max_alignment - max_size % max_alignment) % max_alignment;
+        Ok(max_size + padding)
+    }
+
+    fn union_payload_storage_type(&self, variants: &[Type]) -> Result<BasicTypeEnum<'ctx>, String> {
+        let mut storage_element = None;
+        let mut storage_element_size = 0;
+        let mut max_alignment = 0;
+
+        for variant in variants {
+            let llvm_type = self.llvm_type(variant)?;
+            let alignment = self.target_data.get_abi_alignment(&llvm_type) as u64;
+            let size = self.target_data.get_abi_size(&llvm_type);
+            if alignment > max_alignment
+                || (alignment == max_alignment && size > storage_element_size)
+            {
+                storage_element = Some(llvm_type);
+                storage_element_size = size;
+                max_alignment = alignment;
+            }
+        }
+
+        let Some(storage_element) = storage_element else {
+            return Ok(self.context.i8_type().array_type(0).into());
+        };
+
+        let payload_size = self.union_payload_size(variants)?;
+        let element_count = payload_size.div_ceil(storage_element_size.max(1)).max(1);
+        Ok(storage_element.array_type(element_count as u32).into())
     }
 
     fn llvm_type_align(&self, ty: &Type) -> Result<u64, String> {
-        match ty {
-            Type::Bool | Type::U8 | Type::Union(_) => Ok(1),
-            Type::S16 | Type::U16 => Ok(2),
-            Type::S32 | Type::U32 | Type::Atom(_) => Ok(4),
-            Type::S64
-            | Type::U64
-            | Type::Pointer { .. }
-            | Type::Function { .. }
-            | Type::Slice { .. } => Ok(8),
-            Type::Array { element, .. } => self.llvm_type_align(element),
-            Type::Struct(fields) => {
-                let mut max_align = 1;
-                for f in fields {
-                    let align = self.llvm_type_align(&f.ty)?;
-                    if align > max_align {
-                        max_align = align;
-                    }
-                }
-                Ok(max_align)
-            }
-            _ => Ok(8),
-        }
+        let llvm_type = self.llvm_type(ty)?;
+        Ok(self.target_data.get_abi_alignment(&llvm_type) as u64)
     }
 
     fn llvm_type_size(&self, ty: &Type) -> Result<u64, String> {
         match ty {
-            Type::Bool | Type::U8 => Ok(1),
-            Type::S16 | Type::U16 => Ok(2),
-            Type::S32 | Type::U32 | Type::Atom(_) => Ok(4),
-            Type::S64 | Type::U64 | Type::Pointer { .. } | Type::Function { .. } => Ok(8),
-            Type::Slice { .. } => Ok(16),
-            Type::Array { element, size } => Ok(self.llvm_type_size(element)? * (*size as u64)),
-            Type::Struct(fields) => {
-                let mut offset = 0u64;
-                let mut max_align = 1u64;
-                for f in fields {
-                    let align = self.llvm_type_align(&f.ty)?;
-                    if align > max_align {
-                        max_align = align;
-                    }
-                    let padding = (align - (offset % align)) % align;
-                    offset += padding + self.llvm_type_size(&f.ty)?;
-                }
-                let tail_padding = (max_align - (offset % max_align)) % max_align;
-                Ok(offset + tail_padding)
+            Type::USize | Type::SSize | Type::Pointer { .. } | Type::Function { .. } => {
+                Ok(self.ptr_byte_size())
             }
-            Type::Union(variants) => {
-                let payload = self.union_payload_size(variants)?;
-                Ok(1 + payload)
+            Type::Slice { .. } => Ok(2 * self.ptr_byte_size()),
+            _ => {
+                let llvm_type = self.llvm_type(ty)?;
+                Ok(self.target_data.get_abi_size(&llvm_type))
             }
-            _ => Ok(8),
         }
     }
 
@@ -2869,6 +2913,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
+            Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().into()),
             Type::U8 => Ok(self.context.i8_type().into()),
             Type::Bool => Ok(self.context.bool_type().into()),
             Type::Struct(fields) => {
@@ -2879,9 +2924,8 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self.context.struct_type(&field_llvm_types, false).into())
             }
             Type::Union(variants) => {
-                let payload_size = self.union_payload_size(variants)?;
                 let tag_ty = self.context.i8_type();
-                let payload_ty = self.context.i8_type().array_type(payload_size as u32);
+                let payload_ty = self.union_payload_storage_type(variants)?;
                 Ok(self
                     .context
                     .struct_type(&[tag_ty.into(), payload_ty.into()], false)
@@ -2905,6 +2949,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),
+            Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().const_zero().into()),
             Type::U8 => Ok(self.context.i8_type().const_zero().into()),
             Type::Bool => Ok(self.context.bool_type().const_zero().into()),
             Type::Struct(fields) => {
@@ -2939,7 +2984,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn is_signed(&self, ty: &Type) -> bool {
-        matches!(ty, Type::S16 | Type::S32 | Type::S64)
+        matches!(ty, Type::S16 | Type::S32 | Type::S64 | Type::SSize)
     }
 }
 
@@ -2948,13 +2993,53 @@ mod cast_codegen_tests {
     use super::{Binding, Codegen};
     use crate::syntax::{StructFieldType, Type};
     use inkwell::AddressSpace;
+    use inkwell::OptimizationLevel;
     use inkwell::context::Context;
+    use inkwell::targets::{
+        CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
+    };
     use inkwell::types::BasicType;
+
+    fn test_target_machine() -> TargetMachine {
+        Target::initialize_all(&InitializationConfig::default());
+        let triple = TargetTriple::create("x86_64-unknown-linux-musl");
+        Target::from_triple(&triple)
+            .unwrap()
+            .create_target_machine(
+                &triple,
+                "generic",
+                "",
+                OptimizationLevel::Default,
+                RelocMode::Static,
+                CodeModel::Default,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn pointer_sized_types_and_union_alignment_follow_target_data() {
+        let context = Context::create();
+        let target_machine = test_target_machine();
+        let codegen = Codegen::new(&context, "target_layout", &target_machine);
+        let pointer_bytes = codegen.ptr_byte_size();
+        let usize_type = codegen.llvm_type(&Type::USize).unwrap().into_int_type();
+        let ssize_type = codegen.llvm_type(&Type::SSize).unwrap().into_int_type();
+        let expected_bits = (pointer_bytes * 8) as u32;
+
+        assert_eq!(usize_type.get_bit_width(), expected_bits);
+        assert_eq!(ssize_type.get_bit_width(), expected_bits);
+
+        let union_type = Type::Union(vec![Type::U8, Type::S64]);
+        let union_alignment = codegen.llvm_type_align(&union_type).unwrap();
+        let wide_integer_alignment = codegen.llvm_type_align(&Type::S64).unwrap();
+        assert!(union_alignment >= wide_integer_alignment);
+    }
 
     #[test]
     fn nested_union_struct_cast_generates_valid_llvm() {
         let context = Context::create();
-        let mut codegen = Codegen::new(&context, "nested_struct_cast");
+        let target_machine = test_target_machine();
+        let mut codegen = Codegen::new(&context, "nested_struct_cast", &target_machine);
         let small_sum = Type::Union(vec![Type::S32, Type::S64]);
         let large_sum = Type::Union(vec![Type::S16, Type::S32, Type::S64]);
         let source_type = Type::Struct(vec![StructFieldType {
@@ -2995,7 +3080,8 @@ mod cast_codegen_tests {
     #[test]
     fn slice_element_sum_cast_generates_valid_llvm() {
         let context = Context::create();
-        let mut codegen = Codegen::new(&context, "slice_element_cast");
+        let target_machine = test_target_machine();
+        let mut codegen = Codegen::new(&context, "slice_element_cast", &target_machine);
         let source_type = Type::Slice {
             element: Box::new(Type::S32),
         };
@@ -3008,7 +3094,7 @@ mod cast_codegen_tests {
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into(),
-            context.i64_type().const_zero().into(),
+            codegen.ptr_sized_int_type().const_zero().into(),
         ]);
         let function_type = codegen.llvm_type(&target_type).unwrap().fn_type(&[], false);
         let function = codegen.module.add_function("run", function_type, None);

@@ -87,6 +87,8 @@ pub enum Type {
     U16,
     U32,
     U64,
+    USize,
+    SSize,
     Bool,
     Atom(String),
     Alias(String),
@@ -356,6 +358,8 @@ pub enum Token {
     TypeU16,
     TypeU32,
     TypeU64,
+    TypeUSize,
+    TypeSSize,
     TypeBool,
     Atom(String),
     Identifier(String),
@@ -722,6 +726,8 @@ impl Lexer {
             "u16" => Token::TypeU16,
             "u32" => Token::TypeU32,
             "u64" => Token::TypeU64,
+            "usize" => Token::TypeUSize,
+            "ssize" => Token::TypeSSize,
             "bool" => Token::TypeBool,
             "true" => Token::Boolean(true),
             "false" => Token::Boolean(false),
@@ -970,6 +976,14 @@ impl Parser {
             Token::TypeU64 => {
                 self.advance();
                 Ok("u64".to_string())
+            }
+            Token::TypeUSize => {
+                self.advance();
+                Ok("usize".to_string())
+            }
+            Token::TypeSSize => {
+                self.advance();
+                Ok("ssize".to_string())
             }
             Token::TypeBool => {
                 self.advance();
@@ -1829,6 +1843,14 @@ impl Parser {
                 self.advance();
                 Ok(Type::U64)
             }
+            Token::TypeUSize => {
+                self.advance();
+                Ok(Type::USize)
+            }
+            Token::TypeSSize => {
+                self.advance();
+                Ok(Type::SSize)
+            }
             Token::TypeBool => {
                 self.advance();
                 Ok(Type::Bool)
@@ -1899,7 +1921,7 @@ impl Parser {
 
 #[cfg(test)]
 mod span_tests {
-    use super::{Expression, Lexer, Parser, Span, Statement, format_error};
+    use super::{Expression, Lexer, Parser, Span, Statement, Type, format_error};
 
     #[test]
     fn formatter_removes_redundant_file_context() {
@@ -1981,5 +2003,16 @@ mod span_tests {
             (span.file.as_str(), span.line, span.col),
             ("sample.zzz", 3, 5)
         );
+    }
+
+    #[test]
+    fn parser_accepts_pointer_sized_integer_types() {
+        for (source, expected) in [("usize", Type::USize), ("ssize", Type::SSize)] {
+            let (tokens, spans) = Lexer::new_with_file(source.to_string(), "sample.zzz")
+                .tokenize_with_spans()
+                .unwrap();
+            let mut parser = Parser::new_with_spans(tokens, spans);
+            assert_eq!(parser.parse_type().unwrap(), expected);
+        }
     }
 }
