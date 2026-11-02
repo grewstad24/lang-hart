@@ -74,7 +74,13 @@ do ( r :: Record )
         header.key -> key
 
         dotimes header.len => {
-                [ key[i], " : ", val[i], :nl ] `print()
+                [ key[i], " : " ] `print()
+
+                match val[i] with z
+                        Record  => [:nl, "(", :nl, z, ")", :nl] `print()
+                        _       => [z, :nl] `print()
+                over
+
                 i + 1 -> i
         }
 done

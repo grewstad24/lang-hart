@@ -172,7 +172,7 @@ pub struct DoIfArm {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
-    pub variant_type: Type,
+    pub variant_type: Option<Type>,
     pub body: Box<Expression>,
 }
 
@@ -354,6 +354,7 @@ pub enum Token {
     To,
     As,
     Fn,
+    Underscore,
     TypeS16,
     TypeS32,
     TypeS64,
@@ -757,6 +758,7 @@ impl Lexer {
             "true" => Token::Boolean(true),
             "false" => Token::Boolean(false),
             "not" => Token::Not,
+            "_" => Token::Underscore,
             "dotimes" => Token::DoTimes,
             _ => Token::Identifier(text),
         }
@@ -1542,7 +1544,13 @@ impl Parser {
         let mut arms = Vec::new();
 
         while !self.is(Token::Over) && !self.is(Token::Eof) {
-            let variant_type = self.parse_type()?;
+            let variant_type = if self.is(Token::Underscore) {
+                self.advance();
+                None
+            } else {
+                Some(self.parse_type()?)
+            };
+
             self.expect(Token::FatArrow)?;
             self.skip_newlines();
 

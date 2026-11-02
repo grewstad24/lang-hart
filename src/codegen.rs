@@ -1403,7 +1403,12 @@ impl<'ctx> Codegen<'ctx> {
                 .append_basic_block(current_fn, &format!("match.arm.{}.{}", arm_idx, id));
             arm_bbs.push(case_bb);
 
-            let covered = match &arm.variant_type {
+            let variant_type = arm
+                .variant_type
+                .as_ref()
+                .ok_or_else(|| "unresolved match arm type in codegen".to_string())?;
+
+            let covered = match variant_type {
                 Type::Union(inner) => inner.clone(),
                 single => vec![single.clone()],
             };
@@ -1411,7 +1416,10 @@ impl<'ctx> Codegen<'ctx> {
             for v in &covered {
                 let tag_idx = target_variants
                     .iter()
-                    .position(|tv| tv == v)
+                    .position(|tv| {
+                        Checker::types_compatible_with_aliases(v, tv, &self.type_aliases)
+                            && Checker::types_compatible_with_aliases(tv, v, &self.type_aliases)
+                    })
                     .ok_or_else(|| format!("variant {:?} not in union {:?}", v, target_type))?
                     as u8;
 
@@ -1430,13 +1438,14 @@ impl<'ctx> Codegen<'ctx> {
             self.builder.position_at_end(*case_bb);
             self.local_scopes.push(HashMap::new());
 
-            let arm_llvm_ty = self.llvm_type(&arm.variant_type)?;
+            let variant_type = arm.variant_type.as_ref().unwrap();
+            let arm_llvm_ty = self.llvm_type(variant_type)?;
             let payload_ptr = self
                 .builder
                 .build_struct_gep(union_llvm_type, union_storage, 1, "payload_ptr")
                 .map_err(|e| e.to_string())?;
 
-            if let Type::Union(inner_vars) = &arm.variant_type {
+            if let Type::Union(inner_vars) = variant_type {
                 let sub_union_llvm_ty = arm_llvm_ty.into_struct_type();
                 let sub_alloca = self
                     .builder
@@ -1449,7 +1458,19 @@ impl<'ctx> Codegen<'ctx> {
 
                 let mut mapping_cases = Vec::new();
                 for (inner_idx, iv) in inner_vars.iter().enumerate() {
-                    let target_idx = target_variants.iter().position(|tv| tv == iv).unwrap() as u8;
+                    let target_idx = target_variants
+                        .iter()
+                        .position(|tv| {
+                            Checker::types_compatible_with_aliases(iv, tv, &self.type_aliases)
+                                && Checker::types_compatible_with_aliases(
+                                    tv,
+                                    iv,
+                                    &self.type_aliases,
+                                )
+                        })
+                        .ok_or_else(|| {
+                            format!("sub-variant {:?} not in union {:?}", iv, target_type)
+                        })? as u8;
                     mapping_cases.push((target_idx, inner_idx as u8));
                 }
 
@@ -1521,7 +1542,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.local_scopes.last_mut().unwrap().insert(
                     binding_name.to_string(),
                     LocalVar {
-                        ty: arm.variant_type.clone(),
+                        ty: variant_type.clone(),
                         alloca: sub_alloca,
                     },
                 );
@@ -1543,7 +1564,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.local_scopes.last_mut().unwrap().insert(
                     binding_name.to_string(),
                     LocalVar {
-                        ty: arm.variant_type.clone(),
+                        ty: variant_type.clone(),
                         alloca,
                     },
                 );
@@ -2050,7 +2071,8 @@ impl<'ctx> Codegen<'ctx> {
         resolved_target: Type,
         visited: &mut HashSet<(String, String)>,
     ) -> Result<Binding<'ctx>, String> {
-        if !Checker::is_supported_cast_with_aliases(&source_type, &target_type, &self.type_aliases) {
+        if !Checker::is_supported_cast_with_aliases(&source_type, &target_type, &self.type_aliases)
+        {
             return Err(format!(
                 "unsupported cast from {:?} to {:?}",
                 source_type, target_type
@@ -2209,8 +2231,11 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|error| error.to_string())?;
             let source_element_binding =
                 self.binding_from_basic_value(source_element, source_element_value)?;
-            let converted =
-                self.codegen_cast_inner(source_element_binding, (**target_element).clone(), visited)?;
+            let converted = self.codegen_cast_inner(
+                source_element_binding,
+                (**target_element).clone(),
+                visited,
+            )?;
             let target_element_ptr = unsafe {
                 self.builder
                     .build_gep(
@@ -2545,7 +2570,10 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         if Checker::is_integer_type(&resolved_source)
-            && matches!(resolved_target, Type::Pointer { .. } | Type::Function { .. })
+            && matches!(
+                resolved_target,
+                Type::Pointer { .. } | Type::Function { .. }
+            )
         {
             let int_val = self.binding_int_value(&binding)?;
             let ptr_type = self.llvm_type(&target_type)?.into_pointer_type();
@@ -2560,8 +2588,10 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        if matches!(resolved_source, Type::Pointer { .. } | Type::Function { .. })
-            && Checker::is_integer_type(&resolved_target)
+        if matches!(
+            resolved_source,
+            Type::Pointer { .. } | Type::Function { .. }
+        ) && Checker::is_integer_type(&resolved_target)
         {
             let ptr_val = match binding {
                 Binding::Pointer { value, .. } => value,
@@ -3081,9 +3111,7 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         match ty {
             Type::Void => Ok(Binding::Void),
-            Type::Alias(_) => {
-                self.binding_from_basic_value(self.resolve_alias_root(ty)?, value)
-            }
+            Type::Alias(_) => self.binding_from_basic_value(self.resolve_alias_root(ty)?, value),
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
                 value: value.into_int_value(),

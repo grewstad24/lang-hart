@@ -921,11 +921,7 @@ impl<'a> Checker<'a> {
             return Ok(res_actual);
         }
 
-        if Self::types_compatible_with_aliases(
-            &res_actual,
-            &res_expected,
-            &self.alias_targets(),
-        ) {
+        if Self::types_compatible_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
             let orig = std::mem::replace(expr, Expression::Boolean(false));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
@@ -1452,32 +1448,70 @@ impl<'a> Checker<'a> {
 
                 let mut unhandled = target_variants.clone();
                 let mut arm_types = Vec::new();
+                let aliases = self.alias_targets();
+                let num_arms = arms.len();
 
-                for arm in arms.iter_mut() {
-                    let arm_var_ty = self.resolve_type(&arm.variant_type)?;
-                    arm.variant_type = arm_var_ty.clone();
+                for (arm_idx, arm) in arms.iter_mut().enumerate() {
+                    let arm_var_ty = if let Some(raw_ty) = &arm.variant_type {
+                        let resolved = self.resolve_type(raw_ty)?;
+                        arm.variant_type = Some(resolved.clone());
 
-                    let covered_variants = match &arm_var_ty {
-                        Type::Union(inner) => inner.clone(),
-                        single => vec![single.clone()],
-                    };
+                        let covered_variants = match &resolved {
+                            Type::Union(inner) => inner.clone(),
+                            single => vec![single.clone()],
+                        };
 
-                    for v in &covered_variants {
-                        if !target_variants.contains(v) {
+                        for v in &covered_variants {
+                            let matches_variant = |target: &Type| {
+                                Self::types_compatible_with_aliases(v, target, &aliases)
+                                    && Self::types_compatible_with_aliases(target, v, &aliases)
+                            };
+
+                            if !target_variants.iter().any(matches_variant) {
+                                return Err(format!(
+                                    "in '{}': match arm variant {:?} is not a member of sum type {:?}",
+                                    self.current_file_path, v, target_ty
+                                ));
+                            }
+
+                            let pos = unhandled.iter().position(matches_variant).ok_or_else(|| {
+                                            format!(
+                                                "in '{}': unreachable or duplicate match arm for variant {:?}",
+                                                self.current_file_path, v
+                                            )
+                                        })?;
+                            unhandled.remove(pos);
+                        }
+
+                        resolved
+                    } else {
+                        // Wildcard arm '_'
+                        if arm_idx != num_arms - 1 {
                             return Err(format!(
-                                "in '{}': match arm variant {:?} is not a member of sum type {:?}",
-                                self.current_file_path, v, target_ty
+                                "in '{}': wildcard match arm '_' must be the last arm",
+                                self.current_file_path
+                            ));
+                        }
+                        if unhandled.is_empty() {
+                            return Err(format!(
+                                "in '{}': wildcard match arm '_' is unreachable; all variants already matched",
+                                self.current_file_path
                             ));
                         }
 
-                        let pos = unhandled.iter().position(|u| u == v).ok_or_else(|| {
-                            format!(
-                                "in '{}': unreachable or duplicate match arm for variant {:?}",
-                                self.current_file_path, v
-                            )
-                        })?;
-                        unhandled.remove(pos);
-                    }
+                        let narrowed_ty = if unhandled.len() == 1 {
+                            unhandled[0].clone()
+                        } else {
+                            let mut sorted_remaining = unhandled.clone();
+                            sorted_remaining.sort_by_key(Self::canonical_type_key);
+                            Type::Union(sorted_remaining)
+                        };
+
+                        // Store the inferred narrowed type into the arm so codegen knows what to unpack
+                        arm.variant_type = Some(narrowed_ty.clone());
+                        unhandled.clear();
+                        narrowed_ty
+                    };
 
                     self.local_scopes.push(HashMap::new());
                     self.local_scopes.last_mut().unwrap().insert(
@@ -1867,103 +1901,109 @@ impl<'a> Checker<'a> {
             aliases: &HashMap<String, Type>,
             visited: &mut HashSet<(String, String)>,
         ) -> bool {
-        if provided == expected {
-            return true;
-        }
-
-        if matches!(provided, Type::Alias(_)) || matches!(expected, Type::Alias(_)) {
-            let pair = (
-                Checker::canonical_type_key(provided),
-                Checker::canonical_type_key(expected),
-            );
-            if !visited.insert(pair.clone()) {
+            if provided == expected {
                 return true;
             }
-            let result = match (provided, expected) {
-                (Type::Alias(left), Type::Alias(right)) => match (aliases.get(left), aliases.get(right)) {
-                    (Some(left_type), Some(right_type)) => {
-                        compatible(left_type, right_type, aliases, visited)
-                    }
-                    (Some(left_type), None) => compatible(left_type, expected, aliases, visited),
-                    (None, Some(right_type)) => compatible(provided, right_type, aliases, visited),
-                    (None, None) => false,
-                },
-                (Type::Alias(name), other) => aliases
-                    .get(name)
-                    .is_some_and(|alias_type| compatible(alias_type, other, aliases, visited)),
-                (other, Type::Alias(name)) => aliases
-                    .get(name)
-                    .is_some_and(|alias_type| compatible(other, alias_type, aliases, visited)),
-                _ => unreachable!(),
-            };
-            visited.remove(&pair);
-            return result;
-        }
 
-        if let Type::Union(expected_vars) = expected {
-            let provided_vars = match provided {
-                Type::Union(variants) => variants.as_slice(),
-                variant => std::slice::from_ref(variant),
-            };
-            return provided_vars.iter().all(|variant| {
-                expected_vars
-                    .iter()
-                    .filter(|target| compatible(variant, target, aliases, visited))
-                    .count()
-                    == 1
-            });
-        }
-
-        match (provided, expected) {
-            (Type::Struct(fields1), Type::Struct(fields2)) => {
-                if fields1.len() != fields2.len() {
-                    return false;
+            if matches!(provided, Type::Alias(_)) || matches!(expected, Type::Alias(_)) {
+                let pair = (
+                    Checker::canonical_type_key(provided),
+                    Checker::canonical_type_key(expected),
+                );
+                if !visited.insert(pair.clone()) {
+                    return true;
                 }
-                for (f1, f2) in fields1.iter().zip(fields2.iter()) {
-                    if f1.name != f2.name || !compatible(&f1.ty, &f2.ty, aliases, visited) {
+                let result = match (provided, expected) {
+                    (Type::Alias(left), Type::Alias(right)) => {
+                        match (aliases.get(left), aliases.get(right)) {
+                            (Some(left_type), Some(right_type)) => {
+                                compatible(left_type, right_type, aliases, visited)
+                            }
+                            (Some(left_type), None) => {
+                                compatible(left_type, expected, aliases, visited)
+                            }
+                            (None, Some(right_type)) => {
+                                compatible(provided, right_type, aliases, visited)
+                            }
+                            (None, None) => false,
+                        }
+                    }
+                    (Type::Alias(name), other) => aliases
+                        .get(name)
+                        .is_some_and(|alias_type| compatible(alias_type, other, aliases, visited)),
+                    (other, Type::Alias(name)) => aliases
+                        .get(name)
+                        .is_some_and(|alias_type| compatible(other, alias_type, aliases, visited)),
+                    _ => unreachable!(),
+                };
+                visited.remove(&pair);
+                return result;
+            }
+
+            if let Type::Union(expected_vars) = expected {
+                let provided_vars = match provided {
+                    Type::Union(variants) => variants.as_slice(),
+                    variant => std::slice::from_ref(variant),
+                };
+                return provided_vars.iter().all(|variant| {
+                    expected_vars
+                        .iter()
+                        .filter(|target| compatible(variant, target, aliases, visited))
+                        .count()
+                        == 1
+                });
+            }
+
+            match (provided, expected) {
+                (Type::Struct(fields1), Type::Struct(fields2)) => {
+                    if fields1.len() != fields2.len() {
                         return false;
                     }
+                    for (f1, f2) in fields1.iter().zip(fields2.iter()) {
+                        if f1.name != f2.name || !compatible(&f1.ty, &f2.ty, aliases, visited) {
+                            return false;
+                        }
+                    }
+                    true
                 }
-                true
+                (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
+                    compatible(e1, e2, aliases, visited)
+                }
+                (
+                    Type::Array {
+                        element: e1,
+                        size: s1,
+                    },
+                    Type::Array {
+                        element: e2,
+                        size: s2,
+                    },
+                ) => s1 == s2 && compatible(e1, e2, aliases, visited),
+                (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
+                    compatible(e1, e2, aliases, visited)
+                }
+                (
+                    Type::Function {
+                        parameters: p1,
+                        return_type: r1,
+                        is_variadic: v1,
+                    },
+                    Type::Function {
+                        parameters: p2,
+                        return_type: r2,
+                        is_variadic: v2,
+                    },
+                ) => {
+                    v1 == v2
+                        && p1.len() == p2.len()
+                        && p1
+                            .iter()
+                            .zip(p2.iter())
+                            .all(|(a, b)| compatible(a, b, aliases, visited))
+                        && compatible(r1, r2, aliases, visited)
+                }
+                _ => false,
             }
-            (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
-                compatible(e1, e2, aliases, visited)
-            }
-            (
-                Type::Array {
-                    element: e1,
-                    size: s1,
-                },
-                Type::Array {
-                    element: e2,
-                    size: s2,
-                },
-            ) => s1 == s2 && compatible(e1, e2, aliases, visited),
-            (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
-                compatible(e1, e2, aliases, visited)
-            }
-            (
-                Type::Function {
-                    parameters: p1,
-                    return_type: r1,
-                    is_variadic: v1,
-                },
-                Type::Function {
-                    parameters: p2,
-                    return_type: r2,
-                    is_variadic: v2,
-                },
-            ) => {
-                v1 == v2
-                    && p1.len() == p2.len()
-                    && p1
-                        .iter()
-                        .zip(p2.iter())
-                        .all(|(a, b)| compatible(a, b, aliases, visited))
-                    && compatible(r1, r2, aliases, visited)
-            }
-            _ => false,
-        }
         }
 
         compatible(provided, expected, aliases, &mut HashSet::new())
@@ -2212,114 +2252,118 @@ impl<'a> Checker<'a> {
             aliases: &HashMap<String, Type>,
             visited: &mut HashSet<(String, String)>,
         ) -> bool {
-        if source == target {
-            return true;
-        }
-
-        if matches!(source, Type::Alias(_)) || matches!(target, Type::Alias(_)) {
-            let pair = (
-                Checker::canonical_type_key(source),
-                Checker::canonical_type_key(target),
-            );
-            if !visited.insert(pair.clone()) {
+            if source == target {
                 return true;
             }
-            let result = match (source, target) {
-                (Type::Alias(left), Type::Alias(right)) => match (aliases.get(left), aliases.get(right)) {
-                    (Some(left_type), Some(right_type)) => {
-                        supported(left_type, right_type, aliases, visited)
-                    }
-                    (Some(left_type), None) => supported(left_type, target, aliases, visited),
-                    (None, Some(right_type)) => supported(source, right_type, aliases, visited),
-                    (None, None) => false,
-                },
-                (Type::Alias(name), other) => aliases
-                    .get(name)
-                    .is_some_and(|alias_type| supported(alias_type, other, aliases, visited)),
-                (other, Type::Alias(name)) => aliases
-                    .get(name)
-                    .is_some_and(|alias_type| supported(other, alias_type, aliases, visited)),
-                _ => unreachable!(),
-            };
-            visited.remove(&pair);
-            return result;
-        }
 
-        if let Type::Union(target_variants) = target {
-            let source_variants = match source {
-                Type::Union(variants) => variants.as_slice(),
-                source => std::slice::from_ref(source),
-            };
-            return source_variants
-                .iter()
-                .all(|source| {
+            if matches!(source, Type::Alias(_)) || matches!(target, Type::Alias(_)) {
+                let pair = (
+                    Checker::canonical_type_key(source),
+                    Checker::canonical_type_key(target),
+                );
+                if !visited.insert(pair.clone()) {
+                    return true;
+                }
+                let result = match (source, target) {
+                    (Type::Alias(left), Type::Alias(right)) => {
+                        match (aliases.get(left), aliases.get(right)) {
+                            (Some(left_type), Some(right_type)) => {
+                                supported(left_type, right_type, aliases, visited)
+                            }
+                            (Some(left_type), None) => {
+                                supported(left_type, target, aliases, visited)
+                            }
+                            (None, Some(right_type)) => {
+                                supported(source, right_type, aliases, visited)
+                            }
+                            (None, None) => false,
+                        }
+                    }
+                    (Type::Alias(name), other) => aliases
+                        .get(name)
+                        .is_some_and(|alias_type| supported(alias_type, other, aliases, visited)),
+                    (other, Type::Alias(name)) => aliases
+                        .get(name)
+                        .is_some_and(|alias_type| supported(other, alias_type, aliases, visited)),
+                    _ => unreachable!(),
+                };
+                visited.remove(&pair);
+                return result;
+            }
+
+            if let Type::Union(target_variants) = target {
+                let source_variants = match source {
+                    Type::Union(variants) => variants.as_slice(),
+                    source => std::slice::from_ref(source),
+                };
+                return source_variants.iter().all(|source| {
                     Checker::castable_union_variant_with_aliases(source, target_variants, aliases)
                         .is_some()
                 });
-        }
-
-        if let Type::Union(variants) = source {
-            return variants
-                .iter()
-                .any(|variant| supported(variant, target, aliases, visited));
-        }
-
-        match (source, target) {
-            (Type::Struct(source_fields), Type::Struct(target_fields)) => {
-                return source_fields.len() == target_fields.len()
-                    && source_fields
-                        .iter()
-                        .zip(target_fields)
-                        .all(|(source, target)| {
-                            source.name == target.name
-                                && supported(&source.ty, &target.ty, aliases, visited)
-                        });
             }
-            (
-                Type::Array {
-                    element: source_element,
-                    size: source_size,
-                },
-                Type::Array {
-                    element: target_element,
-                    size: target_size,
-                },
-            ) => {
-                return source_size == target_size
-                    && supported(source_element, target_element, aliases, visited);
+
+            if let Type::Union(variants) = source {
+                return variants
+                    .iter()
+                    .any(|variant| supported(variant, target, aliases, visited));
             }
-            (Type::Slice { element: source }, Type::Slice { element: target }) => {
-                return supported(source, target, aliases, visited);
+
+            match (source, target) {
+                (Type::Struct(source_fields), Type::Struct(target_fields)) => {
+                    return source_fields.len() == target_fields.len()
+                        && source_fields
+                            .iter()
+                            .zip(target_fields)
+                            .all(|(source, target)| {
+                                source.name == target.name
+                                    && supported(&source.ty, &target.ty, aliases, visited)
+                            });
+                }
+                (
+                    Type::Array {
+                        element: source_element,
+                        size: source_size,
+                    },
+                    Type::Array {
+                        element: target_element,
+                        size: target_size,
+                    },
+                ) => {
+                    return source_size == target_size
+                        && supported(source_element, target_element, aliases, visited);
+                }
+                (Type::Slice { element: source }, Type::Slice { element: target }) => {
+                    return supported(source, target, aliases, visited);
+                }
+                (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
+                    return Checker::types_compatible_with_aliases(source, target, aliases);
+                }
+                _ => {}
             }
-            (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
-                return Checker::types_compatible_with_aliases(source, target, aliases);
+
+            if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
+                return false;
             }
-            _ => {}
-        }
 
-        if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
-            return false;
-        }
+            if (*source == Type::Bool && Checker::is_integer_type(target))
+                || (Checker::is_integer_type(source) && *target == Type::Bool)
+            {
+                return true;
+            }
 
-        if (*source == Type::Bool && Checker::is_integer_type(target))
-            || (Checker::is_integer_type(source) && *target == Type::Bool)
-        {
-            return true;
-        }
+            if (matches!(source, Type::Pointer { .. } | Type::Function { .. })
+                && Checker::is_integer_type(target))
+                || (Checker::is_integer_type(source)
+                    && matches!(target, Type::Pointer { .. } | Type::Function { .. }))
+            {
+                return true;
+            }
 
-        if (matches!(source, Type::Pointer { .. } | Type::Function { .. })
-            && Checker::is_integer_type(target))
-            || (Checker::is_integer_type(source)
-                && matches!(target, Type::Pointer { .. } | Type::Function { .. }))
-        {
-            return true;
-        }
+            if Checker::is_integer_type(source) && Checker::is_integer_type(target) {
+                return true;
+            }
 
-        if Checker::is_integer_type(source) && Checker::is_integer_type(target) {
-            return true;
-        }
-
-        false
+            false
         }
 
         supported(source, target, aliases, &mut HashSet::new())

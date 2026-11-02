@@ -363,8 +363,12 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             let resolved_target = canonicalize_expression(target, checker)?;
             let mut resolved_arms = Vec::with_capacity(arms.len());
             for arm in arms {
+                let variant_type = match &arm.variant_type {
+                    Some(ty) => Some(canonicalize_type(ty, checker)?),
+                    None => None,
+                };
                 resolved_arms.push(MatchArm {
-                    variant_type: canonicalize_type(&arm.variant_type, checker)?,
+                    variant_type,
                     body: Box::new(canonicalize_expression(&arm.body, checker)?),
                 });
             }
@@ -414,9 +418,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
         for file in &module.source_files {
             for alias in &file.type_aliases {
-                compiled_aliases.entry(alias.name.clone()).or_insert_with(|| {
-                    alias.clone()
-                });
+                compiled_aliases
+                    .entry(alias.name.clone())
+                    .or_insert_with(|| alias.clone());
             }
             for def in &file.definitions {
                 let resolved_value = canonicalize_expression(&def.value, &checker)?;

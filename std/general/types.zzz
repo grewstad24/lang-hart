@@ -12,4 +12,4 @@ u16 | u32 | u64 | s16 | s32 | s64
 )
 
 @type Generic
-Integer | String | bool | Record | []Generic
+Integer | String | bool | Record | []Generic | Record
