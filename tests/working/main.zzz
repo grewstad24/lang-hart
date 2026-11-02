@@ -8,7 +8,7 @@ do () to s32
         println(y)
         println(z)
 
-        pr_nl()
+        print(:nl)
 
         (
                 @name "bob"

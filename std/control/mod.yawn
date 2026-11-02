@@ -1,6 +1,6 @@
 @export [
         (
-                @symbol ["repeat", "loop", "times", "iter"]
+                @symbol ["loop"]
                 @to []
         )
 ]

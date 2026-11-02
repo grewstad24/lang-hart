@@ -1,41 +1,5 @@
-@val times
-do (count :: s32, fn :: Fn{()})
-        doif
-                count > 0 => {
-                        fn()
-                        times(count - 1, fn)
-                }
-        end
-done
-
-@val repeat
-do (fn :: Fn{()}, count :: s32)
-        doif
-                count > 0 => {
-                        fn()
-                        repeat(fn, count - 1)
-                }
-        end
-done
-
-
 @val loop
 do (fn :: Fn{()})
         fn()
         loop(fn)
-done
-
-@val iter
-do ( fn :: Fn{(count :: s32)}, num :: s32 )
-    iter_helper(0, num - 1, fn)
-done
-
-@val iter_helper
-do (curr :: s32, max :: s32, fn :: Fn{(count :: s32)})
-    doif
-        curr <= max => {
-                fn(curr)
-                iter_helper(curr + 1, max, fn)
-        }
-    end
 done

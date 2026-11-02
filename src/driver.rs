@@ -183,6 +183,10 @@ fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Stateme
             expression: canonicalize_expression(expression, checker)?,
             target: target.clone(),
         }),
+        Statement::DoTimes { count, body } => Ok(Statement::DoTimes {
+            count: canonicalize_expression(count, checker)?,
+            body: Box::new(canonicalize_statement(body, checker)?),
+        }),
         Statement::Discard(expr) => Ok(Statement::Discard(canonicalize_expression(expr, checker)?)),
         Statement::Return(expr) => Ok(Statement::Return(canonicalize_expression(expr, checker)?)),
         Statement::If { arms } => {

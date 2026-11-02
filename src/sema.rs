@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
     NamespacePath, Parameter, Signature, SourceFile, Span, Statement, StructFieldType, Type,
-    TypeAlias, format_error, unspanned_expression, unspanned_expression_mut,
+    TypeAlias, UnaryOperator, format_error, unspanned_expression, unspanned_expression_mut,
 };
 
 fn expression_span(expression: &Expression) -> Option<&Span> {
@@ -1282,6 +1282,17 @@ impl<'a> Checker<'a> {
             Expression::Unary { operator, operand } => {
                 let raw_ty = self.type_of_expression(operand)?;
                 let ty = self.resolve_type(&raw_ty)?;
+
+                if *operator == UnaryOperator::Not {
+                    if ty != Type::Bool {
+                        return Err(format!(
+                            "in '{}': unary operator 'not' requires a boolean operand, found {:?}",
+                            self.current_file_path, ty
+                        ));
+                    }
+                    return Ok(Type::Bool);
+                }
+
                 if !Self::is_integer_type(&ty) {
                     return Err(format!(
                         "in '{}': unary operator {:?} requires an integer operand, found {:?}",
@@ -1607,6 +1618,7 @@ impl<'a> Checker<'a> {
                         .iter()
                         .all(|arm| Self::statement_definitely_returns(&arm.body))
             }
+            Statement::DoTimes { .. } => false,
             _ => false,
         }
     }
@@ -1640,7 +1652,19 @@ impl<'a> Checker<'a> {
                     self.validate_statement(s, expected_type)?;
                 }
             }
+            Statement::DoTimes { count, body } => {
+                let raw_count_ty = self.type_of_expression(count)?;
+                let count_ty = self.resolve_type(&raw_count_ty)?;
 
+                if !Self::is_integer_type(&count_ty) {
+                    return Err(format!(
+                        "in '{}': dotimes count must be an integer, found {:?}",
+                        self.current_file_path, count_ty
+                    ));
+                }
+
+                self.validate_statement(body, expected_type)?;
+            }
             Statement::Declare { name, ty } => {
                 let resolved_ty = self.resolve_type(ty)?;
                 if resolved_ty == Type::Void {

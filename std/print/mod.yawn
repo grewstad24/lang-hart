@@ -1,7 +1,11 @@
 @export [
         (
-                @symbol ["print", "pr_nl", "pr_tab", "println"]
+                @symbol ["pr_nl", "pr_tab", "print_int", "print_string"]
                 @to ["print"]
+        )
+        (
+                @symbol ["print", "println"]
+                @to []
         )
 ]
 

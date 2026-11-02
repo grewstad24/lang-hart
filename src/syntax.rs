@@ -128,6 +128,7 @@ pub type FunctionSignature = Signature;
 pub enum UnaryOperator {
     Plus,
     Minus,
+    Not,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +273,10 @@ pub enum Statement {
     If {
         arms: Vec<DoIfArm>,
     },
+    DoTimes {
+        count: Expression,
+        body: Box<Statement>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -339,6 +344,8 @@ pub enum Token {
     With,
     Over,
     Return,
+    Not,
+    DoTimes,
     To,
     As,
     Fn,
@@ -718,6 +725,8 @@ impl Lexer {
             "bool" => Token::TypeBool,
             "true" => Token::Boolean(true),
             "false" => Token::Boolean(false),
+            "not" => Token::Not,
+            "dotimes" => Token::DoTimes,
             _ => Token::Identifier(text),
         }
     }
@@ -1228,6 +1237,14 @@ impl Parser {
                 self.skip_newlines();
                 Ok(Expression::AddressOf(Box::new(self.parse_unary()?)))
             }
+            Token::Not => {
+                self.advance();
+                self.skip_newlines();
+                Ok(Expression::Unary {
+                    operator: UnaryOperator::Not,
+                    operand: Box::new(self.parse_unary()?),
+                })
+            }
             _ => {
                 let expr = self.parse_primary()?;
                 self.parse_postfix(expr)
@@ -1621,6 +1638,19 @@ impl Parser {
                 Ok(Statement::Declare { name, ty })
             }
             Token::DoIf => self.parse_doif_statement(),
+            Token::DoTimes => {
+                self.advance();
+                self.skip_newlines();
+                let count = self.parse_expression()?;
+                self.expect(Token::FatArrow)?;
+                self.skip_newlines();
+                let body = self.parse_statement()?;
+                self.consume_optional_newline();
+                Ok(Statement::DoTimes {
+                    count,
+                    body: Box::new(body),
+                })
+            }
             Token::Return => {
                 self.advance();
                 self.skip_newlines();

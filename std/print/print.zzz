@@ -31,19 +31,15 @@ do
         printf ("\t".ptr)
 done
 
-@val printa_helper
-do ( arr :: []Printable, i :: s32 )
-        doif
-                i < arr.len as s32 => {
-                        print(arr[i])
-                        printa_helper(arr, i + 1)
-                }
-        end
-done
-
 @val printa
 do ( arr :: []Printable )
-        printa_helper(arr, 0)
+        var x :: s32
+        0-> x
+
+        dotimes arr.len => {
+                print(arr[x])
+                x + 1 -> x
+        }
 done
 
 @val print

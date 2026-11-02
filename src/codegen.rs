@@ -499,6 +499,101 @@ impl<'ctx> Codegen<'ctx> {
                 );
                 Ok(())
             }
+            Statement::DoTimes { count, body } => {
+                let count_binding = self.codegen_expression(count)?;
+                let count_val = self.binding_int_value(&count_binding)?;
+
+                let limit_i64 = self
+                    .builder
+                    .build_int_z_extend_or_bit_cast(
+                        count_val,
+                        self.context.i64_type(),
+                        "dotimes_limit",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                let current_block = self
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| "cannot generate dotimes outside basic block".to_string())?;
+                let current_fn = current_block
+                    .get_parent()
+                    .ok_or_else(|| "current block has no parent function".to_string())?;
+
+                let id = self.branch_counter;
+                self.branch_counter += 1;
+
+                let cond_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.cond.{}", id));
+                let body_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.body.{}", id));
+                let merge_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.merge.{}", id));
+
+                let counter_alloca = self
+                    .builder
+                    .build_alloca(self.context.i64_type(), &format!("dotimes.counter.{}", id))
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_store(counter_alloca, self.context.i64_type().const_zero())
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Condition Block ---
+                self.builder.position_at_end(cond_bb);
+                let current_idx = self
+                    .builder
+                    .build_load(self.context.i64_type(), counter_alloca, "i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+
+                let has_next = self
+                    .builder
+                    .build_int_compare(IntPredicate::SLT, current_idx, limit_i64, "dotimes_cmp")
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_conditional_branch(has_next, body_bb, merge_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Body Block ---
+                self.builder.position_at_end(body_bb);
+                self.codegen_statement(body)?;
+
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_none() {
+                        let cur = self
+                            .builder
+                            .build_load(self.context.i64_type(), counter_alloca, "cur_i")
+                            .map_err(|e| e.to_string())?
+                            .into_int_value();
+                        let next = self
+                            .builder
+                            .build_int_add(
+                                cur,
+                                self.context.i64_type().const_int(1, false),
+                                "next_i",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_store(counter_alloca, next)
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_unconditional_branch(cond_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                self.builder.position_at_end(merge_bb);
+                Ok(())
+            }
             Statement::Assign { expression, target } => {
                 let current_binding = self.codegen_expression(expression)?;
 
@@ -1461,6 +1556,21 @@ impl<'ctx> Codegen<'ctx> {
         operator: UnaryOperator,
         operand: &Binding<'ctx>,
     ) -> Result<Binding<'ctx>, String> {
+        if operator == UnaryOperator::Not {
+            let value = match operand {
+                Binding::Boolean { value } => *value,
+                _ => return Err("expected boolean value for 'not'".to_string()),
+            };
+
+            let zero = self.context.bool_type().const_zero();
+            let inverted = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, value, zero, "nottmp")
+                .map_err(|error| error.to_string())?;
+
+            return Ok(Binding::Boolean { value: inverted });
+        }
+
         let ty = self.binding_type(operand)?;
         let value = self.binding_int_value(operand)?;
 
@@ -1474,6 +1584,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(Binding::Integer { ty, value })
             }
+            UnaryOperator::Not => unreachable!(),
         }
     }
 
