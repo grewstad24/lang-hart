@@ -7,7 +7,7 @@ do ( s :: []u8 )
 done
 
 @type Printable
-String | Integer | :nl | :t
+String | Integer | :nl | :t | bool | []Printable | Record
 
 @val print_int
 do ( num :: Integer )
@@ -43,13 +43,18 @@ do ( arr :: []Printable )
 done
 
 @val print
-do ( x :: Printable | []Printable )
+do ( x :: Printable )
         match x with z
                 String          => print_string(z)
                 Integer         => print_int(z)
                 :nl             => pr_nl()
                 :t              => pr_tab()
                 []Printable     => printa(z)
+                bool => if
+                        z = true        => print("true")
+                        else            => print("false")
+                end
+                Record          => printr(z)
         over
 done
 
@@ -59,8 +64,17 @@ do ( x :: Printable )
         pr_nl()
 done
 
-@val printaln
-do ( x :: []Printable )
-        printa(x)
-        pr_nl()
+@val printr
+do ( r :: Record )
+        var i :: s32
+        0-> i
+
+        r^ -> header
+        header.val -> val
+        header.key -> key
+
+        dotimes header.len => {
+                [ key[i], " : ", val[i], :nl ] `print()
+                i + 1 -> i
+        }
 done

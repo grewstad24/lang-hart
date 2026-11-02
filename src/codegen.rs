@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -83,8 +83,10 @@ pub struct Codegen<'ctx> {
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
     scope_stack_ptrs: Vec<PointerValue<'ctx>>,
     global_vars: HashMap<String, GlobalVar<'ctx>>,
+    pending_global_records: Vec<(String, Vec<StructFieldInit>)>,
     extern_functions: HashMap<String, Signature>,
     function_signatures: HashMap<String, Signature>,
+    type_aliases: HashMap<String, Type>,
     atom_table: HashMap<String, u32>,
 
     string_counter: usize,
@@ -107,8 +109,10 @@ impl<'ctx> Codegen<'ctx> {
             local_scopes: Vec::new(),
             scope_stack_ptrs: Vec::new(),
             global_vars: HashMap::new(),
+            pending_global_records: Vec::new(),
             extern_functions: HashMap::new(),
             function_signatures: HashMap::new(),
+            type_aliases: HashMap::new(),
             atom_table: HashMap::new(),
             string_counter: 0,
             branch_counter: 0,
@@ -126,7 +130,26 @@ impl<'ctx> Codegen<'ctx> {
             .get_pointer_byte_size(Some(AddressSpace::default())) as u64
     }
 
+    fn resolve_alias_root<'a>(&'a self, mut ty: &'a Type) -> Result<&'a Type, String> {
+        let mut visited = HashSet::new();
+        while let Type::Alias(name) = ty {
+            if !visited.insert(name.clone()) {
+                return Err(format!("recursive type alias '{}' reached codegen", name));
+            }
+            ty = self
+                .type_aliases
+                .get(name)
+                .ok_or_else(|| format!("unknown type alias '{}' in codegen", name))?;
+        }
+        Ok(ty)
+    }
+
     pub fn generate(mut self, program: &Program) -> Result<Module<'ctx>, String> {
+        self.type_aliases = program
+            .type_aliases
+            .iter()
+            .map(|alias| (alias.name.clone(), alias.target.clone()))
+            .collect();
         self.collect_declarations(program)?;
         self.codegen_externals(&program.extern_functions)?;
         self.codegen_definitions(&program.definitions)?;
@@ -262,8 +285,36 @@ impl<'ctx> Codegen<'ctx> {
 
         for def in definitions {
             if def.name == "main" {
-                self.codegen_main(def)?;
-            } else if let Expression::Block { signature, body } = unspanned_expression(&def.value) {
+                continue;
+            }
+            if let Expression::Record(fields) = unspanned_expression(&def.value) {
+                let ty = self.resolve_alias_root(&Checker::record_type())?.clone();
+                let llvm_type = self.llvm_type(&ty)?;
+                let global =
+                    self.module
+                        .add_global(llvm_type, Some(AddressSpace::default()), &def.name);
+                global.set_initializer(&self.zero_value(&ty)?);
+                self.global_vars.insert(
+                    def.name.clone(),
+                    GlobalVar {
+                        ty,
+                        pointer: global.as_pointer_value(),
+                    },
+                );
+                self.pending_global_records
+                    .push((def.name.clone(), fields.clone()));
+            }
+        }
+
+        for def in definitions {
+            if def.name == "main" {
+                continue;
+            }
+            if matches!(unspanned_expression(&def.value), Expression::Record(_)) {
+                continue;
+            }
+
+            if let Expression::Block { signature, body } = unspanned_expression(&def.value) {
                 self.codegen_named_function(&def.name, signature.as_ref(), body)?;
             } else {
                 let binding = self.codegen_expression(&def.value)?;
@@ -287,6 +338,10 @@ impl<'ctx> Codegen<'ctx> {
                     },
                 );
             }
+        }
+
+        if let Some(main_def) = definitions.iter().find(|def| def.name == "main") {
+            self.codegen_main(main_def)?;
         }
 
         Ok(())
@@ -425,6 +480,18 @@ impl<'ctx> Codegen<'ctx> {
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let stack_ptr = self.enter_scope()?;
+
+        for (name, fields) in std::mem::take(&mut self.pending_global_records) {
+            let record = self.codegen_record_literal(&fields)?;
+            let value = self.binding_basic_value(&record)?;
+            let global = self
+                .global_vars
+                .get(&name)
+                .ok_or_else(|| format!("missing global record storage for '{}'", name))?;
+            self.builder
+                .build_store(global.pointer, value)
+                .map_err(|error| error.to_string())?;
+        }
 
         if let Expression::Block { body, .. } = unspanned_expression(&main_def.value) {
             self.codegen_statements(body)?;
@@ -792,6 +859,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::String(value) => self.codegen_string_literal(value),
             Expression::Struct(fields) => self.codegen_struct_literal(fields),
+            Expression::Record(fields) => self.codegen_record_literal(fields),
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
                     if let Type::Struct(_) = &local.ty {
@@ -949,6 +1017,41 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Index { expression, index } => self.codegen_index(expression, index),
             Expression::Member { expression, field } => self.codegen_member(expression, field),
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
+            Expression::Dereference(expression) => self.codegen_dereference(expression),
+        }
+    }
+
+    fn codegen_dereference(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
+        let pointer_binding = self.codegen_expression(expression)?;
+        let pointer_type = self.binding_type(&pointer_binding)?;
+        let Type::Pointer { element } = pointer_type else {
+            return Err(format!(
+                "cannot dereference non-pointer type {:?}",
+                pointer_type
+            ));
+        };
+        let pointer_value = match pointer_binding {
+            Binding::Pointer { value, .. } => value,
+            _ => return Err("expected pointer binding for dereference".to_string()),
+        };
+        let element_llvm_type = self.llvm_type(&element)?;
+        let loaded = self
+            .builder
+            .build_load(element_llvm_type, pointer_value, "deref_value")
+            .map_err(|error| error.to_string())?;
+
+        match element.as_ref() {
+            Type::Struct(_) => Ok(Binding::Struct {
+                ty: *element,
+                value: loaded.into_struct_value(),
+                storage: Some(pointer_value),
+            }),
+            Type::Union(_) => Ok(Binding::Union {
+                ty: *element,
+                value: loaded.into_struct_value(),
+                storage: Some(pointer_value),
+            }),
+            _ => self.binding_from_basic_value(&element, loaded),
         }
     }
 
@@ -987,6 +1090,128 @@ impl<'ctx> Codegen<'ctx> {
             ty: struct_type,
             value: struct_val,
             storage: None,
+        })
+    }
+
+    fn codegen_record_literal(
+        &mut self,
+        fields: &[StructFieldInit],
+    ) -> Result<Binding<'ctx>, String> {
+        let generic_type = self.resolve_alias_root(&Checker::generic_type())?.clone();
+        let key_type = Type::Slice {
+            element: Box::new(Type::U8),
+        };
+        let key_llvm_type = self.llvm_type(&key_type)?;
+        let generic_llvm_type = self.llvm_type(&generic_type)?;
+        let count = fields.len();
+        let count_value = self.ptr_sized_int_type().const_int(count as u64, false);
+
+        let keys_array_type = key_llvm_type.array_type(count as u32);
+        let keys_storage = self
+            .builder
+            .build_alloca(keys_array_type, "record.keys")
+            .map_err(|error| error.to_string())?;
+        let values_array_type = generic_llvm_type.array_type(count as u32);
+        let values_storage = self
+            .builder
+            .build_alloca(values_array_type, "record.values")
+            .map_err(|error| error.to_string())?;
+        let zero = self.ptr_sized_int_type().const_zero();
+
+        for (index, field) in fields.iter().enumerate() {
+            let key_binding = self.codegen_string_literal(field.name.as_bytes())?;
+            let key_value = self.binding_basic_value(&key_binding)?;
+            let index_value = self.ptr_sized_int_type().const_int(index as u64, false);
+            let key_slot = unsafe {
+                self.builder
+                    .build_gep(
+                        keys_array_type,
+                        keys_storage,
+                        &[zero, index_value],
+                        "record.key.slot",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(key_slot, key_value)
+                .map_err(|error| error.to_string())?;
+
+            let value_binding = self.codegen_expression(&field.value)?;
+            let boxed_value = self.codegen_cast(value_binding, generic_type.clone())?;
+            let value = self.binding_basic_value(&boxed_value)?;
+            let value_slot = unsafe {
+                self.builder
+                    .build_gep(
+                        values_array_type,
+                        values_storage,
+                        &[zero, index_value],
+                        "record.value.slot",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(value_slot, value)
+                .map_err(|error| error.to_string())?;
+        }
+
+        let keys_pointer = unsafe {
+            self.builder
+                .build_gep(
+                    keys_array_type,
+                    keys_storage,
+                    &[zero, zero],
+                    "record.keys.ptr",
+                )
+                .map_err(|error| error.to_string())?
+        };
+        let values_pointer = unsafe {
+            self.builder
+                .build_gep(
+                    values_array_type,
+                    values_storage,
+                    &[zero, zero],
+                    "record.values.ptr",
+                )
+                .map_err(|error| error.to_string())?
+        };
+
+        let record_type = self.resolve_alias_root(&Checker::record_type())?.clone();
+        let Type::Pointer {
+            element: record_struct,
+        } = &record_type
+        else {
+            unreachable!();
+        };
+        let record_llvm_type = self.llvm_type(record_struct)?.into_struct_type();
+        let record_storage = self
+            .builder
+            .build_alloca(record_llvm_type, "record.header")
+            .map_err(|error| error.to_string())?;
+        let len_pointer = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 0, "record.len")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(len_pointer, count_value)
+            .map_err(|error| error.to_string())?;
+        let keys_field = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 1, "record.keys.field")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(keys_field, keys_pointer)
+            .map_err(|error| error.to_string())?;
+        let values_field = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 2, "record.values.field")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(values_field, values_pointer)
+            .map_err(|error| error.to_string())?;
+
+        Ok(Binding::Pointer {
+            ty: record_type,
+            value: record_storage,
         })
     }
 
@@ -1759,13 +1984,73 @@ impl<'ctx> Codegen<'ctx> {
         binding: Binding<'ctx>,
         target_type: Type,
     ) -> Result<Binding<'ctx>, String> {
+        self.codegen_cast_inner(binding, target_type, &mut HashSet::new())
+    }
+
+    fn codegen_cast_inner(
+        &mut self,
+        binding: Binding<'ctx>,
+        target_type: Type,
+        visited: &mut HashSet<(String, String)>,
+    ) -> Result<Binding<'ctx>, String> {
         let source_type = self.binding_type(&binding)?;
 
         if source_type == target_type {
             return Ok(binding);
         }
 
-        if !Checker::is_supported_cast(&source_type, &target_type) {
+        let resolved_source = self.resolve_alias_root(&source_type)?.clone();
+        let resolved_target = self.resolve_alias_root(&target_type)?.clone();
+
+        if resolved_source == resolved_target {
+            let val = self.binding_basic_value(&binding)?;
+            return self.binding_from_basic_value(&target_type, val);
+        }
+
+        let pair = (
+            Checker::canonical_type_key(&resolved_source),
+            Checker::canonical_type_key(&resolved_target),
+        );
+        if visited.contains(&pair) {
+            if matches!(resolved_target, Type::Slice { .. }) {
+                let val = self.binding_basic_value(&binding)?;
+                return Ok(Binding::Slice {
+                    ty: target_type,
+                    value: val.into_struct_value(),
+                });
+            }
+            if matches!(resolved_target, Type::Pointer { .. }) {
+                let val = self.binding_basic_value(&binding)?;
+                return Ok(Binding::Pointer {
+                    ty: target_type,
+                    value: val.into_pointer_value(),
+                });
+            }
+        }
+
+        visited.insert(pair.clone());
+        let result = self.do_codegen_cast(
+            binding,
+            target_type,
+            source_type,
+            resolved_source,
+            resolved_target,
+            visited,
+        );
+        visited.remove(&pair);
+        result
+    }
+
+    fn do_codegen_cast(
+        &mut self,
+        binding: Binding<'ctx>,
+        target_type: Type,
+        source_type: Type,
+        resolved_source: Type,
+        resolved_target: Type,
+        visited: &mut HashSet<(String, String)>,
+    ) -> Result<Binding<'ctx>, String> {
+        if !Checker::is_supported_cast_with_aliases(&source_type, &target_type, &self.type_aliases) {
             return Err(format!(
                 "unsupported cast from {:?} to {:?}",
                 source_type, target_type
@@ -1773,7 +2058,7 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         if let (Type::Struct(source_fields), Type::Struct(target_fields)) =
-            (&source_type, &target_type)
+            (&resolved_source, &resolved_target)
         {
             let source_value = self.binding_basic_value(&binding)?.into_struct_value();
             let target_llvm_type = self.llvm_type(&target_type)?.into_struct_type();
@@ -1787,7 +2072,8 @@ impl<'ctx> Codegen<'ctx> {
                     .build_extract_value(source_value, index as u32, &source_field.name)
                     .map_err(|error| error.to_string())?;
                 let field_binding = self.binding_from_basic_value(&source_field.ty, field_value)?;
-                let converted = self.codegen_cast(field_binding, target_field.ty.clone())?;
+                let converted =
+                    self.codegen_cast_inner(field_binding, target_field.ty.clone(), visited)?;
                 target_value = self
                     .builder
                     .build_insert_value(
@@ -1816,7 +2102,7 @@ impl<'ctx> Codegen<'ctx> {
                 element: target_element,
                 ..
             },
-        ) = (&source_type, &target_type)
+        ) = (&resolved_source, &resolved_target)
         {
             let source_value = self.binding_basic_value(&binding)?.into_array_value();
             let target_llvm_type = self.llvm_type(&target_type)?.into_array_type();
@@ -1829,7 +2115,8 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|error| error.to_string())?;
                 let element_binding =
                     self.binding_from_basic_value(source_element, element_value)?;
-                let converted = self.codegen_cast(element_binding, (**target_element).clone())?;
+                let converted =
+                    self.codegen_cast_inner(element_binding, (**target_element).clone(), visited)?;
                 target_value = self
                     .builder
                     .build_insert_value(
@@ -1856,7 +2143,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::Slice {
                 element: target_element,
             },
-        ) = (&source_type, &target_type)
+        ) = (&resolved_source, &resolved_target)
         {
             let source_value = self.binding_basic_value(&binding)?.into_struct_value();
             let source_ptr = self
@@ -1923,7 +2210,7 @@ impl<'ctx> Codegen<'ctx> {
             let source_element_binding =
                 self.binding_from_basic_value(source_element, source_element_value)?;
             let converted =
-                self.codegen_cast(source_element_binding, (**target_element).clone())?;
+                self.codegen_cast_inner(source_element_binding, (**target_element).clone(), visited)?;
             let target_element_ptr = unsafe {
                 self.builder
                     .build_gep(
@@ -1971,7 +2258,7 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        if let (Type::Pointer { .. }, Type::Pointer { .. }) = (&source_type, &target_type) {
+        if let (Type::Pointer { .. }, Type::Pointer { .. }) = (&resolved_source, &resolved_target) {
             if let Binding::Pointer { value, .. } = binding {
                 return Ok(Binding::Pointer {
                     ty: target_type,
@@ -1981,7 +2268,7 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         // 1. Variant or Sub-Union -> Union
-        if let Type::Union(target_vars) = &target_type {
+        if let Type::Union(target_vars) = &resolved_target {
             let union_llvm_ty = self.llvm_type(&target_type)?.into_struct_type();
             let alloca = self
                 .builder
@@ -2002,7 +2289,7 @@ impl<'ctx> Codegen<'ctx> {
                 .build_struct_gep(union_llvm_ty, alloca, 1, "payload_ptr")
                 .map_err(|e| e.to_string())?;
 
-            if let Type::Union(source_vars) = &source_type {
+            if let Type::Union(source_vars) = &resolved_source {
                 let sub_union_llvm_ty = self.llvm_type(&source_type)?.into_struct_type();
                 let sub_storage = if let Binding::Union {
                     storage: Some(storage),
@@ -2061,13 +2348,17 @@ impl<'ctx> Codegen<'ctx> {
                 for (source_index, source_variant) in source_vars.iter().enumerate() {
                     let case_block = cases[source_index].1;
                     self.builder.position_at_end(case_block);
-                    let target_index = Checker::castable_union_variant(source_variant, target_vars)
-                        .ok_or_else(|| {
-                            format!(
-                                "cannot uniquely promote union variant {:?} into {:?}",
-                                source_variant, target_type
-                            )
-                        })?;
+                    let target_index = Checker::castable_union_variant_with_aliases(
+                        source_variant,
+                        target_vars,
+                        &self.type_aliases,
+                    )
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot uniquely promote union variant {:?} into {:?}",
+                            source_variant, target_type
+                        )
+                    })?;
                     let source_variant_type = self.llvm_type(source_variant)?;
                     let source_payload = self
                         .builder
@@ -2075,8 +2366,11 @@ impl<'ctx> Codegen<'ctx> {
                         .map_err(|e| e.to_string())?;
                     let source_binding =
                         self.binding_from_basic_value(source_variant, source_payload)?;
-                    let converted =
-                        self.codegen_cast(source_binding, target_vars[target_index].clone())?;
+                    let converted = self.codegen_cast_inner(
+                        source_binding,
+                        target_vars[target_index].clone(),
+                        visited,
+                    )?;
                     let target_tag = self.context.i8_type().const_int(target_index as u64, false);
                     self.builder
                         .build_store(tag_ptr, target_tag)
@@ -2095,14 +2389,19 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
                 self.builder.position_at_end(merge_block);
             } else {
-                let target_index = Checker::castable_union_variant(&source_type, target_vars)
-                    .ok_or_else(|| {
-                        format!(
-                            "cannot uniquely promote {:?} into union {:?}",
-                            source_type, target_type
-                        )
-                    })?;
-                let converted = self.codegen_cast(binding, target_vars[target_index].clone())?;
+                let target_index = Checker::castable_union_variant_with_aliases(
+                    &source_type,
+                    target_vars,
+                    &self.type_aliases,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "cannot uniquely promote {:?} into union {:?}",
+                        source_type, target_type
+                    )
+                })?;
+                let converted =
+                    self.codegen_cast_inner(binding, target_vars[target_index].clone(), visited)?;
                 let tag_val = self.context.i8_type().const_int(target_index as u64, false);
                 self.builder
                     .build_store(tag_ptr, tag_val)
@@ -2128,11 +2427,17 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         // 2. Union -> Variant
-        if let Type::Union(variants) = &source_type {
+        if let Type::Union(variants) = &resolved_source {
             let candidates: Vec<usize> = variants
                 .iter()
                 .enumerate()
-                .filter(|(_, variant)| Checker::is_supported_cast(variant, &target_type))
+                .filter(|(_, variant)| {
+                    Checker::is_supported_cast_with_aliases(
+                        variant,
+                        &target_type,
+                        &self.type_aliases,
+                    )
+                })
                 .map(|(index, _)| index)
                 .collect();
             if candidates.is_empty() {
@@ -2142,7 +2447,7 @@ impl<'ctx> Codegen<'ctx> {
                 ));
             }
 
-            let union_llvm_ty = self.llvm_type(&source_type)?.into_struct_type();
+            let union_llvm_ty = self.llvm_type(&resolved_source)?.into_struct_type();
             let storage = if let Binding::Union {
                 storage: Some(storage),
                 ..
@@ -2218,7 +2523,8 @@ impl<'ctx> Codegen<'ctx> {
                     )
                     .map_err(|e| e.to_string())?;
                 let source_binding = self.binding_from_basic_value(source_variant, source_value)?;
-                let converted = self.codegen_cast(source_binding, target_type.clone())?;
+                let converted =
+                    self.codegen_cast_inner(source_binding, target_type.clone(), visited)?;
                 let converted_value = self.binding_basic_value(&converted)?;
                 let converted_end = self.builder.get_insert_block().unwrap();
                 self.builder
@@ -2238,8 +2544,8 @@ impl<'ctx> Codegen<'ctx> {
             return self.binding_from_basic_value(&target_type, result_phi.as_basic_value());
         }
 
-        if Checker::is_integer_type(&source_type)
-            && matches!(target_type, Type::Pointer { .. } | Type::Function { .. })
+        if Checker::is_integer_type(&resolved_source)
+            && matches!(resolved_target, Type::Pointer { .. } | Type::Function { .. })
         {
             let int_val = self.binding_int_value(&binding)?;
             let ptr_type = self.llvm_type(&target_type)?.into_pointer_type();
@@ -2254,8 +2560,8 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        if matches!(source_type, Type::Pointer { .. } | Type::Function { .. })
-            && Checker::is_integer_type(&target_type)
+        if matches!(resolved_source, Type::Pointer { .. } | Type::Function { .. })
+            && Checker::is_integer_type(&resolved_target)
         {
             let ptr_val = match binding {
                 Binding::Pointer { value, .. } => value,
@@ -2276,7 +2582,7 @@ impl<'ctx> Codegen<'ctx> {
 
         let value = self.binding_int_value(&binding)?;
 
-        if target_type == Type::Bool {
+        if resolved_target == Type::Bool {
             let zero = value.get_type().const_zero();
             let bool_val = self
                 .builder
@@ -2293,7 +2599,7 @@ impl<'ctx> Codegen<'ctx> {
         let casted = if target_bits == source_bits {
             value
         } else if target_bits > source_bits {
-            if source_type != Type::Bool && self.is_signed(&source_type) {
+            if resolved_source != Type::Bool && self.is_signed(&resolved_source) {
                 self.builder
                     .build_int_s_extend(value, target_llvm_type, "sexttmp")
                     .map_err(|e| e.to_string())?
@@ -2457,10 +2763,7 @@ impl<'ctx> Codegen<'ctx> {
                 Ok((*(return_type.clone()), fn_type))
             }
             Type::Pointer { element } => self.function_type_info(element),
-            Type::Alias(name) => Err(format!(
-                "unresolved type alias '{}' in function_type_info",
-                name
-            )),
+            Type::Alias(_) => self.function_type_info(self.resolve_alias_root(ty)?),
             _ => Err(format!(
                 "type {:?} is not a function or function pointer",
                 ty
@@ -2540,12 +2843,37 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.binding_from_basic_value(&element, loaded)
             }
+            Type::Pointer { element } => {
+                let pointer = match binding {
+                    Binding::Pointer { value, .. } => value,
+                    _ => return Err("expected pointer binding".to_string()),
+                };
+                let element_llvm_type = self.llvm_type(&element)?;
+                let element_pointer = unsafe {
+                    self.builder
+                        .build_gep(element_llvm_type, pointer, &[index_i64], "ptr_idx")
+                        .map_err(|error| error.to_string())?
+                };
+                let loaded = self
+                    .builder
+                    .build_load(element_llvm_type, element_pointer, "ptr_val")
+                    .map_err(|error| error.to_string())?;
+                self.binding_from_basic_value(&element, loaded)
+            }
             other => Err(format!("cannot index value of type {:?}", other)),
         }
     }
 
     fn codegen_address_of(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         match expression {
+            Expression::Dereference(pointer_expression) => {
+                let pointer = self.codegen_expression(pointer_expression)?;
+                if matches!(self.binding_type(&pointer)?, Type::Pointer { .. }) {
+                    Ok(pointer)
+                } else {
+                    Err("address-of dereference requires a pointer".to_string())
+                }
+            }
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
                     return Ok(Binding::Pointer {
@@ -2633,6 +2961,27 @@ impl<'ctx> Codegen<'ctx> {
                         Ok(Binding::Pointer {
                             ty: Type::Pointer { element },
                             value: pointer,
+                        })
+                    }
+                    Type::Pointer { element } => {
+                        let pointer = match binding {
+                            Binding::Pointer { value, .. } => value,
+                            _ => return Err("expected pointer binding".to_string()),
+                        };
+                        let element_llvm_type = self.llvm_type(&element)?;
+                        let element_pointer = unsafe {
+                            self.builder
+                                .build_gep(
+                                    element_llvm_type,
+                                    pointer,
+                                    &[index_i64],
+                                    "ptr_index_addr",
+                                )
+                                .map_err(|error| error.to_string())?
+                        };
+                        Ok(Binding::Pointer {
+                            ty: Type::Pointer { element },
+                            value: element_pointer,
                         })
                     }
                     other => Err(format!("cannot take address of value of type {:?}", other)),
@@ -2732,7 +3081,9 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         match ty {
             Type::Void => Ok(Binding::Void),
-            Type::Alias(name) => Err(format!("unresolved type alias '{}' in binding", name)),
+            Type::Alias(_) => {
+                self.binding_from_basic_value(self.resolve_alias_root(ty)?, value)
+            }
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
                 value: value.into_int_value(),
@@ -2908,7 +3259,7 @@ impl<'ctx> Codegen<'ctx> {
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void type is not a basic type in LLVM".to_string()),
-            Type::Alias(name) => Err(format!("unresolved type alias '{}' in llvm_type", name)),
+            Type::Alias(_) => self.llvm_type(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.i32_type().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
@@ -2944,7 +3295,7 @@ impl<'ctx> Codegen<'ctx> {
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
             Type::Void => Err("void has no zero value".to_string()),
-            Type::Alias(name) => Err(format!("unresolved type alias '{}' in zero_value", name)),
+            Type::Alias(_) => self.zero_value(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.i32_type().const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
@@ -2990,8 +3341,11 @@ impl<'ctx> Codegen<'ctx> {
 
 #[cfg(test)]
 mod cast_codegen_tests {
-    use super::{Binding, Codegen};
-    use crate::syntax::{StructFieldType, Type};
+    use super::{Binding, Codegen, LocalVar};
+    use crate::sema::Checker;
+    use crate::syntax::{
+        Definition, Expression, Program, Statement, StructFieldInit, StructFieldType, Type,
+    };
     use inkwell::AddressSpace;
     use inkwell::OptimizationLevel;
     use inkwell::context::Context;
@@ -2999,6 +3353,7 @@ mod cast_codegen_tests {
         CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
     };
     use inkwell::types::BasicType;
+    use std::collections::HashMap;
 
     fn test_target_machine() -> TargetMachine {
         Target::initialize_all(&InitializationConfig::default());
@@ -3033,6 +3388,228 @@ mod cast_codegen_tests {
         let union_alignment = codegen.llvm_type_align(&union_type).unwrap();
         let wide_integer_alignment = codegen.llvm_type_align(&Type::S64).unwrap();
         assert!(union_alignment >= wide_integer_alignment);
+    }
+
+    #[test]
+    fn record_literal_generates_valid_llvm() {
+        let context = Context::create();
+        let target_machine = test_target_machine();
+        let mut codegen = Codegen::new(&context, "record_literal", &target_machine);
+        codegen.type_aliases = Checker::standard_type_aliases()
+            .into_iter()
+            .map(|alias| (alias.name, alias.target))
+            .collect();
+        let record_type = Checker::record_type();
+        let function_type = codegen.llvm_type(&record_type).unwrap().fn_type(&[], false);
+        let function = codegen.module.add_function("run", function_type, None);
+        let entry = context.append_basic_block(function, "entry");
+        codegen.builder.position_at_end(entry);
+
+        let result = codegen
+            .codegen_record_literal(&[
+                StructFieldInit {
+                    name: "answer".to_string(),
+                    value: Expression::Integer(42),
+                },
+                StructFieldInit {
+                    name: "label".to_string(),
+                    value: Expression::String(b"ready".to_vec()),
+                },
+            ])
+            .unwrap();
+        let result_value = codegen.binding_basic_value(&result).unwrap();
+        codegen.builder.build_return(Some(&result_value)).unwrap();
+
+        assert!(codegen.module.verify().is_ok());
+    }
+
+    #[test]
+    fn main_can_reference_later_global_record() {
+        let context = Context::create();
+        let target_machine = test_target_machine();
+        let codegen = Codegen::new(&context, "forward_global_record", &target_machine);
+        let program = Program {
+            variables: Vec::new(),
+            extern_functions: Vec::new(),
+            definitions: vec![
+                Definition {
+                    name: "main".to_string(),
+                    value: Expression::Block {
+                        signature: None,
+                        body: vec![Statement::Discard(Expression::Identifier(
+                            "my_data".to_string(),
+                        ))],
+                    },
+                },
+                Definition {
+                    name: "my_data".to_string(),
+                    value: Expression::Record(vec![StructFieldInit {
+                        name: "answer".to_string(),
+                        value: Expression::Integer(42),
+                    }]),
+                },
+            ],
+            type_aliases: Checker::standard_type_aliases(),
+        };
+
+        let module = codegen.generate(&program).unwrap();
+        assert!(module.verify().is_ok());
+    }
+
+    #[test]
+    fn pointer_index_load_and_address_generate_valid_llvm() {
+        let context = Context::create();
+        let target_machine = test_target_machine();
+        let mut codegen = Codegen::new(&context, "pointer_index", &target_machine);
+        let pointer_type = Type::Pointer {
+            element: Box::new(Type::S32),
+        };
+        let llvm_pointer_type = codegen.llvm_type(&pointer_type).unwrap();
+
+        let load_function_type = codegen
+            .context
+            .i32_type()
+            .fn_type(&[llvm_pointer_type.into()], false);
+        let load_function = codegen
+            .module
+            .add_function("load_index", load_function_type, None);
+        let load_entry = context.append_basic_block(load_function, "entry");
+        codegen.builder.position_at_end(load_entry);
+        let load_param = load_function.get_nth_param(0).unwrap();
+        load_param.set_name("p");
+        let pointer_storage = codegen
+            .builder
+            .build_alloca(llvm_pointer_type, "p.addr")
+            .unwrap();
+        codegen
+            .builder
+            .build_store(pointer_storage, load_param)
+            .unwrap();
+        codegen.local_scopes.push(HashMap::from([(
+            "p".to_string(),
+            LocalVar {
+                ty: pointer_type.clone(),
+                alloca: pointer_storage,
+            },
+        )]));
+        let loaded = codegen
+            .codegen_index(
+                &Expression::Identifier("p".to_string()),
+                &Expression::Integer(0),
+            )
+            .unwrap();
+        let loaded_value = codegen.binding_basic_value(&loaded).unwrap();
+        codegen.builder.build_return(Some(&loaded_value)).unwrap();
+        codegen.local_scopes.pop();
+
+        let address_function_type = llvm_pointer_type.fn_type(&[llvm_pointer_type.into()], false);
+        let address_function =
+            codegen
+                .module
+                .add_function("address_index", address_function_type, None);
+        let address_entry = context.append_basic_block(address_function, "entry");
+        codegen.builder.position_at_end(address_entry);
+        let address_param = address_function.get_nth_param(0).unwrap();
+        address_param.set_name("p");
+        let pointer_storage = codegen
+            .builder
+            .build_alloca(llvm_pointer_type, "p.addr")
+            .unwrap();
+        codegen
+            .builder
+            .build_store(pointer_storage, address_param)
+            .unwrap();
+        codegen.local_scopes.push(HashMap::from([(
+            "p".to_string(),
+            LocalVar {
+                ty: pointer_type,
+                alloca: pointer_storage,
+            },
+        )]));
+        let address = codegen
+            .codegen_address_of(&Expression::Index {
+                expression: Box::new(Expression::Identifier("p".to_string())),
+                index: Box::new(Expression::Integer(0)),
+            })
+            .unwrap();
+        let address_value = codegen.binding_basic_value(&address).unwrap();
+        codegen.builder.build_return(Some(&address_value)).unwrap();
+
+        assert!(codegen.module.verify().is_ok());
+    }
+
+    #[test]
+    fn pointer_dereference_and_address_generate_valid_llvm() {
+        let context = Context::create();
+        let target_machine = test_target_machine();
+        let mut codegen = Codegen::new(&context, "pointer_dereference", &target_machine);
+        let pointer_type = Type::Pointer {
+            element: Box::new(Type::S32),
+        };
+        let llvm_pointer_type = codegen.llvm_type(&pointer_type).unwrap();
+        let function_type = context
+            .i32_type()
+            .fn_type(&[llvm_pointer_type.into()], false);
+        let function = codegen.module.add_function("load", function_type, None);
+        let entry = context.append_basic_block(function, "entry");
+        codegen.builder.position_at_end(entry);
+        let parameter = function.get_nth_param(0).unwrap();
+        let pointer_storage = codegen
+            .builder
+            .build_alloca(llvm_pointer_type, "pointer.addr")
+            .unwrap();
+        codegen
+            .builder
+            .build_store(pointer_storage, parameter)
+            .unwrap();
+        codegen.local_scopes.push(HashMap::from([(
+            "pointer".to_string(),
+            LocalVar {
+                ty: pointer_type.clone(),
+                alloca: pointer_storage,
+            },
+        )]));
+        let dereferenced = codegen
+            .codegen_dereference(&Expression::Identifier("pointer".to_string()))
+            .unwrap();
+        let dereferenced_value = codegen.binding_basic_value(&dereferenced).unwrap();
+        codegen
+            .builder
+            .build_return(Some(&dereferenced_value))
+            .unwrap();
+        codegen.local_scopes.pop();
+
+        let address_function_type = llvm_pointer_type.fn_type(&[llvm_pointer_type.into()], false);
+        let address_function = codegen
+            .module
+            .add_function("address", address_function_type, None);
+        let address_entry = context.append_basic_block(address_function, "entry");
+        codegen.builder.position_at_end(address_entry);
+        let parameter = address_function.get_nth_param(0).unwrap();
+        let pointer_storage = codegen
+            .builder
+            .build_alloca(llvm_pointer_type, "pointer.addr")
+            .unwrap();
+        codegen
+            .builder
+            .build_store(pointer_storage, parameter)
+            .unwrap();
+        codegen.local_scopes.push(HashMap::from([(
+            "pointer".to_string(),
+            LocalVar {
+                ty: pointer_type,
+                alloca: pointer_storage,
+            },
+        )]));
+        let address = codegen
+            .codegen_address_of(&Expression::Dereference(Box::new(Expression::Identifier(
+                "pointer".to_string(),
+            ))))
+            .unwrap();
+        let address_value = codegen.binding_basic_value(&address).unwrap();
+        codegen.builder.build_return(Some(&address_value)).unwrap();
+
+        assert!(codegen.module.verify().is_ok());
     }
 
     #[test]

@@ -189,6 +189,7 @@ pub enum Expression {
     Identifier(String),
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
+    Record(Vec<StructFieldInit>),
     Signature(Signature),
     Unary {
         operator: UnaryOperator,
@@ -221,6 +222,7 @@ pub enum Expression {
         field: String,
     },
     AddressOf(Box<Expression>),
+    Dereference(Box<Expression>),
     Block {
         signature: Option<Signature>,
         body: Vec<Statement>,
@@ -329,6 +331,7 @@ pub struct Program {
     pub variables: Vec<Variable>,
     pub extern_functions: Vec<ExternalFunction>,
     pub definitions: Vec<Definition>,
+    pub type_aliases: Vec<TypeAlias>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,6 +376,8 @@ pub enum Token {
     Slash,
     Percent,
     Ampersand,
+    Caret,
+    Hash,
     Equal,
     NotEqual,
     Less,
@@ -480,7 +485,7 @@ impl Lexer {
                     tokens.push(self.lex_integer()?);
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
-                    tokens.push(self.lex_identifier());
+                    tokens.push(self.lex_identifier(&tokens));
                 }
                 '"' => {
                     tokens.push(self.lex_string()?);
@@ -518,6 +523,14 @@ impl Lexer {
                 '&' => {
                     self.position += 1;
                     tokens.push(Token::Ampersand);
+                }
+                '^' => {
+                    self.position += 1;
+                    tokens.push(Token::Caret);
+                }
+                '#' => {
+                    self.position += 1;
+                    tokens.push(Token::Hash);
                 }
                 '.' => {
                     self.position += 1;
@@ -689,7 +702,7 @@ impl Lexer {
         Ok(Token::Atom(name))
     }
 
-    fn lex_identifier(&mut self) -> Token {
+    fn lex_identifier(&mut self, previous_tokens: &[Token]) -> Token {
         let start = self.position;
 
         while self.position < self.chars.len() {
@@ -703,8 +716,20 @@ impl Lexer {
 
         let text: String = self.chars[start..self.position].iter().collect();
 
+        let is_after_at = previous_tokens
+            .iter()
+            .rev()
+            .find(|t| !matches!(t, Token::Newline))
+            == Some(&Token::At);
+
         match text.as_str() {
-            "val" => Token::Val,
+            "val" => {
+                if is_after_at {
+                    Token::Val
+                } else {
+                    Token::Identifier(text)
+                }
+            }
             "var" => Token::Var,
             "do" => Token::Do,
             "done" => Token::Done,
@@ -878,6 +903,10 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            Token::Val => {
+                self.advance();
+                Ok("val".to_string())
+            }
             token => Err(format!("expected identifier, found {:?}", token)),
         }
     }
@@ -984,6 +1013,14 @@ impl Parser {
             Token::TypeSSize => {
                 self.advance();
                 Ok("ssize".to_string())
+            }
+            Token::Not => {
+                self.advance();
+                Ok("not".to_string())
+            }
+            Token::DoTimes => {
+                self.advance();
+                Ok("dotimes".to_string())
             }
             Token::TypeBool => {
                 self.advance();
@@ -1299,11 +1336,29 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.advance();
-                    let field = self.expect_identifier()?;
+                    let field = self.expect_field_name()?;
                     expression = Expression::Member {
                         expression: Box::new(expression),
                         field,
                     };
+                }
+                Token::Caret => {
+                    self.advance();
+                    expression = Expression::Dereference(Box::new(expression));
+                }
+                Token::Hash => {
+                    if !matches!(expression, Expression::Struct(_)) {
+                        return Err("'#record' can only follow a struct literal".to_string());
+                    }
+                    self.advance();
+                    let name = self.expect_identifier()?;
+                    if name != "record" {
+                        return Err(format!("expected 'record' after '#', found '{}'", name));
+                    }
+                    let Expression::Struct(fields) = expression else {
+                        unreachable!();
+                    };
+                    expression = Expression::Record(fields);
                 }
                 Token::Backtick => {
                     self.advance();
@@ -1416,6 +1471,10 @@ impl Parser {
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Expression::Identifier(name))
+            }
+            Token::Val => {
+                self.advance();
+                Ok(Expression::Identifier("val".to_string()))
             }
             Token::LParen => {
                 self.advance();
@@ -1811,6 +1870,10 @@ impl Parser {
                 self.advance();
                 Ok(Type::Alias(name))
             }
+            Token::Val => {
+                self.advance();
+                Ok(Type::Alias("val".to_string()))
+            }
             Token::Atom(name) => {
                 self.advance();
                 Ok(Type::Atom(name))
@@ -2014,5 +2077,85 @@ mod span_tests {
             let mut parser = Parser::new_with_spans(tokens, spans);
             assert_eq!(parser.parse_type().unwrap(), expected);
         }
+    }
+
+    #[test]
+    fn parser_transforms_struct_literal_with_record_suffix() {
+        let (tokens, spans) =
+            Lexer::new_with_file("(@answer 42) #record".to_string(), "sample.zzz")
+                .tokenize_with_spans()
+                .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let expression = parser.parse_expression().unwrap();
+        let Expression::Spanned { expression, .. } = expression else {
+            panic!("expected spanned expression");
+        };
+        let Expression::Record(fields) = *expression else {
+            panic!("expected record expression");
+        };
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "answer");
+    }
+
+    #[test]
+    fn parser_accepts_postfix_pointer_dereference() {
+        let (tokens, spans) = Lexer::new_with_file("pointer^".to_string(), "sample.zzz")
+            .tokenize_with_spans()
+            .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let expression = parser.parse_expression().unwrap();
+        let Expression::Spanned { expression, .. } = expression else {
+            panic!("expected spanned expression");
+        };
+        assert!(matches!(*expression, Expression::Dereference(_)));
+    }
+
+    #[test]
+    fn parser_accepts_keyword_as_member_name() {
+        let (tokens, spans) = Lexer::new_with_file("header.val".to_string(), "sample.zzz")
+            .tokenize_with_spans()
+            .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let expression = parser.parse_expression().unwrap();
+        let Expression::Spanned { expression, .. } = expression else {
+            panic!("expected spanned expression");
+        };
+        assert!(matches!(
+            *expression,
+            Expression::Member { ref field, .. } if field == "val"
+        ));
+    }
+
+    #[test]
+    fn named_type_fields_require_colon_colon_without_at() {
+        let (tokens, spans) = Lexer::new_with_file(
+            "@type Record\n*(\n    len :: usize\n)\n".to_string(),
+            "sample.zzz",
+        )
+        .tokenize_with_spans()
+        .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        assert!(parser.parse_file_declarations("sample.zzz").is_ok());
+
+        let (tokens, spans) = Lexer::new_with_file(
+            "@type Record\n*(\n    @len :: usize\n)\n".to_string(),
+            "sample.zzz",
+        )
+        .tokenize_with_spans()
+        .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        assert!(parser.parse_file_declarations("sample.zzz").is_err());
+    }
+
+    #[test]
+    fn parser_allows_val_as_variable_name() {
+        let (tokens, spans) =
+            Lexer::new_with_file("header.val -> val\nval[0]\n".to_string(), "sample.zzz")
+                .tokenize_with_spans()
+                .unwrap();
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        assert!(parser.parse_statement().is_ok());
+        assert!(parser.parse_statement().is_ok());
     }
 }

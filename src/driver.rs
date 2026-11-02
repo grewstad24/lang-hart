@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,16 +13,29 @@ use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
     Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
-    Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type,
+    Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type, TypeAlias,
     format_error,
 };
 
 pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
+    if let Some(snore_home) = env::var_os("SNORE_HOME") {
+        return Some(PathBuf::from(snore_home));
+    }
+    let default_home = env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".snore"))
+        .map(|home| PathBuf::from(home).join(".snore"));
+    if let Some(ref path) = default_home {
+        if path.is_dir() {
+            return default_home;
+        }
+    }
+    let tmp_snore = PathBuf::from("/tmp/.snore");
+    if tmp_snore.is_dir() {
+        return Some(tmp_snore);
+    }
+    default_home
 }
 
 fn get_musl_lib_dir() -> Result<PathBuf, String> {
@@ -246,6 +259,16 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Struct(resolved))
         }
+        Expression::Record(fields) => {
+            let mut resolved = Vec::with_capacity(fields.len());
+            for field in fields {
+                resolved.push(StructFieldInit {
+                    name: field.name.clone(),
+                    value: canonicalize_expression(&field.value, checker)?,
+                });
+            }
+            Ok(Expression::Record(resolved))
+        }
         Expression::Signature(sig) => {
             Ok(Expression::Signature(canonicalize_signature(sig, checker)?))
         }
@@ -296,6 +319,9 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::AddressOf(e) => Ok(Expression::AddressOf(Box::new(canonicalize_expression(
             e, checker,
         )?))),
+        Expression::Dereference(e) => Ok(Expression::Dereference(Box::new(
+            canonicalize_expression(e, checker)?,
+        ))),
         Expression::Block { signature, body } => {
             let resolved_sig = match signature {
                 Some(sig) => Some(canonicalize_signature(sig, checker)?),
@@ -378,6 +404,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
     let mut compiled_definitions: Vec<Definition> = Vec::new();
     let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
+    let mut compiled_aliases: HashMap<String, TypeAlias> = HashMap::new();
     let mut seen_extern_names: HashSet<String> = HashSet::new();
     let mut seen_def_names: HashSet<String> = HashSet::new();
     let mut has_main = false;
@@ -386,6 +413,11 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         let checker = Checker::new(scope);
 
         for file in &module.source_files {
+            for alias in &file.type_aliases {
+                compiled_aliases.entry(alias.name.clone()).or_insert_with(|| {
+                    alias.clone()
+                });
+            }
             for def in &file.definitions {
                 let resolved_value = canonicalize_expression(&def.value, &checker)?;
 
@@ -436,6 +468,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         variables: Vec::new(),
         extern_functions: compiled_externs,
         definitions: compiled_definitions,
+        type_aliases: compiled_aliases.into_values().collect(),
     };
 
     Target::initialize_all(&InitializationConfig::default());

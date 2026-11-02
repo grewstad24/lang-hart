@@ -15,7 +15,7 @@ fn expression_span(expression: &Expression) -> Option<&Span> {
 
 #[cfg(test)]
 mod cast_tests {
-    use super::{Checker, ModuleScope};
+    use super::{Checker, ModuleScope, SymbolProvenance};
     use crate::syntax::{Lexer, Parser, SourceFile, StructFieldType, Type};
 
     fn nested_type(sum: Type) -> Type {
@@ -116,7 +116,25 @@ mod cast_tests {
             definitions,
             type_aliases,
         };
-        let scope = ModuleScope::new("flow".to_string());
+        let mut scope = ModuleScope::new("flow".to_string());
+        for alias in Checker::standard_type_aliases() {
+            scope.type_aliases.insert(
+                alias.name.clone(),
+                SymbolProvenance {
+                    item: alias,
+                    originating_file: "<std>".to_string(),
+                },
+            );
+        }
+        for alias in &file.type_aliases {
+            scope.type_aliases.insert(
+                alias.name.clone(),
+                SymbolProvenance {
+                    item: alias.clone(),
+                    originating_file: "flow.zzz".to_string(),
+                },
+            );
+        }
         Checker::new(&scope).check_file(&mut file)
     }
 
@@ -164,6 +182,44 @@ mod cast_tests {
         .unwrap_err();
 
         assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn pointer_index_expression_has_pointee_type() {
+        check_source("@main\ndo (ptr :: *s32) to s32\n    return ptr[0]\ndone\n").unwrap();
+    }
+
+    #[test]
+    fn record_literal_has_canonical_record_pointer_type() {
+        check_source("@main\ndo to s32\n    (@answer 42) #record -> item\n    return 0\ndone\n")
+            .unwrap();
+    }
+
+    #[test]
+    fn record_rejects_non_generic_field_types() {
+        let error = check_source(
+            "@main\ndo to s32\n    (@bad :not_generic) #record -> item\n    return 0\ndone\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("record field '@bad' has unsupported value type"));
+    }
+
+    #[test]
+    fn pointer_dereference_reads_pointee_type() {
+        check_source("@main\ndo (ptr :: *s32) to s32\n    return ptr^\ndone\n").unwrap();
+    }
+
+    #[test]
+    fn address_of_pointer_dereference_preserves_pointer_type() {
+        check_source("@main\ndo (ptr :: *s32) to *s32\n    return &ptr^\ndone\n").unwrap();
+    }
+
+    #[test]
+    fn dereference_rejects_non_pointer_type() {
+        let error = check_source("@main\ndo to s32\n    return 1^\ndone\n").unwrap_err();
+
+        assert!(error.contains("cannot dereference non-pointer type"));
     }
 }
 
@@ -544,6 +600,91 @@ pub struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
+    pub fn generic_type() -> Type {
+        Type::Alias("Generic".to_string())
+    }
+
+    pub fn record_type() -> Type {
+        Type::Alias("Record".to_string())
+    }
+
+    pub fn standard_type_aliases() -> Vec<TypeAlias> {
+        vec![
+            TypeAlias {
+                name: "String".to_string(),
+                target: Type::Slice {
+                    element: Box::new(Type::U8),
+                },
+                span: Span {
+                    file: "<std>".to_string(),
+                    line: 0,
+                    col: 0,
+                },
+            },
+            TypeAlias {
+                name: "Integer".to_string(),
+                target: Type::Union(vec![
+                    Type::U16,
+                    Type::U32,
+                    Type::U64,
+                    Type::S16,
+                    Type::S32,
+                    Type::S64,
+                ]),
+                span: Span {
+                    file: "<std>".to_string(),
+                    line: 0,
+                    col: 0,
+                },
+            },
+            TypeAlias {
+                name: "Record".to_string(),
+                target: Type::Pointer {
+                    element: Box::new(Type::Struct(vec![
+                        StructFieldType {
+                            name: "len".to_string(),
+                            ty: Type::USize,
+                        },
+                        StructFieldType {
+                            name: "key".to_string(),
+                            ty: Type::Pointer {
+                                element: Box::new(Type::Alias("String".to_string())),
+                            },
+                        },
+                        StructFieldType {
+                            name: "val".to_string(),
+                            ty: Type::Pointer {
+                                element: Box::new(Type::Alias("Generic".to_string())),
+                            },
+                        },
+                    ])),
+                },
+                span: Span {
+                    file: "<std>".to_string(),
+                    line: 0,
+                    col: 0,
+                },
+            },
+            TypeAlias {
+                name: "Generic".to_string(),
+                target: Type::Union(vec![
+                    Type::Alias("Integer".to_string()),
+                    Type::Alias("String".to_string()),
+                    Type::Bool,
+                    Type::Alias("Record".to_string()),
+                    Type::Slice {
+                        element: Box::new(Type::Alias("Generic".to_string())),
+                    },
+                ]),
+                span: Span {
+                    file: "<std>".to_string(),
+                    line: 0,
+                    col: 0,
+                },
+            },
+        ]
+    }
+
     pub fn new(scope: &'a ModuleScope) -> Self {
         let mut checker = Self {
             scope,
@@ -629,22 +770,30 @@ impl<'a> Checker<'a> {
 
     pub fn resolve_type(&self, ty: &Type) -> Result<Type, String> {
         let mut visited = HashSet::new();
-        self.resolve_type_inner(ty, &mut visited)
+        self.resolve_type_inner(ty, &mut visited, false)
     }
 
-    fn resolve_type_inner(&self, ty: &Type, visited: &mut HashSet<String>) -> Result<Type, String> {
+    fn resolve_type_inner(
+        &self,
+        ty: &Type,
+        visited: &mut HashSet<String>,
+        indirect: bool,
+    ) -> Result<Type, String> {
         match ty {
             Type::Alias(name) => {
+                if indirect {
+                    return Ok(Type::Alias(name.clone()));
+                }
                 if !visited.insert(name.clone()) {
                     return Err(format!(
-                        "in '{}': recursive cycle in type alias '{}'",
+                        "in '{}': recursive type alias '{}' has an infinitely-sized by-value cycle",
                         self.current_file_path, name
                     ));
                 }
                 let alias = self.scope.lookup_type_alias(name).ok_or_else(|| {
                     format!("in '{}': unknown type '{}'", self.current_file_path, name)
                 })?;
-                let resolved = self.resolve_type_inner(&alias.target, visited)?;
+                let resolved = self.resolve_type_inner(&alias.target, visited, indirect)?;
                 visited.remove(name);
                 Ok(resolved)
             }
@@ -654,21 +803,21 @@ impl<'a> Checker<'a> {
                     .map(|f| {
                         Ok(StructFieldType {
                             name: f.name.clone(),
-                            ty: self.resolve_type_inner(&f.ty, visited)?,
+                            ty: self.resolve_type_inner(&f.ty, visited, indirect)?,
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(Type::Struct(resolved_fields))
             }
             Type::Pointer { element } => Ok(Type::Pointer {
-                element: Box::new(self.resolve_type_inner(element, visited)?),
+                element: Box::new(self.resolve_type_inner(element, visited, true)?),
             }),
             Type::Array { element, size } => Ok(Type::Array {
-                element: Box::new(self.resolve_type_inner(element, visited)?),
+                element: Box::new(self.resolve_type_inner(element, visited, indirect)?),
                 size: *size,
             }),
             Type::Slice { element } => Ok(Type::Slice {
-                element: Box::new(self.resolve_type_inner(element, visited)?),
+                element: Box::new(self.resolve_type_inner(element, visited, true)?),
             }),
             Type::Function {
                 parameters,
@@ -677,9 +826,9 @@ impl<'a> Checker<'a> {
             } => {
                 let params = parameters
                     .iter()
-                    .map(|p| self.resolve_type_inner(p, visited))
+                    .map(|p| self.resolve_type_inner(p, visited, true))
                     .collect::<Result<Vec<_>, _>>()?;
-                let ret = self.resolve_type_inner(return_type, visited)?;
+                let ret = self.resolve_type_inner(return_type, visited, true)?;
                 Ok(Type::Function {
                     parameters: params,
                     return_type: Box::new(ret),
@@ -689,7 +838,7 @@ impl<'a> Checker<'a> {
             Type::Union(variants) => {
                 let mut flat = Vec::new();
                 for v in variants {
-                    let resolved = self.resolve_type_inner(v, visited)?;
+                    let resolved = self.resolve_type_inner(v, visited, indirect)?;
                     if let Type::Union(inner) = resolved {
                         flat.extend(inner);
                     } else {
@@ -772,7 +921,11 @@ impl<'a> Checker<'a> {
             return Ok(res_actual);
         }
 
-        if Self::types_compatible(&res_actual, &res_expected) {
+        if Self::types_compatible_with_aliases(
+            &res_actual,
+            &res_expected,
+            &self.alias_targets(),
+        ) {
             let orig = std::mem::replace(expr, Expression::Boolean(false));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
@@ -821,8 +974,9 @@ impl<'a> Checker<'a> {
         self.current_file_path = file.file_path.clone();
 
         for alias in &mut file.type_aliases {
+            let mut visited = HashSet::from([alias.name.clone()]);
             alias.target = self
-                .resolve_type(&alias.target)
+                .resolve_type_inner(&alias.target, &mut visited, false)
                 .map_err(|error| format_error(&alias.span, &error))?;
         }
 
@@ -1059,6 +1213,30 @@ impl<'a> Checker<'a> {
                 }
 
                 Ok(Type::Struct(struct_fields))
+            }
+
+            Expression::Record(fields) => {
+                let generic_type = self.resolve_type(&Self::generic_type())?;
+                for field in fields {
+                    let field_type = self.type_of_expression(&mut field.value)?;
+                    let resolved_field_type = self.resolve_type(&field_type)?;
+                    let coerced_type = self.coerce_expression_to_type(
+                        &mut field.value,
+                        &resolved_field_type,
+                        &generic_type,
+                    )?;
+                    if !Self::types_compatible_with_aliases(
+                        &coerced_type,
+                        &generic_type,
+                        &self.alias_targets(),
+                    ) {
+                        return Err(format!(
+                            "in '{}': record field '@{}' has unsupported value type {:?}",
+                            self.current_file_path, field.name, resolved_field_type
+                        ));
+                    }
+                }
+                self.resolve_type(&Self::record_type())
             }
 
             Expression::Identifier(name) => {
@@ -1473,7 +1651,11 @@ impl<'a> Checker<'a> {
                 let source_type = self.resolve_type(&raw_source)?;
                 let resolved_target = self.resolve_type(ty)?;
                 *ty = resolved_target.clone();
-                if !Self::is_supported_cast(&source_type, &resolved_target) {
+                if !Self::is_supported_cast_with_aliases(
+                    &source_type,
+                    &resolved_target,
+                    &self.alias_targets(),
+                ) {
                     return Err(format!(
                         "in '{}': unsupported cast from {:?} to {:?}",
                         self.current_file_path, source_type, resolved_target
@@ -1554,8 +1736,20 @@ impl<'a> Checker<'a> {
                 match expression_type {
                     Type::Array { element, .. } => Ok(*element),
                     Type::Slice { element } => Ok(*element),
+                    Type::Pointer { element } => Ok(*element),
                     other => Err(format!(
                         "in '{}': cannot index value of type {:?}",
+                        self.current_file_path, other
+                    )),
+                }
+            }
+
+            Expression::Dereference(expression) => {
+                let raw_pointer_type = self.type_of_expression(expression)?;
+                match self.resolve_type(&raw_pointer_type)? {
+                    Type::Pointer { element } => Ok(*element),
+                    other => Err(format!(
+                        "in '{}': cannot dereference non-pointer type {:?}",
                         self.current_file_path, other
                     )),
                 }
@@ -1599,12 +1793,22 @@ impl<'a> Checker<'a> {
                 }
             }
 
-            Expression::AddressOf(expression) => match expression.as_ref() {
+            Expression::AddressOf(expression) => match expression.as_mut() {
                 Expression::Index { .. } => {
                     let element_type = self.type_of_expression(expression)?;
                     Ok(Type::Pointer {
                         element: Box::new(element_type),
                     })
+                }
+                Expression::Dereference(pointer_expression) => {
+                    let pointer_type = self.type_of_expression(pointer_expression)?;
+                    match self.resolve_type(&pointer_type)? {
+                        Type::Pointer { .. } => Ok(pointer_type),
+                        other => Err(format!(
+                            "in '{}': cannot take address of dereference of {:?}",
+                            self.current_file_path, other
+                        )),
+                    }
                 }
                 Expression::Identifier(name) => {
                     if let Some(info) = self.lookup_binding(name) {
@@ -1633,12 +1837,67 @@ impl<'a> Checker<'a> {
     pub fn are_types_compatible(&self, provided: &Type, expected: &Type) -> Result<bool, String> {
         let res_prov = self.resolve_type(provided)?;
         let res_exp = self.resolve_type(expected)?;
-        Ok(Self::types_compatible(&res_prov, &res_exp))
+        Ok(Self::types_compatible_with_aliases(
+            &res_prov,
+            &res_exp,
+            &self.alias_targets(),
+        ))
     }
 
     pub fn types_compatible(provided: &Type, expected: &Type) -> bool {
+        Self::types_compatible_with_aliases(provided, expected, &HashMap::new())
+    }
+
+    fn alias_targets(&self) -> HashMap<String, Type> {
+        self.scope
+            .type_aliases
+            .iter()
+            .map(|(name, provenance)| (name.clone(), provenance.item.target.clone()))
+            .collect()
+    }
+
+    pub fn types_compatible_with_aliases(
+        provided: &Type,
+        expected: &Type,
+        aliases: &HashMap<String, Type>,
+    ) -> bool {
+        fn compatible(
+            provided: &Type,
+            expected: &Type,
+            aliases: &HashMap<String, Type>,
+            visited: &mut HashSet<(String, String)>,
+        ) -> bool {
         if provided == expected {
             return true;
+        }
+
+        if matches!(provided, Type::Alias(_)) || matches!(expected, Type::Alias(_)) {
+            let pair = (
+                Checker::canonical_type_key(provided),
+                Checker::canonical_type_key(expected),
+            );
+            if !visited.insert(pair.clone()) {
+                return true;
+            }
+            let result = match (provided, expected) {
+                (Type::Alias(left), Type::Alias(right)) => match (aliases.get(left), aliases.get(right)) {
+                    (Some(left_type), Some(right_type)) => {
+                        compatible(left_type, right_type, aliases, visited)
+                    }
+                    (Some(left_type), None) => compatible(left_type, expected, aliases, visited),
+                    (None, Some(right_type)) => compatible(provided, right_type, aliases, visited),
+                    (None, None) => false,
+                },
+                (Type::Alias(name), other) => aliases
+                    .get(name)
+                    .is_some_and(|alias_type| compatible(alias_type, other, aliases, visited)),
+                (other, Type::Alias(name)) => aliases
+                    .get(name)
+                    .is_some_and(|alias_type| compatible(other, alias_type, aliases, visited)),
+                _ => unreachable!(),
+            };
+            visited.remove(&pair);
+            return result;
         }
 
         if let Type::Union(expected_vars) = expected {
@@ -1649,7 +1908,7 @@ impl<'a> Checker<'a> {
             return provided_vars.iter().all(|variant| {
                 expected_vars
                     .iter()
-                    .filter(|target| Self::types_compatible(variant, target))
+                    .filter(|target| compatible(variant, target, aliases, visited))
                     .count()
                     == 1
             });
@@ -1661,14 +1920,14 @@ impl<'a> Checker<'a> {
                     return false;
                 }
                 for (f1, f2) in fields1.iter().zip(fields2.iter()) {
-                    if f1.name != f2.name || !Self::types_compatible(&f1.ty, &f2.ty) {
+                    if f1.name != f2.name || !compatible(&f1.ty, &f2.ty, aliases, visited) {
                         return false;
                     }
                 }
                 true
             }
             (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
-                Self::types_compatible(e1, e2)
+                compatible(e1, e2, aliases, visited)
             }
             (
                 Type::Array {
@@ -1679,9 +1938,9 @@ impl<'a> Checker<'a> {
                     element: e2,
                     size: s2,
                 },
-            ) => s1 == s2 && Self::types_compatible(e1, e2),
+            ) => s1 == s2 && compatible(e1, e2, aliases, visited),
             (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
-                Self::types_compatible(e1, e2)
+                compatible(e1, e2, aliases, visited)
             }
             (
                 Type::Function {
@@ -1700,11 +1959,14 @@ impl<'a> Checker<'a> {
                     && p1
                         .iter()
                         .zip(p2.iter())
-                        .all(|(a, b)| Self::types_compatible(a, b))
-                    && Self::types_compatible(r1, r2)
+                        .all(|(a, b)| compatible(a, b, aliases, visited))
+                    && compatible(r1, r2, aliases, visited)
             }
             _ => false,
         }
+        }
+
+        compatible(provided, expected, aliases, &mut HashSet::new())
     }
 
     fn statement_definitely_returns(stmt: &Statement) -> bool {
@@ -1936,8 +2198,51 @@ impl<'a> Checker<'a> {
     }
 
     pub fn is_supported_cast(source: &Type, target: &Type) -> bool {
+        Self::is_supported_cast_with_aliases(source, target, &HashMap::new())
+    }
+
+    pub fn is_supported_cast_with_aliases(
+        source: &Type,
+        target: &Type,
+        aliases: &HashMap<String, Type>,
+    ) -> bool {
+        fn supported(
+            source: &Type,
+            target: &Type,
+            aliases: &HashMap<String, Type>,
+            visited: &mut HashSet<(String, String)>,
+        ) -> bool {
         if source == target {
             return true;
+        }
+
+        if matches!(source, Type::Alias(_)) || matches!(target, Type::Alias(_)) {
+            let pair = (
+                Checker::canonical_type_key(source),
+                Checker::canonical_type_key(target),
+            );
+            if !visited.insert(pair.clone()) {
+                return true;
+            }
+            let result = match (source, target) {
+                (Type::Alias(left), Type::Alias(right)) => match (aliases.get(left), aliases.get(right)) {
+                    (Some(left_type), Some(right_type)) => {
+                        supported(left_type, right_type, aliases, visited)
+                    }
+                    (Some(left_type), None) => supported(left_type, target, aliases, visited),
+                    (None, Some(right_type)) => supported(source, right_type, aliases, visited),
+                    (None, None) => false,
+                },
+                (Type::Alias(name), other) => aliases
+                    .get(name)
+                    .is_some_and(|alias_type| supported(alias_type, other, aliases, visited)),
+                (other, Type::Alias(name)) => aliases
+                    .get(name)
+                    .is_some_and(|alias_type| supported(other, alias_type, aliases, visited)),
+                _ => unreachable!(),
+            };
+            visited.remove(&pair);
+            return result;
         }
 
         if let Type::Union(target_variants) = target {
@@ -1947,13 +2252,16 @@ impl<'a> Checker<'a> {
             };
             return source_variants
                 .iter()
-                .all(|source| Self::castable_union_variant(source, target_variants).is_some());
+                .all(|source| {
+                    Checker::castable_union_variant_with_aliases(source, target_variants, aliases)
+                        .is_some()
+                });
         }
 
         if let Type::Union(variants) = source {
             return variants
                 .iter()
-                .any(|variant| Self::is_supported_cast(variant, target));
+                .any(|variant| supported(variant, target, aliases, visited));
         }
 
         match (source, target) {
@@ -1964,7 +2272,7 @@ impl<'a> Checker<'a> {
                         .zip(target_fields)
                         .all(|(source, target)| {
                             source.name == target.name
-                                && Self::is_supported_cast(&source.ty, &target.ty)
+                                && supported(&source.ty, &target.ty, aliases, visited)
                         });
             }
             (
@@ -1978,13 +2286,13 @@ impl<'a> Checker<'a> {
                 },
             ) => {
                 return source_size == target_size
-                    && Self::is_supported_cast(source_element, target_element);
+                    && supported(source_element, target_element, aliases, visited);
             }
             (Type::Slice { element: source }, Type::Slice { element: target }) => {
-                return Self::is_supported_cast(source, target);
+                return supported(source, target, aliases, visited);
             }
             (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
-                return Self::types_compatible(source, target);
+                return Checker::types_compatible_with_aliases(source, target, aliases);
             }
             _ => {}
         }
@@ -1993,35 +2301,48 @@ impl<'a> Checker<'a> {
             return false;
         }
 
-        if (*source == Type::Bool && Self::is_integer_type(target))
-            || (Self::is_integer_type(source) && *target == Type::Bool)
+        if (*source == Type::Bool && Checker::is_integer_type(target))
+            || (Checker::is_integer_type(source) && *target == Type::Bool)
         {
             return true;
         }
 
         if (matches!(source, Type::Pointer { .. } | Type::Function { .. })
-            && Self::is_integer_type(target))
-            || (Self::is_integer_type(source)
+            && Checker::is_integer_type(target))
+            || (Checker::is_integer_type(source)
                 && matches!(target, Type::Pointer { .. } | Type::Function { .. }))
         {
             return true;
         }
 
-        if Self::is_integer_type(source) && Self::is_integer_type(target) {
+        if Checker::is_integer_type(source) && Checker::is_integer_type(target) {
             return true;
         }
 
         false
+        }
+
+        supported(source, target, aliases, &mut HashSet::new())
     }
 
     pub fn castable_union_variant(source: &Type, targets: &[Type]) -> Option<usize> {
+        Self::castable_union_variant_with_aliases(source, targets, &HashMap::new())
+    }
+
+    pub fn castable_union_variant_with_aliases(
+        source: &Type,
+        targets: &[Type],
+        aliases: &HashMap<String, Type>,
+    ) -> Option<usize> {
         if let Some(index) = targets.iter().position(|target| target == source) {
             return Some(index);
         }
         let implicit_matches: Vec<usize> = targets
             .iter()
             .enumerate()
-            .filter_map(|(index, target)| Self::types_compatible(source, target).then_some(index))
+            .filter_map(|(index, target)| {
+                Self::types_compatible_with_aliases(source, target, aliases).then_some(index)
+            })
             .collect();
         if implicit_matches.len() == 1 {
             return Some(implicit_matches[0]);
@@ -2032,7 +2353,9 @@ impl<'a> Checker<'a> {
         let matches: Vec<usize> = targets
             .iter()
             .enumerate()
-            .filter_map(|(index, target)| Self::is_supported_cast(source, target).then_some(index))
+            .filter_map(|(index, target)| {
+                Self::is_supported_cast_with_aliases(source, target, aliases).then_some(index)
+            })
             .collect();
         if matches.len() == 1 {
             Some(matches[0])

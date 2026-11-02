@@ -1,41 +1,17 @@
 @main
 do () to s32
-        10 -> x
-        20 as s16 -> y
-        30 as s64 -> z
-
-        println(x)
-        println(y)
-        println(z)
-
-        print(:nl)
-
-        (
-                @name "bob"
-                @details (
-                        @age 50
-                        @id "bob345"
-                )
-        ) `print_user()
+        print(my_data)
 
         return 0
 done
 
-@type User
+@val my_data
 (
-        name :: String
-        details :: (
-                age :: s32
-                id :: String
-        )
-)
-
-@val print_user
-do ( user :: User )
-        [
-                "Name: ",       user.name,              :nl,
-                "Details: ",                            :nl,
-                :t, "Age: ",    user.details.age,       :nl,
-                :t, "ID: ",     user.details.id,        :nl,
-        ] `print()
-done
+        @id "bob123"
+        @number 68
+        @valid true
+        @more (
+                @is_cool false
+                @friend "alice345"
+        )#record
+)#record
