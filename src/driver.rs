@@ -21,6 +21,26 @@ pub fn get_snore_home_dir() -> Option<PathBuf> {
         .map(|home| PathBuf::from(home).join(".snore"))
 }
 
+fn get_musl_lib_dir() -> Result<PathBuf, String> {
+    let snore_home = get_snore_home_dir()
+        .ok_or_else(|| "could not resolve snore home directory (~/.snore)".to_string())?;
+    let musl_lib = snore_home.join("musl").join("lib");
+
+    let required_artifacts = ["libc.a", "crt1.o", "crti.o", "crtn.o"];
+    for artifact in &required_artifacts {
+        let path = musl_lib.join(artifact);
+        if !path.exists() {
+            return Err(format!(
+                "missing required musl artifact '{}' at '{}'. Build and install musl into '~/.snore/musl' first.",
+                artifact,
+                path.display()
+            ));
+        }
+    }
+
+    Ok(musl_lib)
+}
+
 pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, String> {
     let mut modules = Vec::new();
     let mut visited_dirs = Vec::new();
@@ -434,8 +454,24 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         return Err(format!("failed to write LLVM IR: {}", err));
     }
 
+    let musl_lib = get_musl_lib_dir()?;
+    let musl_lib_str = musl_lib
+        .to_str()
+        .ok_or_else(|| "invalid UTF-8 in musl library path".to_string())?;
+
     let status = Command::new("clang")
-        .args(["-O3", "main.ll", "-o", "main"])
+        .args([
+            "--target=x86_64-unknown-linux-musl",
+            "-O3",
+            "-static",
+            "-B",
+            musl_lib_str,
+            "-L",
+            musl_lib_str,
+            "main.ll",
+            "-o",
+            "main",
+        ])
         .status()
         .map_err(|error| {
             let message = format!("failed to execute clang: {}", error);

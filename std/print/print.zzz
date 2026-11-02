@@ -7,7 +7,7 @@ do ( s :: []u8 )
 done
 
 @type Printable
-String | Integer | :nl
+String | Integer | :nl | :t
 
 @val print_int
 do ( num :: Integer )
@@ -24,6 +24,11 @@ done
 @val pr_nl
 do
         printf ("\n".ptr)
+done
+
+@val pr_tab
+do
+        printf ("\t".ptr)
 done
 
 @val printa_helper
@@ -47,6 +52,7 @@ do ( x :: Printable | []Printable )
                 String          => print_string(z)
                 Integer         => print_int(z)
                 :nl             => pr_nl()
+                :t              => pr_tab()
                 []Printable     => printa(z)
         over
 done
