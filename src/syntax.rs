@@ -1496,20 +1496,19 @@ impl Parser {
         self.skip_newlines();
 
         while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
-            self.expect(Token::At)?;
+            self.skip_newlines();
+            if self.is(closing_token.clone()) {
+                break;
+            }
+
             let name = self.expect_field_name()?;
+            self.skip_newlines();
+            self.expect(Token::ColonEqual)?;
             self.skip_newlines();
             let value = self.parse_expression()?;
             fields.push(StructFieldInit { name, value });
 
-            while self.is(Token::Comma) || self.is(Token::Newline) {
-                self.advance();
-            }
             self.skip_newlines();
-
-            if self.is(closing_token.clone()) {
-                break;
-            }
         }
 
         if closing_token != Token::Eof {
@@ -1559,11 +1558,6 @@ impl Parser {
                 self.advance();
                 self.skip_newlines();
 
-                if self.is_struct_literal_start() {
-                    let fields = self.parse_struct_fields(Token::RParen)?;
-                    return Ok(Expression::Struct(fields));
-                }
-
                 if self.is_signature_start() {
                     let sig = self.parse_signature_inner()?;
                     self.expect(Token::RParen)?;
@@ -1588,9 +1582,8 @@ impl Parser {
                         is_variadic,
                     }))
                 } else {
-                    let expr = self.parse_expression()?;
-                    self.expect(Token::RParen)?;
-                    Ok(expr)
+                    let fields = self.parse_struct_fields(Token::RParen)?;
+                    Ok(Expression::Struct(fields))
                 }
             }
             Token::LBracket => {

@@ -1,11 +1,11 @@
 fn main() -> s32
         (
-                @id "bob123"
-                @number 68
-                @valid true
-                @more (
-                        @is_cool false
-                        @friend "alice345"
+                id := "bob123"
+                number := 68
+                valid := true
+                more := (
+                        is_cool := false
+                        friend := "alice345"
                 )#record
         )#record `print()
 

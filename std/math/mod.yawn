@@ -1,8 +1,8 @@
-@export [
+export := [
         (
-                @symbol ["add", "sub", "div", "mul"]
-                @to []
+                symbol := ["add", "sub", "div", "mul"]
+                to := []
         )
 ]
 
-@import []
+import := []

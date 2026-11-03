@@ -1,8 +1,8 @@
-@export [
+export := [
         (
-                @symbol ["String", "Integer", "Record", "Generic"]
-                @to []
+                symbol := ["String", "Integer", "Record", "Generic"]
+                to := []
         )
 ]
 
-@import []
+import := []

@@ -1,12 +1,12 @@
-@export [
+export := [
         (
-                @symbol ["pr_nl", "pr_tab", "print_int", "print_string"]
-                @to ["print"]
+                symbol := ["pr_nl", "pr_tab", "print_int", "print_string"]
+                to := ["print"]
         )
         (
-                @symbol ["print", "println", "printr"]
-                @to []
+                symbol := ["print", "println", "printr"]
+                to := []
         )
 ]
 
-@import []
+import := []
