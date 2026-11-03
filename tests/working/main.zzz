@@ -1,13 +1,13 @@
 fn main() -> s32
-        (
+        @record (
                 id := "bob123"
                 number := 68
                 valid := true
                 more := (
                         is_cool := false
                         friend := "alice345"
-                )#record
-        )#record `print()
+                )
+        ) `print()
 
         return 0
 end

@@ -1425,20 +1425,7 @@ impl Parser {
                     self.advance();
                     expression = Expression::Dereference(Box::new(expression));
                 }
-                Token::Hash => {
-                    if !matches!(expression, Expression::Struct(_)) {
-                        return Err("'#record' can only follow a struct literal".to_string());
-                    }
-                    self.advance();
-                    let name = self.expect_identifier()?;
-                    if name != "record" {
-                        return Err(format!("expected 'record' after '#', found '{}'", name));
-                    }
-                    let Expression::Struct(fields) = expression else {
-                        unreachable!();
-                    };
-                    expression = Expression::Record(fields);
-                }
+
                 Token::Backtick => {
                     self.advance();
                     self.skip_newlines();
@@ -1488,42 +1475,47 @@ impl Parser {
         Ok(arguments)
     }
 
-    pub fn parse_struct_fields(
-        &mut self,
-        closing_token: Token,
-    ) -> Result<Vec<StructFieldInit>, String> {
-        let mut fields = Vec::new();
-        self.skip_newlines();
-
-        while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
-            self.skip_newlines();
-            if self.is(closing_token.clone()) {
-                break;
-            }
-
-            let name = self.expect_field_name()?;
-            self.skip_newlines();
-            self.expect(Token::ColonEqual)?;
-            self.skip_newlines();
-            let value = self.parse_expression()?;
-            fields.push(StructFieldInit { name, value });
-
-            self.skip_newlines();
-        }
-
-        if closing_token != Token::Eof {
-            self.expect(closing_token)?;
-        }
-        Ok(fields)
-    }
-
     fn is_struct_literal_start(&self) -> bool {
         let mut idx = self.cursor;
-        while idx < self.tokens.len() {
-            if self.tokens[idx] != Token::Newline {
-                return self.tokens[idx] == Token::At;
-            }
+        while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
             idx += 1;
+        }
+        if idx < self.tokens.len() {
+            match &self.tokens[idx] {
+                Token::Identifier(_)
+                | Token::To
+                | Token::Val
+                | Token::Var
+                | Token::Let
+                | Token::If
+                | Token::DoIf
+                | Token::Else
+                | Token::End
+                | Token::Match
+                | Token::With
+                | Token::Over
+                | Token::Return
+                | Token::As
+                | Token::Not
+                | Token::DoTimes
+                | Token::TypeS16
+                | Token::TypeS32
+                | Token::TypeS64
+                | Token::TypeU8
+                | Token::TypeU16
+                | Token::TypeU32
+                | Token::TypeU64
+                | Token::TypeUSize
+                | Token::TypeSSize
+                | Token::TypeBool => {
+                    idx += 1;
+                    while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
+                        idx += 1;
+                    }
+                    return idx < self.tokens.len() && self.tokens[idx] == Token::ColonEqual;
+                }
+                _ => {}
+            }
         }
         false
     }
@@ -1554,6 +1546,25 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Identifier("val".to_string()))
             }
+            Token::At => {
+                self.advance();
+                let tag = self.expect_identifier()?;
+                self.skip_newlines();
+                let is_record = tag == "record";
+                if tag != "record" && tag != "struct" {
+                    return Err(format!(
+                        "unknown struct tag '@{}', expected '@record' or '@struct'",
+                        tag
+                    ));
+                }
+                self.expect(Token::LParen)?;
+                let fields = self.parse_struct_fields(Token::RParen, is_record)?;
+                if is_record {
+                    Ok(Expression::Record(fields))
+                } else {
+                    Ok(Expression::Struct(fields))
+                }
+            }
             Token::LParen => {
                 self.advance();
                 self.skip_newlines();
@@ -1581,9 +1592,13 @@ impl Parser {
                         return_type,
                         is_variadic,
                     }))
-                } else {
-                    let fields = self.parse_struct_fields(Token::RParen)?;
+                } else if self.is_struct_literal_start() {
+                    let fields = self.parse_struct_fields(Token::RParen, false)?;
                     Ok(Expression::Struct(fields))
+                } else {
+                    let expr = self.parse_expression()?;
+                    self.expect(Token::RParen)?;
+                    Ok(expr)
                 }
             }
             Token::LBracket => {
@@ -1595,6 +1610,49 @@ impl Parser {
             Token::Match => self.parse_match_expression(),
             token => Err(format!("unexpected token in expression: {:?}", token)),
         }
+    }
+
+    pub fn parse_struct_fields(
+        &mut self,
+        closing_token: Token,
+        is_record: bool,
+    ) -> Result<Vec<StructFieldInit>, String> {
+        let mut fields = Vec::new();
+        self.skip_newlines();
+
+        while !self.is(closing_token.clone()) && !self.is(Token::Eof) {
+            self.skip_newlines();
+            if self.is(closing_token.clone()) {
+                break;
+            }
+
+            let name = self.expect_field_name()?;
+            self.skip_newlines();
+            self.expect(Token::ColonEqual)?;
+            self.skip_newlines();
+
+            let value = if self.is(Token::LParen) {
+                self.advance();
+                self.skip_newlines();
+                let inner_fields = self.parse_struct_fields(Token::RParen, is_record)?;
+                if is_record {
+                    Expression::Record(inner_fields)
+                } else {
+                    Expression::Struct(inner_fields)
+                }
+            } else {
+                self.parse_expression()?
+            };
+
+            fields.push(StructFieldInit { name, value });
+
+            self.skip_newlines();
+        }
+
+        if closing_token != Token::Eof {
+            self.expect(closing_token)?;
+        }
+        Ok(fields)
     }
 
     fn parse_match_expression(&mut self) -> Result<Expression, String> {

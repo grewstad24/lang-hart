@@ -19,7 +19,7 @@ impl ModConfig {
             Lexer::new_with_file(source.to_string(), file_path).tokenize_with_spans()?;
 
         let mut parser = Parser::new_with_spans(tokens, spans);
-        let parsed = parser.parse_struct_fields(Token::Eof);
+        let parsed = parser.parse_struct_fields(Token::Eof, false);
         let fields = parsed.map_err(|error| format_error(parser.current_span(), &error))?;
 
         let mut exports = Vec::new();
