@@ -383,7 +383,7 @@ pub enum Token {
     Pipe,
     At,
     Hash,
-    Backtick,
+    DotDot,
     FatArrow,
     Arrow,
     Underscore,
@@ -549,8 +549,13 @@ impl Lexer {
                     tokens.push(Token::Hash);
                 }
                 '.' => {
-                    self.position += 1;
-                    tokens.push(Token::Dot);
+                    if self.peek_char(1) == Some('.') {
+                        self.position += 2;
+                        tokens.push(Token::DotDot);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Dot);
+                    }
                 }
                 '|' => {
                     self.position += 1;
@@ -630,10 +635,6 @@ impl Lexer {
                 ']' => {
                     self.position += 1;
                     tokens.push(Token::RBracket);
-                }
-                '`' => {
-                    self.position += 1;
-                    tokens.push(Token::Backtick);
                 }
                 other => {
                     return Err(format!(
@@ -1386,7 +1387,7 @@ impl Parser {
         loop {
             if self.is(Token::Newline) {
                 match self.peek_non_newline() {
-                    Token::Dot | Token::Backtick | Token::As => {
+                    Token::Dot | Token::DotDot | Token::As => {
                         self.skip_newlines();
                     }
                     _ => break,
@@ -1415,18 +1416,18 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.advance();
-                    let field = self.expect_field_name()?;
-                    expression = Expression::Member {
-                        expression: Box::new(expression),
-                        field,
-                    };
+                    if self.is(Token::Star) {
+                        self.advance();
+                        expression = Expression::Dereference(Box::new(expression));
+                    } else {
+                        let field = self.expect_field_name()?;
+                        expression = Expression::Member {
+                            expression: Box::new(expression),
+                            field,
+                        };
+                    }
                 }
-                Token::Caret => {
-                    self.advance();
-                    expression = Expression::Dereference(Box::new(expression));
-                }
-
-                Token::Backtick => {
+                Token::DotDot => {
                     self.advance();
                     self.skip_newlines();
                     let method_name = self.expect_identifier()?;

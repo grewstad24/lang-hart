@@ -7,7 +7,7 @@ fn main() -> s32
                         is_cool := false
                         friend := "alice345"
                 )
-        ) `print()
+        ) ..print()
 
         return 0
 end

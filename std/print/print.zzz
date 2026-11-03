@@ -1,5 +1,4 @@
-@extern printf
-( ptr :: *u8 )++ -> s32
+extern fn printf( ptr :: *u8, ...) -> s32
 
 @type Printable
 String | Integer | :nl | :t | bool | []Printable | Record
@@ -57,16 +56,16 @@ end
 
 fn printr(r :: Record)
     var i := 0
-    let header := r^
+    let header := r.*
     let keys := header.key
     let values := header.val
 
     dotimes header.len => {
-        [ keys[i], " : " ] `print()
+        [ keys[i], " : " ] ..print()
 
         match values[i] with z
-            Record => [:nl, "(", :nl, z, ")", :nl] `print()
-            _      => [z, :nl] `print()
+            Record => [:nl, "(", :nl, z, ")", :nl] ..print()
+            _      => [z, :nl] ..print()
         over
 
         i := i + 1
