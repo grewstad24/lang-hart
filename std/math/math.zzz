@@ -1,19 +1,15 @@
-@val add
-do (a :: s32, b :: s32) to s32
-        return a + b
-done
+fn add(a :: s32, b :: s32) -> s32
+    return a + b
+end
 
-@val sub
-do (a :: s32, b :: s32) to s32
-        return a - b
-done
+fn sub(a :: s32, b :: s32) -> s32
+    return a - b
+end
 
-@val mul
-do (a :: s32, b :: s32) to s32
-        return a * b
-done
+fn mul(a :: s32, b :: s32) -> s32
+    return a * b
+end
 
-@val div
-do (a :: s32, b :: s32) to s32
-        return a / b
-done
+fn div(a :: s32, b :: s32) -> s32
+    return a / b
+end

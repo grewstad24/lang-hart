@@ -12,8 +12,8 @@ use crate::codegen::Codegen;
 use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, DoIfArm, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
-    Parameter, Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type, TypeAlias,
+    Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm, Parameter,
+    Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type, TypeAlias,
     format_error,
 };
 
@@ -196,9 +196,18 @@ fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Stateme
             name: name.clone(),
             ty: canonicalize_type(ty, checker)?,
         }),
-        Statement::Assign { expression, target } => Ok(Statement::Assign {
-            expression: canonicalize_expression(expression, checker)?,
+        Statement::Define {
+            name,
+            is_mutable,
+            value,
+        } => Ok(Statement::Define {
+            name: name.clone(),
+            is_mutable: *is_mutable,
+            value: canonicalize_expression(value, checker)?,
+        }),
+        Statement::Assign { target, value } => Ok(Statement::Assign {
             target: target.clone(),
+            value: canonicalize_expression(value, checker)?,
         }),
         Statement::DoTimes { count, body } => Ok(Statement::DoTimes {
             count: canonicalize_expression(count, checker)?,
@@ -216,7 +225,7 @@ fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Stateme
                     crate::syntax::IfCondition::Else => crate::syntax::IfCondition::Else,
                 };
                 let body = Box::new(canonicalize_statement(&arm.body, checker)?);
-                resolved_arms.push(DoIfArm {
+                resolved_arms.push(crate::syntax::DoIfArm {
                     condition: cond,
                     body,
                 });

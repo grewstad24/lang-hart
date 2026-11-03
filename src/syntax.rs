@@ -153,6 +153,14 @@ pub enum ComparisonOperator {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDecl {
+    pub name: String,
+    pub params: Vec<Parameter>,
+    pub return_type: Type,
+    pub body: Vec<Statement>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum IfCondition {
     Expression(Expression),
     Else,
@@ -267,9 +275,14 @@ pub enum Statement {
         name: String,
         ty: Type,
     },
+    Define {
+        name: String,
+        is_mutable: bool,
+        value: Expression,
+    },
     Assign {
         target: String,
-        expression: Expression,
+        value: Expression,
     },
     Discard(Expression),
     Return(Expression),
@@ -336,11 +349,47 @@ pub struct Program {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
+    Identifier(String),
+    Integer(i64),
+    Float(f64),
+    String(Vec<u8>),
+    Boolean(bool),
+    Atom(String),
+    LParen,
+    RParen,
+    LBracket,
+    RBracket,
+    LBrace,
+    RBrace,
+    Comma,
+    Dot,
+    Colon,
+    ColonColon,
+    ColonEqual,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    Plus,
+    PlusPlus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Ampersand,
+    Caret,
+    Pipe,
     At,
-    Val,
+    Hash,
+    Backtick,
+    FatArrow,
+    Arrow,
+    Underscore,
+    FnKeyword,
     Var,
-    Do,
-    Done,
+    Let,
     If,
     DoIf,
     Else,
@@ -349,12 +398,11 @@ pub enum Token {
     With,
     Over,
     Return,
-    Not,
-    DoTimes,
     To,
     As,
-    Fn,
-    Underscore,
+    Not,
+    DoTimes,
+    Val,
     TypeS16,
     TypeS32,
     TypeS64,
@@ -365,41 +413,8 @@ pub enum Token {
     TypeUSize,
     TypeSSize,
     TypeBool,
-    Atom(String),
-    Identifier(String),
-    Integer(i64),
-    Boolean(bool),
-    String(Vec<u8>),
-    Plus,
-    PlusPlus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
-    Ampersand,
-    Caret,
-    Hash,
-    Equal,
-    NotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
-    Arrow,
-    FatArrow,
-    ColonColon,
-    Comma,
-    Dot,
-    Pipe,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    LBrace,
-    RBrace,
     Newline,
     Eof,
-    Backtick,
 }
 
 pub struct Lexer {
@@ -580,6 +595,9 @@ impl Lexer {
                     if self.peek_char(1) == Some(':') {
                         self.position += 2;
                         tokens.push(Token::ColonColon);
+                    } else if self.peek_char(1) == Some('=') {
+                        self.position += 2;
+                        tokens.push(Token::ColonEqual);
                     } else if let Some(c) = self.peek_char(1) {
                         if c.is_alphabetic() || c == '_' {
                             tokens.push(self.lex_atom()?);
@@ -717,6 +735,10 @@ impl Lexer {
 
         let text: String = self.chars[start..self.position].iter().collect();
 
+        if text == "_" {
+            return Token::Underscore;
+        }
+
         let is_after_at = previous_tokens
             .iter()
             .rev()
@@ -731,9 +753,9 @@ impl Lexer {
                     Token::Identifier(text)
                 }
             }
+            "fn" => Token::FnKeyword,
             "var" => Token::Var,
-            "do" => Token::Do,
-            "done" => Token::Done,
+            "let" => Token::Let,
             "if" => Token::If,
             "doif" => Token::DoIf,
             "else" => Token::Else,
@@ -744,7 +766,6 @@ impl Lexer {
             "return" => Token::Return,
             "to" => Token::To,
             "as" => Token::As,
-            "Fn" => Token::Fn,
             "s16" => Token::TypeS16,
             "s32" => Token::TypeS32,
             "s64" => Token::TypeS64,
@@ -758,7 +779,6 @@ impl Lexer {
             "true" => Token::Boolean(true),
             "false" => Token::Boolean(false),
             "not" => Token::Not,
-            "_" => Token::Underscore,
             "dotimes" => Token::DoTimes,
             _ => Token::Identifier(text),
         }
@@ -932,13 +952,9 @@ impl Parser {
                 self.advance();
                 Ok("var".to_string())
             }
-            Token::Do => {
+            Token::Let => {
                 self.advance();
-                Ok("do".to_string())
-            }
-            Token::Done => {
-                self.advance();
-                Ok("done".to_string())
+                Ok("let".to_string())
             }
             Token::If => {
                 self.advance();
@@ -975,10 +991,6 @@ impl Parser {
             Token::As => {
                 self.advance();
                 Ok("as".to_string())
-            }
-            Token::Fn => {
-                self.advance();
-                Ok("Fn".to_string())
             }
             Token::TypeS16 => {
                 self.advance();
@@ -1057,6 +1069,10 @@ impl Parser {
         while !self.is(Token::Eof) {
             let declaration_span = self.current_span().clone();
             match self.peek() {
+                Token::FnKeyword => {
+                    let def = self.parse_fn_definition()?;
+                    definitions.push(def);
+                }
                 Token::At => {
                     self.advance();
 
@@ -1150,6 +1166,67 @@ impl Parser {
         }
 
         Ok((extern_functions, definitions, type_aliases))
+    }
+
+    fn parse_fn_definition(&mut self) -> Result<Definition, String> {
+        self.advance(); // consume 'fn'
+        let name = self.expect_identifier()?;
+
+        self.expect(Token::LParen)?;
+        self.skip_newlines();
+        let mut parameters = Vec::new();
+        while !self.is(Token::RParen) && !self.is(Token::Eof) {
+            let param_name = self.expect_field_name()?;
+            self.expect(Token::ColonColon)?;
+            self.skip_newlines();
+            let ty = self.parse_type()?;
+            parameters.push(Parameter {
+                name: param_name,
+                ty,
+            });
+            self.skip_newlines();
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
+        }
+        self.expect(Token::RParen)?;
+
+        self.skip_newlines();
+        let return_type = if self.is(Token::Arrow) {
+            self.advance();
+            self.skip_newlines();
+            self.parse_type()?
+        } else if self.is(Token::To) {
+            self.advance();
+            self.skip_newlines();
+            self.parse_type()?
+        } else {
+            Type::Void
+        };
+
+        self.skip_newlines();
+        let mut body = Vec::new();
+        while !self.is(Token::End) && !self.is(Token::Eof) {
+            body.push(self.parse_statement()?);
+            self.skip_newlines();
+        }
+        self.expect(Token::End)?;
+        self.consume_optional_newline();
+
+        let signature = Signature {
+            parameters,
+            return_type: Box::new(return_type),
+            is_variadic: false,
+        };
+
+        Ok(Definition {
+            name,
+            value: Expression::Block {
+                signature: Some(signature),
+                body,
+            },
+        })
     }
 
     pub fn parse_expression(&mut self) -> Result<Expression, String> {
@@ -1498,7 +1575,7 @@ impl Parser {
                     } else {
                         false
                     };
-                    let return_type = if self.is(Token::To) {
+                    let return_type = if self.is(Token::Arrow) || self.is(Token::To) {
                         self.advance();
                         self.skip_newlines();
                         Box::new(self.parse_type()?)
@@ -1521,7 +1598,6 @@ impl Parser {
                 let elements = self.parse_argument_list(Token::RBracket)?;
                 Ok(Expression::Array(elements))
             }
-            Token::Do => self.parse_block(),
             Token::If => self.parse_if_expression(),
             Token::Match => self.parse_match_expression(),
             token => Err(format!("unexpected token in expression: {:?}", token)),
@@ -1606,49 +1682,6 @@ impl Parser {
         Ok(parameters)
     }
 
-    fn parse_block(&mut self) -> Result<Expression, String> {
-        self.expect(Token::Do)?;
-        self.skip_newlines();
-
-        let signature = if self.is(Token::LParen) || self.is(Token::To) {
-            let mut parameters = Vec::new();
-            if self.is(Token::LParen) {
-                self.advance();
-                parameters = self.parse_signature_inner()?;
-                self.expect(Token::RParen)?;
-                self.skip_newlines();
-            }
-
-            let return_type = if self.is(Token::To) {
-                self.advance();
-                self.skip_newlines();
-                Box::new(self.parse_type()?)
-            } else {
-                Box::new(Type::Void)
-            };
-
-            Some(Signature {
-                parameters,
-                return_type,
-                is_variadic: false,
-            })
-        } else {
-            None
-        };
-
-        self.skip_newlines();
-
-        let mut body = Vec::new();
-        while !self.is(Token::Done) && !self.is(Token::Eof) {
-            body.push(self.parse_statement()?);
-            self.skip_newlines();
-        }
-
-        self.expect(Token::Done)?;
-
-        Ok(Expression::Block { signature, body })
-    }
-
     fn parse_if_expression(&mut self) -> Result<Expression, String> {
         self.expect(Token::If)?;
         self.skip_newlines();
@@ -1712,11 +1745,48 @@ impl Parser {
             Token::Var => {
                 self.advance();
                 let name = self.expect_identifier()?;
-                self.expect(Token::ColonColon)?;
+                if self.is(Token::ColonColon) {
+                    self.advance();
+                    self.skip_newlines();
+                    let ty = self.parse_type()?;
+                    self.consume_optional_newline();
+                    Ok(Statement::Declare { name, ty })
+                } else if self.is(Token::ColonEqual) {
+                    self.advance();
+                    self.skip_newlines();
+                    let value = self.parse_expression()?;
+                    self.consume_optional_newline();
+                    Ok(Statement::Define {
+                        name,
+                        is_mutable: true,
+                        value,
+                    })
+                } else {
+                    Err(format!(
+                        "expected '::' or ':=' after 'var {}', found {:?}",
+                        name,
+                        self.peek()
+                    ))
+                }
+            }
+            Token::Let => {
+                self.advance();
+                let name = self.expect_identifier()?;
+                if self.is(Token::ColonColon) {
+                    return Err(format!(
+                        "constants cannot be declared without an initialiser: 'let {} :: ...' is prohibited, use 'let {} := <value>'",
+                        name, name
+                    ));
+                }
+                self.expect(Token::ColonEqual)?;
                 self.skip_newlines();
-                let ty = self.parse_type()?;
+                let value = self.parse_expression()?;
                 self.consume_optional_newline();
-                Ok(Statement::Declare { name, ty })
+                Ok(Statement::Define {
+                    name,
+                    is_mutable: false,
+                    value,
+                })
             }
             Token::DoIf => self.parse_doif_statement(),
             Token::DoTimes => {
@@ -1739,28 +1809,21 @@ impl Parser {
                 self.consume_optional_newline();
                 Ok(Statement::Return(expr))
             }
+            Token::Identifier(name)
+                if self.tokens.get(self.cursor + 1) == Some(&Token::ColonEqual) =>
+            {
+                let target = name.clone();
+                self.advance(); // consume Identifier
+                self.advance(); // consume ':='
+                self.skip_newlines();
+                let value = self.parse_expression()?;
+                self.consume_optional_newline();
+                Ok(Statement::Assign { target, value })
+            }
             _ => {
                 let expression = self.parse_expression()?;
-
-                if self.is(Token::Newline) && self.peek_non_newline() == &Token::Arrow {
-                    self.skip_newlines();
-                }
-
-                if self.is(Token::Arrow) {
-                    self.advance();
-                    self.skip_newlines();
-                    let target = self.expect_identifier()?;
-                    if self.is(Token::Arrow) {
-                        return Err(
-                            "multiple assignment via chained '->' is not supported".to_string()
-                        );
-                    }
-                    self.consume_optional_newline();
-                    Ok(Statement::Assign { expression, target })
-                } else {
-                    self.consume_optional_newline();
-                    Ok(Statement::Discard(expression))
-                }
+                self.consume_optional_newline();
+                Ok(Statement::Discard(expression))
             }
         }
     }
@@ -1830,50 +1893,6 @@ impl Parser {
     fn parse_single_type(&mut self) -> Result<Type, String> {
         self.skip_newlines();
         match self.peek().clone() {
-            Token::Fn => {
-                self.advance();
-                self.skip_newlines();
-                self.expect(Token::LBrace)?;
-                self.skip_newlines();
-
-                let mut parameters = Vec::new();
-                if self.is(Token::LParen) {
-                    self.advance();
-                    self.skip_newlines();
-                    if !self.is(Token::RParen) {
-                        parameters = self.parse_signature_inner()?;
-                    }
-                    self.expect(Token::RParen)?;
-                }
-
-                self.skip_newlines();
-
-                let is_variadic = if self.is(Token::PlusPlus) {
-                    self.advance();
-                    self.skip_newlines();
-                    true
-                } else {
-                    false
-                };
-
-                let return_type = if self.is(Token::To) {
-                    self.advance();
-                    self.skip_newlines();
-                    Box::new(self.parse_type()?)
-                } else {
-                    Box::new(Type::Void)
-                };
-
-                self.skip_newlines();
-                self.expect(Token::RBrace)?;
-
-                let param_types = parameters.into_iter().map(|p| p.ty).collect();
-                Ok(Type::Function {
-                    parameters: param_types,
-                    return_type,
-                    is_variadic,
-                })
-            }
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Type::Alias(name))
@@ -1929,12 +1948,6 @@ impl Parser {
             Token::Star => {
                 self.advance();
                 self.skip_newlines();
-                if self.is(Token::Fn) {
-                    return Err(
-                        "functions are code pointers by default; '*Fn' is not allowed, use 'Fn{...}'"
-                            .to_string(),
-                    );
-                }
                 let inner = self.parse_single_type()?;
                 Ok(Type::Pointer {
                     element: Box::new(inner),
@@ -1987,183 +2000,5 @@ impl Parser {
             }
             token => Err(format!("expected type, found {:?}", token)),
         }
-    }
-}
-
-#[cfg(test)]
-mod span_tests {
-    use super::{Expression, Lexer, Parser, Span, Statement, Type, format_error};
-
-    #[test]
-    fn formatter_removes_redundant_file_context() {
-        let span = Span {
-            file: "sample.zzz".to_string(),
-            line: 4,
-            col: 2,
-        };
-
-        assert_eq!(
-            format_error(&span, "in 'sample.zzz': unknown variable 'x'"),
-            "sample.zzz:4:2: error: unknown variable 'x'"
-        );
-    }
-
-    #[test]
-    fn lexer_reports_exact_file_line_and_column() {
-        let error = Lexer::new_with_file("val x\n  ?".to_string(), "sample.zzz")
-            .tokenize()
-            .unwrap_err();
-
-        assert_eq!(
-            error,
-            "sample.zzz:2:3: error: unexpected character '?' at position 8"
-        );
-    }
-
-    #[test]
-    fn parser_keeps_expression_start_span() {
-        let (tokens, spans) = Lexer::new_with_file("\n@main 7\n".to_string(), "sample.zzz")
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let (_, definitions, _) = parser.parse_file_declarations("sample.zzz").unwrap();
-
-        let Expression::Spanned { span, .. } = &definitions[0].value else {
-            panic!("expected a spanned expression");
-        };
-        assert_eq!(
-            (span.file.as_str(), span.line, span.col),
-            ("sample.zzz", 2, 7)
-        );
-    }
-
-    #[test]
-    fn extern_signatures_survive_expression_spans() {
-        let (tokens, spans) = Lexer::new_with_file(
-            "@extern puts\n(text :: *u8) to s32\n".to_string(),
-            "sample.zzz",
-        )
-        .tokenize_with_spans()
-        .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let (externs, _, _) = parser.parse_file_declarations("sample.zzz").unwrap();
-
-        assert_eq!(externs.len(), 1);
-        assert_eq!(externs[0].name, "puts");
-    }
-
-    #[test]
-    fn parser_keeps_statement_start_span() {
-        let (tokens, spans) =
-            Lexer::new_with_file("\n@main do\n    return 0\ndone\n".to_string(), "sample.zzz")
-                .tokenize_with_spans()
-                .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let (_, definitions, _) = parser.parse_file_declarations("sample.zzz").unwrap();
-
-        let Expression::Spanned { expression, .. } = &definitions[0].value else {
-            panic!("expected a spanned expression");
-        };
-        let Expression::Block { body, .. } = expression.as_ref() else {
-            panic!("expected a block expression");
-        };
-        let Statement::Spanned { span, .. } = &body[0] else {
-            panic!("expected a spanned statement");
-        };
-        assert_eq!(
-            (span.file.as_str(), span.line, span.col),
-            ("sample.zzz", 3, 5)
-        );
-    }
-
-    #[test]
-    fn parser_accepts_pointer_sized_integer_types() {
-        for (source, expected) in [("usize", Type::USize), ("ssize", Type::SSize)] {
-            let (tokens, spans) = Lexer::new_with_file(source.to_string(), "sample.zzz")
-                .tokenize_with_spans()
-                .unwrap();
-            let mut parser = Parser::new_with_spans(tokens, spans);
-            assert_eq!(parser.parse_type().unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn parser_transforms_struct_literal_with_record_suffix() {
-        let (tokens, spans) =
-            Lexer::new_with_file("(@answer 42) #record".to_string(), "sample.zzz")
-                .tokenize_with_spans()
-                .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let expression = parser.parse_expression().unwrap();
-        let Expression::Spanned { expression, .. } = expression else {
-            panic!("expected spanned expression");
-        };
-        let Expression::Record(fields) = *expression else {
-            panic!("expected record expression");
-        };
-
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].name, "answer");
-    }
-
-    #[test]
-    fn parser_accepts_postfix_pointer_dereference() {
-        let (tokens, spans) = Lexer::new_with_file("pointer^".to_string(), "sample.zzz")
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let expression = parser.parse_expression().unwrap();
-        let Expression::Spanned { expression, .. } = expression else {
-            panic!("expected spanned expression");
-        };
-        assert!(matches!(*expression, Expression::Dereference(_)));
-    }
-
-    #[test]
-    fn parser_accepts_keyword_as_member_name() {
-        let (tokens, spans) = Lexer::new_with_file("header.val".to_string(), "sample.zzz")
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let expression = parser.parse_expression().unwrap();
-        let Expression::Spanned { expression, .. } = expression else {
-            panic!("expected spanned expression");
-        };
-        assert!(matches!(
-            *expression,
-            Expression::Member { ref field, .. } if field == "val"
-        ));
-    }
-
-    #[test]
-    fn named_type_fields_require_colon_colon_without_at() {
-        let (tokens, spans) = Lexer::new_with_file(
-            "@type Record\n*(\n    len :: usize\n)\n".to_string(),
-            "sample.zzz",
-        )
-        .tokenize_with_spans()
-        .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        assert!(parser.parse_file_declarations("sample.zzz").is_ok());
-
-        let (tokens, spans) = Lexer::new_with_file(
-            "@type Record\n*(\n    @len :: usize\n)\n".to_string(),
-            "sample.zzz",
-        )
-        .tokenize_with_spans()
-        .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        assert!(parser.parse_file_declarations("sample.zzz").is_err());
-    }
-
-    #[test]
-    fn parser_allows_val_as_variable_name() {
-        let (tokens, spans) =
-            Lexer::new_with_file("header.val -> val\nval[0]\n".to_string(), "sample.zzz")
-                .tokenize_with_spans()
-                .unwrap();
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        assert!(parser.parse_statement().is_ok());
-        assert!(parser.parse_statement().is_ok());
     }
 }

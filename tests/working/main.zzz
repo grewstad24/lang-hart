@@ -1,17 +1,13 @@
-@main
-do () to s32
-        print(my_data)
+fn main() -> s32
+        (
+                @id "bob123"
+                @number 68
+                @valid true
+                @more (
+                        @is_cool false
+                        @friend "alice345"
+                )#record
+        )#record `print()
 
         return 0
-done
-
-@val my_data
-(
-        @id "bob123"
-        @number 68
-        @valid true
-        @more (
-                @is_cool false
-                @friend "alice345"
-        )#record
-)#record
+end

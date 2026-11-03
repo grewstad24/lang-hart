@@ -700,34 +700,37 @@ impl<'ctx> Codegen<'ctx> {
                 self.builder.position_at_end(merge_bb);
                 Ok(())
             }
-            Statement::Assign { expression, target } => {
-                let current_binding = self.codegen_expression(expression)?;
+            Statement::Define { name, value, .. } => {
+                let current_binding = self.codegen_expression(value)?;
+                let ty = self.binding_type(&current_binding)?;
+                let llvm_ty = self.llvm_type(&ty)?;
 
-                let local = if let Some(existing) = self.lookup_local(target) {
-                    existing
-                } else {
-                    let ty = self.binding_type(&current_binding)?;
-                    let llvm_ty = self.llvm_type(&ty)?;
-                    let alloca = self
-                        .builder
-                        .build_alloca(llvm_ty, target)
-                        .map_err(|e| e.to_string())?;
+                let alloca = self
+                    .builder
+                    .build_alloca(llvm_ty, name)
+                    .map_err(|e| e.to_string())?;
 
-                    let new_local = LocalVar {
-                        ty: ty.clone(),
-                        alloca,
-                    };
-                    self.local_scopes
-                        .last_mut()
-                        .unwrap()
-                        .insert(target.clone(), new_local.clone());
-                    new_local
-                };
+                let val = self.binding_basic_value(&current_binding)?;
+                self.builder
+                    .build_store(alloca, val)
+                    .map_err(|e| e.to_string())?;
+
+                self.local_scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), LocalVar { ty, alloca });
+                Ok(())
+            }
+            Statement::Assign { target, value } => {
+                let current_binding = self.codegen_expression(value)?;
+                let local = self
+                    .lookup_local(target)
+                    .ok_or_else(|| format!("unknown local variable '{}'", target))?;
 
                 let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
-                let value = self.binding_basic_value(&coerced_binding)?;
+                let val = self.binding_basic_value(&coerced_binding)?;
                 self.builder
-                    .build_store(local.alloca, value)
+                    .build_store(local.alloca, val)
                     .map_err(|e| e.to_string())?;
 
                 Ok(())

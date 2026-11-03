@@ -1,5 +1,0 @@
-@val loop
-do (fn :: Fn{()})
-        fn()
-        loop(fn)
-done

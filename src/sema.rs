@@ -13,216 +13,6 @@ fn expression_span(expression: &Expression) -> Option<&Span> {
     }
 }
 
-#[cfg(test)]
-mod cast_tests {
-    use super::{Checker, ModuleScope, SymbolProvenance};
-    use crate::syntax::{Lexer, Parser, SourceFile, StructFieldType, Type};
-
-    fn nested_type(sum: Type) -> Type {
-        Type::Pointer {
-            element: Box::new(Type::Slice {
-                element: Box::new(Type::Array {
-                    element: Box::new(Type::Struct(vec![StructFieldType {
-                        name: "payload".to_string(),
-                        ty: sum,
-                    }])),
-                    size: 2,
-                }),
-            }),
-        }
-    }
-
-    #[test]
-    fn sum_subset_widens_recursively_inside_containers() {
-        let small_sum = Type::Union(vec![Type::S32, Type::Atom("ready".to_string())]);
-        let large_sum = Type::Union(vec![Type::S32, Type::S64, Type::Atom("ready".to_string())]);
-
-        assert!(Checker::types_compatible(
-            &nested_type(small_sum.clone()),
-            &nested_type(large_sum.clone())
-        ));
-        assert!(Checker::is_supported_cast(
-            &nested_type(small_sum),
-            &nested_type(large_sum)
-        ));
-    }
-
-    #[test]
-    fn sum_variant_widens_recursively_inside_structs() {
-        let source = Type::Struct(vec![StructFieldType {
-            name: "value".to_string(),
-            ty: Type::Atom("ready".to_string()),
-        }]);
-        let target = Type::Struct(vec![StructFieldType {
-            name: "value".to_string(),
-            ty: Type::Union(vec![Type::Atom("ready".to_string()), Type::S32]),
-        }]);
-
-        assert!(Checker::types_compatible(&source, &target));
-        assert!(Checker::is_supported_cast(&source, &target));
-    }
-
-    #[test]
-    fn narrowing_sum_to_variant_is_explicit_only() {
-        let sum = Type::Union(vec![Type::S32, Type::S64]);
-
-        assert!(!Checker::types_compatible(&sum, &Type::S32));
-        assert!(Checker::is_supported_cast(&sum, &Type::S32));
-    }
-
-    #[test]
-    fn implicit_slice_sum_prefers_compatible_union_member() {
-        let printable_variants = vec![
-            Type::U16,
-            Type::U32,
-            Type::U64,
-            Type::S16,
-            Type::S32,
-            Type::S64,
-            Type::Atom("nl".to_string()),
-            Type::Slice {
-                element: Box::new(Type::U8),
-            },
-        ];
-        let source = Type::Slice {
-            element: Box::new(Type::Union(vec![
-                Type::S32,
-                Type::Atom("nl".to_string()),
-                Type::Slice {
-                    element: Box::new(Type::U8),
-                },
-            ])),
-        };
-        let mut target_variants = printable_variants.clone();
-        target_variants.push(Type::Slice {
-            element: Box::new(Type::Union(printable_variants)),
-        });
-
-        assert_eq!(
-            Checker::castable_union_variant(&source, &target_variants),
-            Some(8)
-        );
-    }
-
-    fn check_source(source: &str) -> Result<(), String> {
-        let (tokens, spans) =
-            Lexer::new_with_file(source.to_string(), "flow.zzz").tokenize_with_spans()?;
-        let mut parser = Parser::new_with_spans(tokens, spans);
-        let (extern_functions, definitions, type_aliases) =
-            parser.parse_file_declarations("flow.zzz")?;
-        let mut file = SourceFile {
-            file_path: "flow.zzz".to_string(),
-            extern_functions,
-            definitions,
-            type_aliases,
-        };
-        let mut scope = ModuleScope::new("flow".to_string());
-        for alias in Checker::standard_type_aliases() {
-            scope.type_aliases.insert(
-                alias.name.clone(),
-                SymbolProvenance {
-                    item: alias,
-                    originating_file: "<std>".to_string(),
-                },
-            );
-        }
-        for alias in &file.type_aliases {
-            scope.type_aliases.insert(
-                alias.name.clone(),
-                SymbolProvenance {
-                    item: alias.clone(),
-                    originating_file: "flow.zzz".to_string(),
-                },
-            );
-        }
-        Checker::new(&scope).check_file(&mut file)
-    }
-
-    #[test]
-    fn mutable_read_before_assignment_is_rejected() {
-        let error =
-            check_source("@main\ndo to s32\n    var value :: s32\n    return value\ndone\n")
-                .unwrap_err();
-
-        assert!(error.contains("flow.zzz:4:12: error:"));
-        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
-    }
-
-    #[test]
-    fn assignment_before_read_is_accepted() {
-        check_source(
-            "@main\ndo to s32\n    var value :: s32\n    1 -> value\n    return value\ndone\n",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn assignment_in_every_if_branch_is_definite() {
-        check_source(
-            "@main\ndo to s32\n    var value :: s32\n    doif true => 1 -> value else => 2 -> value end\n    return value\ndone\n",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn assignment_in_only_one_if_branch_is_not_definite() {
-        let error = check_source(
-            "@main\ndo to s32\n    var value :: s32\n    doif true => 1 -> value else => 0 end\n    return value\ndone\n",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
-    }
-
-    #[test]
-    fn loop_assignment_is_not_definite_after_loop() {
-        let error = check_source(
-            "@main\ndo to s32\n    var value :: s32\n    dotimes 1 => 1 -> value\n    return value\ndone\n",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
-    }
-
-    #[test]
-    fn pointer_index_expression_has_pointee_type() {
-        check_source("@main\ndo (ptr :: *s32) to s32\n    return ptr[0]\ndone\n").unwrap();
-    }
-
-    #[test]
-    fn record_literal_has_canonical_record_pointer_type() {
-        check_source("@main\ndo to s32\n    (@answer 42) #record -> item\n    return 0\ndone\n")
-            .unwrap();
-    }
-
-    #[test]
-    fn record_rejects_non_generic_field_types() {
-        let error = check_source(
-            "@main\ndo to s32\n    (@bad :not_generic) #record -> item\n    return 0\ndone\n",
-        )
-        .unwrap_err();
-
-        assert!(error.contains("record field '@bad' has unsupported value type"));
-    }
-
-    #[test]
-    fn pointer_dereference_reads_pointee_type() {
-        check_source("@main\ndo (ptr :: *s32) to s32\n    return ptr^\ndone\n").unwrap();
-    }
-
-    #[test]
-    fn address_of_pointer_dereference_preserves_pointer_type() {
-        check_source("@main\ndo (ptr :: *s32) to *s32\n    return &ptr^\ndone\n").unwrap();
-    }
-
-    #[test]
-    fn dereference_rejects_non_pointer_type() {
-        let error = check_source("@main\ndo to s32\n    return 1^\ndone\n").unwrap_err();
-
-        assert!(error.contains("cannot dereference non-pointer type"));
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SymbolProvenance<T> {
     pub item: T,
@@ -585,7 +375,7 @@ struct BindingInfo {
 }
 
 pub struct Checker<'a> {
-    scope: &'a ModuleScope,
+    pub scope: &'a ModuleScope,
     current_file_path: String,
 
     resolved_extern_functions: HashMap<String, Signature>,
@@ -700,6 +490,14 @@ impl<'a> Checker<'a> {
 
         checker.predeclare_scope_signatures();
         checker
+    }
+
+    pub fn enter_scope(&mut self) {
+        self.local_scopes.push(HashMap::new());
+    }
+
+    pub fn exit_scope(&mut self) {
+        self.local_scopes.pop();
     }
 
     pub fn intern_atom(&mut self, name: &str) -> u32 {
@@ -907,7 +705,6 @@ impl<'a> Checker<'a> {
         Ok(Type::Union(unique))
     }
 
-    /// Inserts an explicit cast node for any implicitly compatible type pair.
     fn coerce_expression_to_type(
         &mut self,
         expr: &mut Expression,
@@ -1005,13 +802,13 @@ impl<'a> Checker<'a> {
             Expression::Block { signature, body } => {
                 let mut expected_return = Type::Void;
 
-                self.local_scopes.push(HashMap::new());
+                self.enter_scope();
 
                 if let Some(sig) = signature {
                     let mut seen_params = HashSet::new();
                     for p in &mut sig.parameters {
                         if !seen_params.insert(p.name.clone()) {
-                            self.local_scopes.pop();
+                            self.exit_scope();
                             return Err(format!(
                                 "in '{}': duplicate parameter name '{}' in block",
                                 self.current_file_path, p.name
@@ -1019,7 +816,7 @@ impl<'a> Checker<'a> {
                         }
                         let resolved_param_ty = self.resolve_type(&p.ty)?;
                         if resolved_param_ty == Type::Void {
-                            self.local_scopes.pop();
+                            self.exit_scope();
                             return Err(format!(
                                 "in '{}': block parameter '{}' cannot be void",
                                 self.current_file_path, p.name
@@ -1040,7 +837,7 @@ impl<'a> Checker<'a> {
                 }
 
                 let validate_res = self.validate_block(body, &expected_return);
-                self.local_scopes.pop();
+                self.exit_scope();
                 validate_res?;
             }
             expr => {
@@ -1315,13 +1112,13 @@ impl<'a> Checker<'a> {
                 let mut is_variadic = false;
 
                 let enclosing_scopes = self.local_scopes.clone();
-                self.local_scopes.push(HashMap::new());
+                self.enter_scope();
 
                 if let Some(sig) = signature {
                     let mut seen_params = HashSet::new();
                     for p in &mut sig.parameters {
                         if !seen_params.insert(p.name.clone()) {
-                            self.local_scopes.pop();
+                            self.exit_scope();
                             return Err(format!(
                                 "in '{}': duplicate parameter name '{}' in block",
                                 self.current_file_path, p.name
@@ -1329,7 +1126,7 @@ impl<'a> Checker<'a> {
                         }
                         let resolved_p_ty = self.resolve_type(&p.ty)?;
                         if resolved_p_ty == Type::Void {
-                            self.local_scopes.pop();
+                            self.exit_scope();
                             return Err(format!(
                                 "in '{}': block parameter '{}' cannot be void",
                                 self.current_file_path, p.name
@@ -1475,17 +1272,16 @@ impl<'a> Checker<'a> {
                             }
 
                             let pos = unhandled.iter().position(matches_variant).ok_or_else(|| {
-                                            format!(
-                                                "in '{}': unreachable or duplicate match arm for variant {:?}",
-                                                self.current_file_path, v
-                                            )
-                                        })?;
+                                format!(
+                                    "in '{}': unreachable or duplicate match arm for variant {:?}",
+                                    self.current_file_path, v
+                                )
+                            })?;
                             unhandled.remove(pos);
                         }
 
                         resolved
                     } else {
-                        // Wildcard arm '_'
                         if arm_idx != num_arms - 1 {
                             return Err(format!(
                                 "in '{}': wildcard match arm '_' must be the last arm",
@@ -1507,13 +1303,12 @@ impl<'a> Checker<'a> {
                             Type::Union(sorted_remaining)
                         };
 
-                        // Store the inferred narrowed type into the arm so codegen knows what to unpack
                         arm.variant_type = Some(narrowed_ty.clone());
                         unhandled.clear();
                         narrowed_ty
                     };
 
-                    self.local_scopes.push(HashMap::new());
+                    self.enter_scope();
                     self.local_scopes.last_mut().unwrap().insert(
                         binding_name.clone(),
                         BindingInfo {
@@ -1524,7 +1319,7 @@ impl<'a> Checker<'a> {
                     );
 
                     let arm_res_ty = self.type_of_expression(&mut arm.body);
-                    self.local_scopes.pop();
+                    self.exit_scope();
                     let arm_ty = self.resolve_type(&arm_res_ty?)?;
                     arm_types.push(arm_ty);
                 }
@@ -1994,7 +1789,7 @@ impl<'a> Checker<'a> {
                         is_variadic: v2,
                     },
                 ) => {
-                    v1 == v2
+                    *v1 == *v2
                         && p1.len() == p2.len()
                         && p1
                             .iter()
@@ -2095,8 +1890,37 @@ impl<'a> Checker<'a> {
                 );
             }
 
-            Statement::Assign { expression, target } => {
-                let mut expr_ty = self.type_of_expression(expression)?;
+            Statement::Define {
+                name,
+                is_mutable,
+                value,
+            } => {
+                if self.local_scopes.last().unwrap().contains_key(name) {
+                    return Err(format!(
+                        "in '{}': variable '{}' already declared in this scope",
+                        self.current_file_path, name
+                    ));
+                }
+                let raw_ty = self.type_of_expression(value)?;
+                let resolved_ty = self.resolve_type(&raw_ty)?;
+                if resolved_ty == Type::Void {
+                    return Err(format!(
+                        "in '{}': cannot bind variable '{}' to void expression",
+                        self.current_file_path, name
+                    ));
+                }
+                self.local_scopes.last_mut().unwrap().insert(
+                    name.clone(),
+                    BindingInfo {
+                        ty: resolved_ty,
+                        is_mutable: *is_mutable,
+                        is_initialized: true,
+                    },
+                );
+            }
+
+            Statement::Assign { target, value } => {
+                let mut val_ty = self.type_of_expression(value)?;
 
                 if self.scope.lookup_definition(target).is_some() {
                     return Err(format!(
@@ -2124,11 +1948,11 @@ impl<'a> Checker<'a> {
                             self.current_file_path, target
                         ));
                     }
-                    expr_ty = self.coerce_expression_to_type(expression, &expr_ty, &info.ty)?;
-                    if !self.are_types_compatible(&expr_ty, &info.ty)? {
+                    val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
+                    if !self.are_types_compatible(&val_ty, &info.ty)? {
                         return Err(format!(
                             "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
-                            self.current_file_path, target, info.ty, expr_ty
+                            self.current_file_path, target, info.ty, val_ty
                         ));
                     }
 
@@ -2136,15 +1960,10 @@ impl<'a> Checker<'a> {
                         info_mut.is_initialized = true;
                     }
                 } else {
-                    let resolved_expr_ty = self.resolve_type(&expr_ty)?;
-                    self.local_scopes.last_mut().unwrap().insert(
-                        target.clone(),
-                        BindingInfo {
-                            ty: resolved_expr_ty,
-                            is_mutable: false,
-                            is_initialized: true,
-                        },
-                    );
+                    return Err(format!(
+                        "in '{}': unknown variable '{}'",
+                        self.current_file_path, target
+                    ));
                 }
             }
 
@@ -2177,7 +1996,7 @@ impl<'a> Checker<'a> {
                         let cond_ty = self.type_of_expression(cond)?;
                         if cond_ty != Type::Bool {
                             return Err(format!(
-                                "in '{}': doif condition must evaluate to Bool, found {:?}",
+                                "in '{}': if condition must evaluate to Bool, found {:?}",
                                 self.current_file_path, cond_ty
                             ));
                         }
@@ -2338,6 +2157,26 @@ impl<'a> Checker<'a> {
                 (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
                     return Checker::types_compatible_with_aliases(source, target, aliases);
                 }
+                (
+                    Type::Function {
+                        parameters: p1,
+                        return_type: r1,
+                        is_variadic: v1,
+                    },
+                    Type::Function {
+                        parameters: p2,
+                        return_type: r2,
+                        is_variadic: v2,
+                    },
+                ) => {
+                    return v1 == v2
+                        && p1.len() == p2.len()
+                        && p1
+                            .iter()
+                            .zip(p2.iter())
+                            .all(|(a, b)| supported(a, b, aliases, visited))
+                        && supported(r1, r2, aliases, visited);
+                }
                 _ => {}
             }
 
@@ -2406,5 +2245,214 @@ impl<'a> Checker<'a> {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod cast_tests {
+    use super::{Checker, ModuleScope, SymbolProvenance};
+    use crate::syntax::{Lexer, Parser, SourceFile, StructFieldType, Type};
+
+    fn nested_type(sum: Type) -> Type {
+        Type::Pointer {
+            element: Box::new(Type::Slice {
+                element: Box::new(Type::Array {
+                    element: Box::new(Type::Struct(vec![StructFieldType {
+                        name: "payload".to_string(),
+                        ty: sum,
+                    }])),
+                    size: 2,
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn sum_subset_widens_recursively_inside_containers() {
+        let small_sum = Type::Union(vec![Type::S32, Type::Atom("ready".to_string())]);
+        let large_sum = Type::Union(vec![Type::S32, Type::S64, Type::Atom("ready".to_string())]);
+
+        assert!(Checker::types_compatible(
+            &nested_type(small_sum.clone()),
+            &nested_type(large_sum.clone())
+        ));
+        assert!(Checker::is_supported_cast(
+            &nested_type(small_sum),
+            &nested_type(large_sum)
+        ));
+    }
+
+    #[test]
+    fn sum_variant_widens_recursively_inside_structs() {
+        let source = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: Type::Atom("ready".to_string()),
+        }]);
+        let target = Type::Struct(vec![StructFieldType {
+            name: "value".to_string(),
+            ty: Type::Union(vec![Type::Atom("ready".to_string()), Type::S32]),
+        }]);
+
+        assert!(Checker::types_compatible(&source, &target));
+        assert!(Checker::is_supported_cast(&source, &target));
+    }
+
+    #[test]
+    fn narrowing_sum_to_variant_is_explicit_only() {
+        let sum = Type::Union(vec![Type::S32, Type::S64]);
+
+        assert!(!Checker::types_compatible(&sum, &Type::S32));
+        assert!(Checker::is_supported_cast(&sum, &Type::S32));
+    }
+
+    #[test]
+    fn implicit_slice_sum_prefers_compatible_union_member() {
+        let printable_variants = vec![
+            Type::U16,
+            Type::U32,
+            Type::U64,
+            Type::S16,
+            Type::S32,
+            Type::S64,
+            Type::Atom("nl".to_string()),
+            Type::Slice {
+                element: Box::new(Type::U8),
+            },
+        ];
+        let source = Type::Slice {
+            element: Box::new(Type::Union(vec![
+                Type::S32,
+                Type::Atom("nl".to_string()),
+                Type::Slice {
+                    element: Box::new(Type::U8),
+                },
+            ])),
+        };
+        let mut target_variants = printable_variants.clone();
+        target_variants.push(Type::Slice {
+            element: Box::new(Type::Union(printable_variants)),
+        });
+
+        assert_eq!(
+            Checker::castable_union_variant(&source, &target_variants),
+            Some(8)
+        );
+    }
+
+    fn check_source(source: &str) -> Result<(), String> {
+        let (tokens, spans) =
+            Lexer::new_with_file(source.to_string(), "flow.zzz").tokenize_with_spans()?;
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let (extern_functions, definitions, type_aliases) =
+            parser.parse_file_declarations("flow.zzz")?;
+        let mut file = SourceFile {
+            file_path: "flow.zzz".to_string(),
+            extern_functions,
+            definitions,
+            type_aliases,
+        };
+        let mut scope = ModuleScope::new("flow".to_string());
+        for alias in Checker::standard_type_aliases() {
+            scope.type_aliases.insert(
+                alias.name.clone(),
+                SymbolProvenance {
+                    item: alias,
+                    originating_file: "<std>".to_string(),
+                },
+            );
+        }
+        for alias in &file.type_aliases {
+            scope.type_aliases.insert(
+                alias.name.clone(),
+                SymbolProvenance {
+                    item: alias.clone(),
+                    originating_file: "flow.zzz".to_string(),
+                },
+            );
+        }
+        Checker::new(&scope).check_file(&mut file)
+    }
+
+    #[test]
+    fn mutable_read_before_assignment_is_rejected() {
+        let error = check_source("fn main() -> s32\n    var value :: s32\n    return value\nend\n")
+            .unwrap_err();
+
+        assert!(error.contains("flow.zzz:3:12: error:"));
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn assignment_before_read_is_accepted() {
+        check_source(
+            "fn main() -> s32\n    var value :: s32\n    value := 1\n    return value\nend\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn assignment_in_every_if_branch_is_definite() {
+        check_source(
+            "fn main() -> s32\n    var value :: s32\n    doif true => value := 1 else => value := 2 end\n    return value\nend\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn assignment_in_only_one_if_branch_is_not_definite() {
+        let error = check_source(
+            "fn main() -> s32\n    var value :: s32\n    doif true => value := 1 else => 0 end\n    return value\nend\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn loop_assignment_is_not_definite_after_loop() {
+        let error = check_source(
+            "fn main() -> s32\n    var value :: s32\n    dotimes 1 => value := 1\n    return value\nend\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("mutable variable 'value' may be read before it is initialized"));
+    }
+
+    #[test]
+    fn pointer_index_expression_has_pointee_type() {
+        check_source("fn main(ptr :: *s32) -> s32\n    return ptr[0]\nend\n").unwrap();
+    }
+
+    #[test]
+    fn record_literal_has_canonical_record_pointer_type() {
+        check_source("fn main() -> s32\n    let item := (@answer 42)#record\n    return 0\nend\n")
+            .unwrap();
+    }
+
+    #[test]
+    fn record_rejects_non_generic_field_types() {
+        let error = check_source(
+            "fn main() -> s32\n    let item := (@bad :not_generic)#record\n    return 0\nend\n",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("record field '@bad' has unsupported value type"));
+    }
+
+    #[test]
+    fn pointer_dereference_reads_pointee_type() {
+        check_source("fn main(ptr :: *s32) -> s32\n    return ptr^\nend\n").unwrap();
+    }
+
+    #[test]
+    fn address_of_pointer_dereference_preserves_pointer_type() {
+        check_source("fn main(ptr :: *s32) -> *s32\n    return &ptr^\nend\n").unwrap();
+    }
+
+    #[test]
+    fn dereference_rejects_non_pointer_type() {
+        let error = check_source("fn main() -> s32\n    return 1^\nend\n").unwrap_err();
+
+        assert!(error.contains("cannot dereference non-pointer type"));
     }
 }

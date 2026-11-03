@@ -1,86 +1,74 @@
 @extern printf
-( ptr :: *u8 )++ to s32
-
-@val print_string
-do ( s :: []u8 )
-        printf ("%s".ptr, s.ptr)
-done
+( ptr :: *u8 )++ -> s32
 
 @type Printable
 String | Integer | :nl | :t | bool | []Printable | Record
 
-@val print_int
-do ( num :: Integer )
-        match num with z
-                s32 => printf ("%d"     .ptr, z)
-                s16 => printf ("%d"     .ptr, z as s32)
-                s64 => printf ("%lld"   .ptr, z)
-                u16 => printf ("%u"     .ptr, z as u32)
-                u32 => printf ("%u"     .ptr, z)
-                u64 => printf ("%llu"   .ptr, z)
+fn print_string(s :: []u8)
+    printf("%s".ptr, s.ptr)
+end
+
+fn pr_nl()
+    printf("\n".ptr)
+end
+
+fn pr_tab()
+    printf("\t".ptr)
+end
+
+fn print_int(num :: Integer)
+    match num with z
+        s32 => printf("%d".ptr, z)
+        s16 => printf("%d".ptr, z as s32)
+        s64 => printf("%lld".ptr, z)
+        u16 => printf("%u".ptr, z as u32)
+        u32 => printf("%u".ptr, z)
+        u64 => printf("%llu".ptr, z)
+    over
+end
+
+fn printa(arr :: []Printable)
+    var i := 0
+    dotimes arr.len => {
+        print(arr[i])
+        i := i + 1
+    }
+end
+
+fn print(x :: Printable)
+    match x with z
+        String      => print_string(z)
+        Integer     => print_int(z)
+        :nl         => pr_nl()
+        :t          => pr_tab()
+        []Printable => printa(z)
+        bool => if
+            z = true => print("true")
+            else     => print("false")
+        end
+        Record      => printr(z)
+    over
+end
+
+fn println(x :: Printable)
+    print(x)
+    pr_nl()
+end
+
+fn printr(r :: Record)
+    var i := 0
+    let header := r^
+    let keys := header.key
+    let values := header.val
+
+    dotimes header.len => {
+        [ keys[i], " : " ] `print()
+
+        match values[i] with z
+            Record => [:nl, "(", :nl, z, ")", :nl] `print()
+            _      => [z, :nl] `print()
         over
-done
 
-@val pr_nl
-do
-        printf ("\n".ptr)
-done
-
-@val pr_tab
-do
-        printf ("\t".ptr)
-done
-
-@val printa
-do ( arr :: []Printable )
-        var x :: s32
-        0-> x
-
-        dotimes arr.len => {
-                print(arr[x])
-                x + 1 -> x
-        }
-done
-
-@val print
-do ( x :: Printable )
-        match x with z
-                String          => print_string(z)
-                Integer         => print_int(z)
-                :nl             => pr_nl()
-                :t              => pr_tab()
-                []Printable     => printa(z)
-                bool => if
-                        z = true        => print("true")
-                        else            => print("false")
-                end
-                Record          => printr(z)
-        over
-done
-
-@val println
-do ( x :: Printable )
-        print(x)
-        pr_nl()
-done
-
-@val printr
-do ( r :: Record )
-        var i :: s32
-        0-> i
-
-        r^ -> header
-        header.val -> val
-        header.key -> key
-
-        dotimes header.len => {
-                [ key[i], " : " ] `print()
-
-                match val[i] with z
-                        Record  => [:nl, "(", :nl, z, ")", :nl] `print()
-                        _       => [z, :nl] `print()
-                over
-
-                i + 1 -> i
-        }
-done
+        i := i + 1
+    }
+end
