@@ -390,6 +390,7 @@ pub enum Token {
     Underscore,
     FnKeyword,
     TypeKeyword,
+    ValKeyword,
     Var,
     Let,
     If,
@@ -400,7 +401,6 @@ pub enum Token {
     With,
     Over,
     Return,
-    To,
     As,
     Not,
     DoTimes,
@@ -503,7 +503,7 @@ impl Lexer {
                     tokens.push(self.lex_integer()?);
                 }
                 'a'..='z' | 'A'..='Z' | '_' => {
-                    tokens.push(self.lex_identifier(&tokens));
+                    tokens.push(self.lex_identifier());
                 }
                 '"' => {
                     tokens.push(self.lex_string()?);
@@ -722,7 +722,7 @@ impl Lexer {
         Ok(Token::Atom(name))
     }
 
-    fn lex_identifier(&mut self, previous_tokens: &[Token]) -> Token {
+    fn lex_identifier(&mut self) -> Token {
         let start = self.position;
 
         while self.position < self.chars.len() {
@@ -740,20 +740,8 @@ impl Lexer {
             return Token::Underscore;
         }
 
-        let is_after_at = previous_tokens
-            .iter()
-            .rev()
-            .find(|t| !matches!(t, Token::Newline))
-            == Some(&Token::At);
-
         match text.as_str() {
-            "val" => {
-                if is_after_at {
-                    Token::Val
-                } else {
-                    Token::Identifier(text)
-                }
-            }
+            "val" => Token::ValKeyword,
             "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
             "fn" => Token::FnKeyword,
@@ -767,7 +755,6 @@ impl Lexer {
             "with" => Token::With,
             "over" => Token::Over,
             "return" => Token::Return,
-            "to" => Token::To,
             "as" => Token::As,
             "s16" => Token::TypeS16,
             "s32" => Token::TypeS32,
@@ -928,7 +915,7 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
-            Token::Val => {
+            Token::ValKeyword => {
                 self.advance();
                 Ok("val".to_string())
             }
@@ -943,9 +930,9 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
-            Token::To => {
+            Token::ValKeyword => {
                 self.advance();
-                Ok("to".to_string())
+                Ok("val".to_string())
             }
             Token::Val => {
                 self.advance();
@@ -1095,6 +1082,17 @@ impl Parser {
                         span: declaration_span,
                     });
                 }
+                Token::ValKeyword => {
+                    self.advance(); // consume 'val'
+                    self.skip_newlines();
+                    let name = self.expect_identifier()?;
+                    self.skip_newlines();
+                    self.expect(Token::ColonEqual)?;
+                    self.skip_newlines();
+                    let value = self.parse_expression()?;
+                    self.consume_optional_newline();
+                    definitions.push(Definition { name, value });
+                }
                 Token::Extern => {
                     self.advance(); // consume 'extern'
                     self.expect(Token::FnKeyword)?;
@@ -1131,7 +1129,7 @@ impl Parser {
                     self.expect(Token::RParen)?;
 
                     self.skip_newlines();
-                    let return_type = if self.is(Token::Arrow) || self.is(Token::To) {
+                    let return_type = if self.is(Token::Arrow) {
                         self.advance();
                         self.skip_newlines();
                         self.parse_type()?
@@ -1152,70 +1150,12 @@ impl Parser {
                         span: declaration_span,
                     });
                 }
-                Token::At => {
-                    self.advance();
-
-                    let directive = match self.peek().clone() {
-                        Token::Val => {
-                            self.advance();
-                            "val".to_string()
-                        }
-                        Token::Identifier(name) => {
-                            self.advance();
-                            name
-                        }
-                        token => {
-                            return Err(format!(
-                                "in '{}': expected directive after '@' (@val, @type, @main), found {:?}",
-                                file_name, token
-                            ));
-                        }
-                    };
-
-                    match directive.as_str() {
-                        "val" => {
-                            self.skip_newlines();
-                            let name = self.expect_identifier()?;
-                            self.skip_newlines();
-                            let value = self.parse_expression()?;
-                            self.consume_optional_newline();
-                            definitions.push(Definition { name, value });
-                        }
-                        "type" => {
-                            self.skip_newlines();
-                            let name = self.expect_identifier()?;
-                            self.skip_newlines();
-                            let target = self.parse_type()?;
-                            self.consume_optional_newline();
-                            type_aliases.push(TypeAlias {
-                                name,
-                                target,
-                                span: declaration_span,
-                            });
-                        }
-                        "main" => {
-                            self.skip_newlines();
-                            let value = self.parse_expression()?;
-                            self.consume_optional_newline();
-                            definitions.push(Definition {
-                                name: "main".to_string(),
-                                value,
-                            });
-                        }
-                        other => {
-                            return Err(format!(
-                                "in '{}': unknown top-level directive '@{}'",
-                                file_name, other
-                            ));
-                        }
-                    }
-                }
                 Token::Newline => {
                     self.skip_newlines();
                 }
                 token => {
                     return Err(format!(
-                        "in '{}': unexpected token at top level: {:?}",
+                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'type', 'val', or 'extern'",
                         file_name, token
                     ));
                 }
@@ -1253,10 +1193,6 @@ impl Parser {
 
         self.skip_newlines();
         let return_type = if self.is(Token::Arrow) {
-            self.advance();
-            self.skip_newlines();
-            self.parse_type()?
-        } else if self.is(Token::To) {
             self.advance();
             self.skip_newlines();
             self.parse_type()?
@@ -1542,7 +1478,6 @@ impl Parser {
         if idx < self.tokens.len() {
             match &self.tokens[idx] {
                 Token::Identifier(_)
-                | Token::To
                 | Token::Val
                 | Token::Var
                 | Token::Let
@@ -1639,7 +1574,7 @@ impl Parser {
                     } else {
                         false
                     };
-                    let return_type = if self.is(Token::Arrow) || self.is(Token::To) {
+                    let return_type = if self.is(Token::Arrow) {
                         self.advance();
                         self.skip_newlines();
                         Box::new(self.parse_type()?)

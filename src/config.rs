@@ -36,7 +36,7 @@ impl ModConfig {
                     imports = Self::parse_import_directive(&field.value, file_path)?;
                 }
                 other => {
-                    let error = format!("unknown directive in mod.yawn: '@{}'", other);
+                    let error = format!("unknown directive in mod.yawn: '{}'", other);
                     if let Expression::Spanned { span, .. } = &field.value {
                         return Err(format_error(span, &error));
                     }
@@ -72,7 +72,7 @@ impl ModConfig {
                 Ok(())
             }
             Expression::Block { .. } => Err(format!(
-                "in '{}': functions ('do...done') are prohibited in mod.yawn",
+                "in '{}': functions ('fn...end') are prohibited in mod.yawn",
                 file_path
             )),
             Expression::Cast { .. } => Err(format!(
@@ -90,8 +90,8 @@ impl ModConfig {
         }
     }
 
-    /// Enforces: @export must be strictly an Array of Structs:
-    /// `[] ( @symbol []String, @to []String )`
+    /// Enforces: export must be strictly an Array of Structs:
+    /// `[] ( symbol := []String, to := []String )`
     fn parse_export_directive(
         expr: &Expression,
         file_path: &str,
@@ -122,19 +122,19 @@ impl ModConfig {
                                         symbols = Some(Self::parse_string_array(
                                             &field.value,
                                             file_path,
-                                            "@symbol",
+                                            "'symbol'",
                                         )?);
                                     }
                                     "to" => {
                                         to = Some(Self::parse_string_array(
                                             &field.value,
                                             file_path,
-                                            "@to",
+                                            "'to'",
                                         )?);
                                     }
                                     other => {
                                         return Err(format!(
-                                            "in '{}': unknown export field '@{}', expected '@symbol' or '@to'",
+                                            "in '{}': unknown export field '{}', expected 'symbol' or 'to'",
                                             file_path, other
                                         ));
                                     }
@@ -143,13 +143,13 @@ impl ModConfig {
 
                             let symbols = symbols.ok_or_else(|| {
                                 format!(
-                                    "in '{}': export struct missing required field '@symbol'",
+                                    "in '{}': export struct missing required field 'symbol'",
                                     file_path
                                 )
                             })?;
                             let to = to.ok_or_else(|| {
                                 format!(
-                                    "in '{}': export struct missing required field '@to'",
+                                    "in '{}': export struct missing required field 'to'",
                                     file_path
                                 )
                             })?;
@@ -162,7 +162,7 @@ impl ModConfig {
                         }
                         _ => {
                             return Err(format!(
-                                "in '{}': type mismatch for @export: expected array of structs '[]( @symbol []String, @to []String )'",
+                                "in '{}': type mismatch for export: expected array of structs '[]( symbol := []String, to := []String )'",
                                 file_path
                             ));
                         }
@@ -171,13 +171,13 @@ impl ModConfig {
                 Ok(rules)
             }
             _ => Err(format!(
-                "in '{}': type mismatch for @export: expected array of structs '[]( @symbol []String, @to []String )'",
+                "in '{}': type mismatch for export: expected array of structs '[]( symbol := []String, to := []String )'",
                 file_path
             )),
         }
     }
 
-    /// Enforces: @import must be strictly an Array of Arrays of Strings:
+    /// Enforces: import must be strictly an Array of Arrays of Strings:
     /// `[][]String`
     fn parse_import_directive(
         expr: &Expression,
@@ -197,7 +197,7 @@ impl ModConfig {
                 Ok(imports)
             }
             _ => Err(format!(
-                "in '{}': type mismatch for @import: expected array of string arrays '[][]String'",
+                "in '{}': type mismatch for import: expected array of string arrays '[][]String'",
                 file_path
             )),
         }

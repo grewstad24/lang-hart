@@ -1,13 +1,15 @@
 fn main() -> s32
-        @record (
-                id := "bob123"
-                number := 68
-                valid := true
-                more := (
-                        is_cool := false
-                        friend := "alice345"
-                )
-        ) ..print()
+        print(my_data)
 
         return 0
 end
+
+val my_data := @record (
+        id := "bob123"
+        number := 68
+        valid := true
+        more := (
+                is_cool := false
+                friend := "alice345"
+        )
+)
