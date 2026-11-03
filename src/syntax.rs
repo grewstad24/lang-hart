@@ -389,6 +389,7 @@ pub enum Token {
     Arrow,
     Underscore,
     FnKeyword,
+    TypeKeyword,
     Var,
     Let,
     If,
@@ -753,6 +754,7 @@ impl Lexer {
                     Token::Identifier(text)
                 }
             }
+            "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
             "fn" => Token::FnKeyword,
             "var" => Token::Var,
@@ -1041,6 +1043,10 @@ impl Parser {
                 self.advance();
                 Ok("bool".to_string())
             }
+            Token::TypeKeyword => {
+                self.advance();
+                Ok("type".to_string())
+            }
             token => Err(format!("expected field name identifier, found {:?}", token)),
         }
     }
@@ -1073,6 +1079,21 @@ impl Parser {
                 Token::FnKeyword => {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
+                }
+                Token::TypeKeyword => {
+                    self.advance(); // consume 'type'
+                    self.skip_newlines();
+                    let name = self.expect_identifier()?;
+                    self.skip_newlines();
+                    self.expect(Token::ColonEqual)?;
+                    self.skip_newlines();
+                    let target = self.parse_type()?;
+                    self.consume_optional_newline();
+                    type_aliases.push(TypeAlias {
+                        name,
+                        target,
+                        span: declaration_span,
+                    });
                 }
                 Token::Extern => {
                     self.advance(); // consume 'extern'

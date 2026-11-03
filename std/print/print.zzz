@@ -1,7 +1,6 @@
 extern fn printf( ptr :: *u8, ...) -> s32
 
-@type Printable
-String | Integer | :nl | :t | bool | []Printable | Record
+type Printable := String | Integer | :nl | :t | bool | []Printable | Record
 
 fn print_string(s :: []u8)
     printf("%s".ptr, s.ptr)
