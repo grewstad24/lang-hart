@@ -1,2 +1,1 @@
-@extern fflush
-(ptr :: *u8) to s32
+extern fn fflush(ptr :: *u8) -> s32

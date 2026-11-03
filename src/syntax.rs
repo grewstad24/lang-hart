@@ -373,17 +373,18 @@ pub enum Token {
     Greater,
     GreaterEqual,
     Plus,
-    PlusPlus,
     Minus,
     Star,
     Slash,
     Percent,
     Ampersand,
     Caret,
+    Extern,
     Pipe,
     At,
     Hash,
     DotDot,
+    DotDotDot,
     FatArrow,
     Arrow,
     Underscore,
@@ -507,13 +508,8 @@ impl Lexer {
                     tokens.push(self.lex_string()?);
                 }
                 '+' => {
-                    if self.peek_char(1) == Some('+') {
-                        self.position += 2;
-                        tokens.push(Token::PlusPlus);
-                    } else {
-                        self.position += 1;
-                        tokens.push(Token::Plus);
-                    }
+                    self.position += 1;
+                    tokens.push(Token::Plus);
                 }
                 '-' => {
                     if self.peek_char(1) == Some('>') {
@@ -549,7 +545,10 @@ impl Lexer {
                     tokens.push(Token::Hash);
                 }
                 '.' => {
-                    if self.peek_char(1) == Some('.') {
+                    if self.peek_char(1) == Some('.') && self.peek_char(2) == Some('.') {
+                        self.position += 3;
+                        tokens.push(Token::DotDotDot);
+                    } else if self.peek_char(1) == Some('.') {
                         self.position += 2;
                         tokens.push(Token::DotDot);
                     } else {
@@ -754,6 +753,7 @@ impl Lexer {
                     Token::Identifier(text)
                 }
             }
+            "extern" => Token::Extern,
             "fn" => Token::FnKeyword,
             "var" => Token::Var,
             "let" => Token::Let,
@@ -1074,6 +1074,63 @@ impl Parser {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
                 }
+                Token::Extern => {
+                    self.advance(); // consume 'extern'
+                    self.expect(Token::FnKeyword)?;
+                    let name = self.expect_identifier()?;
+
+                    self.expect(Token::LParen)?;
+                    self.skip_newlines();
+                    let mut parameters = Vec::new();
+                    let mut is_variadic = false;
+
+                    while !self.is(Token::RParen) && !self.is(Token::Eof) {
+                        if self.is(Token::DotDotDot) {
+                            self.advance();
+                            is_variadic = true;
+                            self.skip_newlines();
+                            break;
+                        }
+
+                        let param_name = self.expect_field_name()?;
+                        self.expect(Token::ColonColon)?;
+                        self.skip_newlines();
+                        let ty = self.parse_type()?;
+                        parameters.push(Parameter {
+                            name: param_name,
+                            ty,
+                        });
+                        self.skip_newlines();
+
+                        if self.is(Token::Comma) {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+
+                    self.skip_newlines();
+                    let return_type = if self.is(Token::Arrow) || self.is(Token::To) {
+                        self.advance();
+                        self.skip_newlines();
+                        self.parse_type()?
+                    } else {
+                        Type::Void
+                    };
+                    self.consume_optional_newline();
+
+                    let signature = Signature {
+                        parameters,
+                        return_type: Box::new(return_type),
+                        is_variadic,
+                    };
+
+                    extern_functions.push(ExternalFunction {
+                        name,
+                        signature,
+                        span: declaration_span,
+                    });
+                }
                 Token::At => {
                     self.advance();
 
@@ -1088,7 +1145,7 @@ impl Parser {
                         }
                         token => {
                             return Err(format!(
-                                "in '{}': expected directive after '@' (@val, @extern, @type, @main), found {:?}",
+                                "in '{}': expected directive after '@' (@val, @type, @main), found {:?}",
                                 file_name, token
                             ));
                         }
@@ -1114,26 +1171,6 @@ impl Parser {
                                 target,
                                 span: declaration_span,
                             });
-                        }
-                        "extern" => {
-                            self.skip_newlines();
-                            let name = self.expect_identifier()?;
-                            self.skip_newlines();
-                            let expr = self.parse_expression()?;
-                            self.consume_optional_newline();
-
-                            if let Expression::Signature(signature) = unspanned_expression(&expr) {
-                                extern_functions.push(ExternalFunction {
-                                    name,
-                                    signature: signature.clone(),
-                                    span: declaration_span,
-                                });
-                            } else {
-                                return Err(format!(
-                                    "in '{}': expected signature for @extern '{}', found {:?}",
-                                    file_name, name, expr
-                                ));
-                            }
                         }
                         "main" => {
                             self.skip_newlines();
@@ -1571,10 +1608,10 @@ impl Parser {
                 self.skip_newlines();
 
                 if self.is_signature_start() {
-                    let sig = self.parse_signature_inner()?;
+                    let (parameters, _) = self.parse_signature_inner()?;
                     self.expect(Token::RParen)?;
                     self.skip_newlines();
-                    let is_variadic = if self.is(Token::PlusPlus) {
+                    let is_variadic = if self.is(Token::DotDotDot) {
                         self.advance();
                         self.skip_newlines();
                         true
@@ -1589,7 +1626,7 @@ impl Parser {
                         Box::new(Type::Void)
                     };
                     Ok(Expression::Signature(Signature {
-                        parameters: sig,
+                        parameters: parameters,
                         return_type,
                         is_variadic,
                     }))
@@ -1710,11 +1747,18 @@ impl Parser {
         false
     }
 
-    fn parse_signature_inner(&mut self) -> Result<Vec<Parameter>, String> {
+    fn parse_signature_inner(&mut self) -> Result<(Vec<Parameter>, bool), String> {
         let mut parameters = Vec::new();
+        let mut is_variadic = false;
         self.skip_newlines();
 
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
+            if self.is(Token::DotDotDot) {
+                self.advance();
+                is_variadic = true;
+                break;
+            }
+
             let name = self.expect_field_name()?;
             self.expect(Token::ColonColon)?;
             self.skip_newlines();
@@ -1731,7 +1775,7 @@ impl Parser {
             }
         }
 
-        Ok(parameters)
+        Ok((parameters, is_variadic))
     }
 
     fn parse_if_expression(&mut self) -> Result<Expression, String> {
@@ -2038,7 +2082,7 @@ impl Parser {
 
                 let mut fields = Vec::new();
                 if !self.is(Token::RParen) {
-                    let parameters = self.parse_signature_inner()?;
+                    let (parameters, _) = self.parse_signature_inner()?;
                     fields = parameters
                         .into_iter()
                         .map(|p| StructFieldType {

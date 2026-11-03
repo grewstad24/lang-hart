@@ -1,2 +1,1 @@
-@extern write
-(fd :: s32, buf :: *u8, bytes :: u64) to s64
+extern fn write(fd :: s32, buf :: *u8, bytes :: u64) -> s64
