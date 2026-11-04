@@ -386,6 +386,7 @@ pub enum Token {
     End,
     Match,
     With,
+    Using,
     Over,
     Return,
     As,
@@ -741,6 +742,7 @@ impl Lexer {
             "end" => Token::End,
             "match" => Token::Match,
             "with" => Token::With,
+            "using" => Token::Using,
             "over" => Token::Over,
             "return" => Token::Return,
             "as" => Token::As,
@@ -958,6 +960,10 @@ impl Parser {
             Token::With => {
                 self.advance();
                 Ok("with".to_string())
+            }
+            Token::Using => {
+                self.advance();
+                Ok("using".to_string())
             }
             Token::Over => {
                 self.advance();
@@ -1468,6 +1474,7 @@ impl Parser {
                 | Token::End
                 | Token::Match
                 | Token::With
+                | Token::Using
                 | Token::Over
                 | Token::Return
                 | Token::As
@@ -1699,15 +1706,33 @@ impl Parser {
         let target = self.parse_expression()?;
         self.skip_newlines();
 
-        self.expect(Token::With)?;
+        if self.is(Token::Using) || self.is(Token::With) {
+            self.advance();
+        } else {
+            return Err(format!("expected 'using', found {:?}", self.peek()));
+        }
         self.skip_newlines();
 
         let binding_name = self.expect_identifier()?;
         self.skip_newlines();
 
+        let has_brace = self.is(Token::LBrace);
+        if has_brace {
+            self.advance();
+        }
+        self.skip_newlines();
+
         let mut arms = Vec::new();
 
-        while !self.is(Token::Over) && !self.is(Token::Eof) {
+        let is_at_end = |p: &Parser| {
+            if has_brace {
+                p.is(Token::RBrace)
+            } else {
+                p.is(Token::Over)
+            }
+        };
+
+        while !is_at_end(self) && !self.is(Token::Eof) {
             let variant_type = if self.is(Token::Underscore) {
                 self.advance();
                 None
@@ -1721,9 +1746,17 @@ impl Parser {
             let body = Box::new(self.parse_expression()?);
             arms.push(MatchArm { variant_type, body });
             self.skip_newlines();
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
         }
 
-        self.expect(Token::Over)?;
+        if has_brace {
+            self.expect(Token::RBrace)?;
+        } else {
+            self.expect(Token::Over)?;
+        }
 
         Ok(Expression::Match {
             target: Box::new(target),

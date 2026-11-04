@@ -62,10 +62,10 @@ fn printr(r :: Record) -> :none {
         dotimes header.len => {
                 [ keys[i], " : " ] ..print()
 
-                match values[i] with z
+                match values[i] using z {
                         Record => [:nl, "(", :nl, z, ")", :nl] ..print()
                         _      => [z, :nl] ..print()
-                over
+                }
 
                 i := i + 1
         }
