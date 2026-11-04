@@ -57,7 +57,7 @@ fn printr(r :: Record) -> :none {
         let keys := header.key
         let values := header.val
 
-        for header.len using i => {
+        repeat header.len using i => {
                 [ keys[i], " : " ] ..print()
 
                 match values[i] using z {

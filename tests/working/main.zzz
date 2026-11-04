@@ -26,4 +26,15 @@ fn main() -> :none {
                 s32 => print(z)
                 :none => println("none")
         }
+
+        repeat 3 => print("repeat without binder! ")
+        print(:nl)
+
+        repeat 5 using i => {
+                print("i: ")
+                print(i)
+                print(" ")
+        }
+        print(:nl)
+
 }

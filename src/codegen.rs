@@ -734,22 +734,23 @@ impl<'ctx> Codegen<'ctx> {
 
                 Ok(self.atom_binding("none"))
             }
-            Expression::DoTimes { count, body } => {
+            Expression::Repeat { count, binder, body } => {
                 let count_binding = self.codegen_expression(count)?;
                 let count_val = self.binding_int_value(&count_binding)?;
-                let count_is_signed = self.is_signed(&self.binding_type(&count_binding)?);
+                let count_ty = self.binding_type(&count_binding)?;
+                let count_is_signed = self.is_signed(&count_ty);
 
                 let limit = if count_is_signed {
                     self.builder.build_int_s_extend_or_bit_cast(
                         count_val,
                         self.ptr_sized_int_type(),
-                        "dotimes_limit",
+                        "repeat_limit",
                     )
                 } else {
                     self.builder.build_int_z_extend_or_bit_cast(
                         count_val,
                         self.ptr_sized_int_type(),
-                        "dotimes_limit",
+                        "repeat_limit",
                     )
                 }
                 .map_err(|e| e.to_string())?;
@@ -757,7 +758,7 @@ impl<'ctx> Codegen<'ctx> {
                 let current_block = self
                     .builder
                     .get_insert_block()
-                    .ok_or_else(|| "cannot generate dotimes outside basic block".to_string())?;
+                    .ok_or_else(|| "cannot generate repeat outside basic block".to_string())?;
                 let current_fn = current_block
                     .get_parent()
                     .ok_or_else(|| "current block has no parent function".to_string())?;
@@ -767,25 +768,36 @@ impl<'ctx> Codegen<'ctx> {
 
                 let cond_bb = self
                     .context
-                    .append_basic_block(current_fn, &format!("dotimes.cond.{}", id));
+                    .append_basic_block(current_fn, &format!("repeat.cond.{}", id));
                 let body_bb = self
                     .context
-                    .append_basic_block(current_fn, &format!("dotimes.body.{}", id));
+                    .append_basic_block(current_fn, &format!("repeat.body.{}", id));
                 let merge_bb = self
                     .context
-                    .append_basic_block(current_fn, &format!("dotimes.merge.{}", id));
+                    .append_basic_block(current_fn, &format!("repeat.merge.{}", id));
 
                 let counter_alloca = self
                     .builder
                     .build_alloca(
                         self.ptr_sized_int_type(),
-                        &format!("dotimes.counter.{}", id),
+                        &format!("repeat.counter.{}", id),
                     )
                     .map_err(|e| e.to_string())?;
 
                 self.builder
                     .build_store(counter_alloca, self.ptr_sized_int_type().const_zero())
                     .map_err(|e| e.to_string())?;
+
+                let binder_alloca = if let Some(name) = binder {
+                    let binder_llvm_ty = self.llvm_type(&count_ty)?;
+                    let alloca = self
+                        .builder
+                        .build_alloca(binder_llvm_ty, &format!("repeat.binder.{}.{}", name, id))
+                        .map_err(|e| e.to_string())?;
+                    Some(alloca)
+                } else {
+                    None
+                };
 
                 self.builder
                     .build_unconditional_branch(cond_bb)
@@ -809,7 +821,7 @@ impl<'ctx> Codegen<'ctx> {
                         },
                         current_idx,
                         limit,
-                        "dotimes_cmp",
+                        "repeat_cmp",
                     )
                     .map_err(|e| e.to_string())?;
 
@@ -819,7 +831,31 @@ impl<'ctx> Codegen<'ctx> {
 
                 // --- Body Block ---
                 self.builder.position_at_end(body_bb);
+                if let (Some(name), Some(alloca)) = (binder, binder_alloca) {
+                    self.local_scopes.push(HashMap::new());
+                    let idx_binding = Binding::Integer {
+                        ty: Type::USize,
+                        value: current_idx,
+                    };
+                    let casted_binding = self.codegen_cast(idx_binding, count_ty.clone())?;
+                    let val = self.binding_basic_value(&casted_binding)?;
+                    self.builder
+                        .build_store(alloca, val)
+                        .map_err(|e| e.to_string())?;
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        LocalVar {
+                            ty: count_ty.clone(),
+                            alloca,
+                        },
+                    );
+                }
+
                 self.codegen_expression(body)?;
+
+                if binder.is_some() {
+                    self.local_scopes.pop();
+                }
 
                 if let Some(bb) = self.builder.get_insert_block() {
                     if bb.get_terminator().is_none() {

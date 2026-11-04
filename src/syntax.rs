@@ -256,8 +256,9 @@ pub enum Expression {
         target: String,
         value: Box<Expression>,
     },
-    DoTimes {
+    Repeat {
         count: Box<Expression>,
+        binder: Option<String>,
         body: Box<Expression>,
     },
 }
@@ -389,7 +390,7 @@ pub enum Token {
     Return,
     As,
     Not,
-    DoTimes,
+    Repeat,
     Val,
     Never,
     TypeS16,
@@ -755,7 +756,7 @@ impl Lexer {
             "true" => Token::Boolean(true),
             "false" => Token::Boolean(false),
             "not" => Token::Not,
-            "dotimes" => Token::DoTimes,
+            "repeat" => Token::Repeat,
             "never" => Token::Never,
             _ => Token::Identifier(text),
         }
@@ -1005,9 +1006,9 @@ impl Parser {
                 self.advance();
                 Ok("not".to_string())
             }
-            Token::DoTimes => {
+            Token::Repeat => {
                 self.advance();
-                Ok("dotimes".to_string())
+                Ok("repeat".to_string())
             }
             Token::TypeBool => {
                 self.advance();
@@ -1063,7 +1064,6 @@ impl Parser {
         }
 
         self.expect(Token::RBrace)?;
-        self.consume_optional_newline();
 
         Ok(Expression::Block(expressions))
     }
@@ -1500,7 +1500,7 @@ impl Parser {
                 | Token::Return
                 | Token::As
                 | Token::Not
-                | Token::DoTimes
+                | Token::Repeat
                 | Token::TypeS16
                 | Token::TypeS32
                 | Token::TypeS64
@@ -1661,15 +1661,25 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 Ok(Expression::Return(Box::new(expr)))
             }
-            Token::DoTimes => {
+            Token::Repeat => {
                 self.advance();
                 self.skip_newlines();
                 let count = self.parse_expression()?;
+                self.skip_newlines();
+                let binder = if self.is(Token::Using) {
+                    self.advance();
+                    self.skip_newlines();
+                    Some(self.expect_identifier()?)
+                } else {
+                    None
+                };
+                self.skip_newlines();
                 self.expect(Token::FatArrow)?;
                 self.skip_newlines();
                 let body = self.parse_expression()?;
-                Ok(Expression::DoTimes {
+                Ok(Expression::Repeat {
                     count: Box::new(count),
+                    binder,
                     body: Box::new(body),
                 })
             }
@@ -1822,7 +1832,6 @@ impl Parser {
         }
 
         self.expect(Token::RBrace)?;
-        self.consume_optional_newline();
 
         if arms.is_empty() {
             return Err("if block must contain at least one arm".to_string());

@@ -1194,18 +1194,30 @@ impl<'a> Checker<'a> {
                 Ok(Type::Atom("none".to_string()))
             }
 
-            Expression::DoTimes { count, body } => {
+            Expression::Repeat { count, binder, body } => {
                 let raw_count_ty = self.type_of_expression(count)?;
                 let count_ty = self.resolve_type(&raw_count_ty)?;
 
                 if !Self::is_integer_type(&count_ty) {
                     return Err(format!(
-                        "in '{}': dotimes count must be an integer, found {:?}",
+                        "in '{}': repeat count must be an integer, found {:?}",
                         self.current_file_path, count_ty
                     ));
                 }
 
                 let scopes_before_loop = self.local_scopes.clone();
+                if let Some(binder_name) = binder {
+                    self.enter_scope();
+                    self.local_scopes.last_mut().unwrap().insert(
+                        binder_name.clone(),
+                        BindingInfo {
+                            ty: count_ty.clone(),
+                            is_mutable: false,
+                            is_initialized: true,
+                        },
+                    );
+                }
+
                 let body_result = self.type_of_expression(body);
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;

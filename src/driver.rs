@@ -300,8 +300,9 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             target: target.clone(),
             value: Box::new(canonicalize_expression(value, checker)?),
         }),
-        Expression::DoTimes { count, body } => Ok(Expression::DoTimes {
+        Expression::Repeat { count, binder, body } => Ok(Expression::Repeat {
             count: Box::new(canonicalize_expression(count, checker)?),
+            binder: binder.clone(),
             body: Box::new(canonicalize_expression(body, checker)?),
         }),
         Expression::If { arms } => {
