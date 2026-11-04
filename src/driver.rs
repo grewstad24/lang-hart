@@ -13,8 +13,7 @@ use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
     Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm, Parameter,
-    Parser, Program, Signature, SourceFile, Statement, StructFieldInit, Type, TypeAlias,
-    format_error,
+    Parser, Program, Signature, SourceFile, StructFieldInit, Type, TypeAlias, format_error,
 };
 
 pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
@@ -176,67 +175,6 @@ fn canonicalize_signature(sig: &Signature, checker: &Checker) -> Result<Signatur
     })
 }
 
-fn canonicalize_statement(stmt: &Statement, checker: &Checker) -> Result<Statement, String> {
-    match stmt {
-        Statement::Spanned { statement, span } => Ok(Statement::Spanned {
-            statement: Box::new(
-                canonicalize_statement(statement, checker)
-                    .map_err(|error| format_error(span, &error))?,
-            ),
-            span: span.clone(),
-        }),
-        Statement::Compound(stmts) => {
-            let mut resolved = Vec::with_capacity(stmts.len());
-            for s in stmts {
-                resolved.push(canonicalize_statement(s, checker)?);
-            }
-            Ok(Statement::Compound(resolved))
-        }
-        Statement::Declare { name, ty } => Ok(Statement::Declare {
-            name: name.clone(),
-            ty: canonicalize_type(ty, checker)?,
-        }),
-        Statement::Define {
-            name,
-            is_mutable,
-            value,
-        } => Ok(Statement::Define {
-            name: name.clone(),
-            is_mutable: *is_mutable,
-            value: canonicalize_expression(value, checker)?,
-        }),
-        Statement::Assign { target, value } => Ok(Statement::Assign {
-            target: target.clone(),
-            value: canonicalize_expression(value, checker)?,
-        }),
-        Statement::DoTimes { count, body } => Ok(Statement::DoTimes {
-            count: canonicalize_expression(count, checker)?,
-            body: Box::new(canonicalize_statement(body, checker)?),
-        }),
-        Statement::Discard(expr) => Ok(Statement::Discard(canonicalize_expression(expr, checker)?)),
-        Statement::Return(expr) => Ok(Statement::Return(canonicalize_expression(expr, checker)?)),
-        Statement::If { arms } => {
-            let mut resolved_arms = Vec::with_capacity(arms.len());
-            for arm in arms {
-                let cond = match &arm.condition {
-                    crate::syntax::IfCondition::Expression(e) => {
-                        crate::syntax::IfCondition::Expression(canonicalize_expression(e, checker)?)
-                    }
-                    crate::syntax::IfCondition::Else => crate::syntax::IfCondition::Else,
-                };
-                let body = Box::new(canonicalize_statement(&arm.body, checker)?);
-                resolved_arms.push(crate::syntax::DoIfArm {
-                    condition: cond,
-                    body,
-                });
-            }
-            Ok(Statement::If {
-                arms: resolved_arms,
-            })
-        }
-    }
-}
-
 fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expression, String> {
     match expr {
         Expression::Spanned { expression, span } => Ok(Expression::Spanned {
@@ -277,9 +215,6 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
                 });
             }
             Ok(Expression::Record(resolved))
-        }
-        Expression::Signature(sig) => {
-            Ok(Expression::Signature(canonicalize_signature(sig, checker)?))
         }
         Expression::Unary { operator, operand } => Ok(Expression::Unary {
             operator: operator.clone(),
@@ -331,20 +266,48 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::Dereference(e) => Ok(Expression::Dereference(Box::new(
             canonicalize_expression(e, checker)?,
         ))),
-        Expression::Block { signature, body } => {
-            let resolved_sig = match signature {
-                Some(sig) => Some(canonicalize_signature(sig, checker)?),
+        Expression::Block(exprs) => {
+            let mut resolved = Vec::with_capacity(exprs.len());
+            for e in exprs {
+                resolved.push(canonicalize_expression(e, checker)?);
+            }
+            Ok(Expression::Block(resolved))
+        }
+        Expression::Discard(e) => Ok(Expression::Discard(Box::new(canonicalize_expression(e, checker)?))),
+        Expression::Return(opt_e) => {
+            let resolved = match opt_e {
+                Some(e) => Some(Box::new(canonicalize_expression(e, checker)?)),
                 None => None,
             };
-            let mut resolved_body = Vec::with_capacity(body.len());
-            for stmt in body {
-                resolved_body.push(canonicalize_statement(stmt, checker)?);
-            }
-            Ok(Expression::Block {
-                signature: resolved_sig,
-                body: resolved_body,
+            Ok(Expression::Return(resolved))
+        }
+        Expression::Let { name, value } => Ok(Expression::Let {
+            name: name.clone(),
+            value: Box::new(canonicalize_expression(value, checker)?),
+        }),
+        Expression::Var { name, ty, value } => {
+            let resolved_ty = match ty {
+                Some(t) => Some(canonicalize_type(t, checker)?),
+                None => None,
+            };
+            let resolved_val = match value {
+                Some(v) => Some(Box::new(canonicalize_expression(v, checker)?)),
+                None => None,
+            };
+            Ok(Expression::Var {
+                name: name.clone(),
+                ty: resolved_ty,
+                value: resolved_val,
             })
         }
+        Expression::Assign { target, value } => Ok(Expression::Assign {
+            target: target.clone(),
+            value: Box::new(canonicalize_expression(value, checker)?),
+        }),
+        Expression::DoTimes { count, body } => Ok(Expression::DoTimes {
+            count: Box::new(canonicalize_expression(count, checker)?),
+            body: Box::new(canonicalize_expression(body, checker)?),
+        }),
         Expression::If { arms } => {
             let mut resolved_arms = Vec::with_capacity(arms.len());
             for arm in arms {
@@ -432,6 +395,11 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     .or_insert_with(|| alias.clone());
             }
             for def in &file.definitions {
+                let resolved_sig = def
+                    .signature
+                    .as_ref()
+                    .map(|s| canonicalize_signature(s, &checker))
+                    .transpose()?;
                 let resolved_value = canonicalize_expression(&def.value, &checker)?;
 
                 if def.name == "main" {
@@ -441,6 +409,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     }
                     compiled_definitions.push(Definition {
                         name: "main".to_string(),
+                        signature: resolved_sig,
                         value: resolved_value,
                     });
                     continue;
@@ -452,6 +421,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
                 compiled_definitions.push(Definition {
                     name: def.name.clone(),
+                    signature: resolved_sig,
                     value: resolved_value,
                 });
             }

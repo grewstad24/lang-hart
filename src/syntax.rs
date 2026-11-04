@@ -79,6 +79,7 @@ pub struct StructFieldInit {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    Never,
     Void,
     S16,
     S32,
@@ -157,7 +158,7 @@ pub struct FunctionDecl {
     pub name: String,
     pub params: Vec<Parameter>,
     pub return_type: Type,
-    pub body: Vec<Statement>,
+    pub body: Expression,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -173,12 +174,6 @@ pub struct IfArm {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DoIfArm {
-    pub condition: IfCondition,
-    pub body: Box<Statement>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub variant_type: Option<Type>,
     pub body: Box<Expression>,
@@ -190,6 +185,8 @@ pub enum Expression {
         expression: Box<Expression>,
         span: Span,
     },
+
+    // Primary Literals & Access
     Integer(i64),
     String(Vec<u8>),
     Boolean(bool),
@@ -198,7 +195,26 @@ pub enum Expression {
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
     Record(Vec<StructFieldInit>),
-    Signature(Signature),
+    Member {
+        expression: Box<Expression>,
+        field: String,
+    },
+    Index {
+        expression: Box<Expression>,
+        index: Box<Expression>,
+    },
+    AddressOf(Box<Expression>),
+    Dereference(Box<Expression>),
+    Cast {
+        expression: Box<Expression>,
+        ty: Type,
+    },
+    Call {
+        target: Box<Expression>,
+        arguments: Vec<Expression>,
+    },
+
+    // Operators
     Unary {
         operator: UnaryOperator,
         operand: Box<Expression>,
@@ -213,28 +229,11 @@ pub enum Expression {
         operator: ComparisonOperator,
         right: Box<Expression>,
     },
-    Cast {
-        expression: Box<Expression>,
-        ty: Type,
-    },
-    Call {
-        target: Box<Expression>,
-        arguments: Vec<Expression>,
-    },
-    Index {
-        expression: Box<Expression>,
-        index: Box<Expression>,
-    },
-    Member {
-        expression: Box<Expression>,
-        field: String,
-    },
-    AddressOf(Box<Expression>),
-    Dereference(Box<Expression>),
-    Block {
-        signature: Option<Signature>,
-        body: Vec<Statement>,
-    },
+
+    // Block & Value Control Flow
+    Block(Vec<Expression>),
+    Discard(Box<Expression>),
+    Return(Option<Box<Expression>>),
     If {
         arms: Vec<IfArm>,
     },
@@ -242,6 +241,25 @@ pub enum Expression {
         target: Box<Expression>,
         binding_name: String,
         arms: Vec<MatchArm>,
+    },
+
+    // Binding & Mutation Expressions (evaluate to Type::Void)
+    Let {
+        name: String,
+        value: Box<Expression>,
+    },
+    Var {
+        name: String,
+        ty: Option<Type>,
+        value: Option<Box<Expression>>,
+    },
+    Assign {
+        target: String,
+        value: Box<Expression>,
+    },
+    DoTimes {
+        count: Box<Expression>,
+        body: Box<Expression>,
     },
 }
 
@@ -266,39 +284,9 @@ pub fn unspanned_expression_mut(mut expression: &mut Expression) -> &mut Express
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
-    Spanned {
-        statement: Box<Statement>,
-        span: Span,
-    },
-    Declare {
-        name: String,
-        ty: Type,
-    },
-    Define {
-        name: String,
-        is_mutable: bool,
-        value: Expression,
-    },
-    Assign {
-        target: String,
-        value: Expression,
-    },
-    Discard(Expression),
-    Return(Expression),
-    Compound(Vec<Statement>),
-    If {
-        arms: Vec<DoIfArm>,
-    },
-    DoTimes {
-        count: Expression,
-        body: Box<Statement>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Definition {
     pub name: String,
+    pub signature: Option<Signature>,
     pub value: Expression,
 }
 
@@ -1091,7 +1079,11 @@ impl Parser {
                     self.skip_newlines();
                     let value = self.parse_expression()?;
                     self.consume_optional_newline();
-                    definitions.push(Definition { name, value });
+                    definitions.push(Definition {
+                        name,
+                        signature: None,
+                        value,
+                    });
                 }
                 Token::Extern => {
                     self.advance(); // consume 'extern'
@@ -1201,16 +1193,7 @@ impl Parser {
         };
 
         self.skip_newlines();
-        self.expect(Token::LBrace)?;
-        self.skip_newlines();
-
-        let mut body = Vec::new();
-        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-            body.push(self.parse_statement()?);
-            self.skip_newlines();
-        }
-        self.expect(Token::RBrace)?;
-        self.consume_optional_newline();
+        let body = self.parse_block()?;
 
         let signature = Signature {
             parameters,
@@ -1220,10 +1203,8 @@ impl Parser {
 
         Ok(Definition {
             name,
-            value: Expression::Block {
-                signature: Some(signature),
-                body,
-            },
+            signature: Some(signature),
+            value: body,
         })
     }
 
@@ -1535,6 +1516,19 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Atom(name))
             }
+            Token::Identifier(name)
+                if self.tokens.get(self.cursor + 1) == Some(&Token::ColonEqual) =>
+            {
+                let target = name.clone();
+                self.advance(); // consume Identifier
+                self.advance(); // consume ':='
+                self.skip_newlines();
+                let value = self.parse_expression()?;
+                Ok(Expression::Assign {
+                    target,
+                    value: Box::new(value),
+                })
+            }
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Expression::Identifier(name))
@@ -1566,30 +1560,7 @@ impl Parser {
                 self.advance();
                 self.skip_newlines();
 
-                if self.is_signature_start() {
-                    let (parameters, _) = self.parse_signature_inner()?;
-                    self.expect(Token::RParen)?;
-                    self.skip_newlines();
-                    let is_variadic = if self.is(Token::DotDotDot) {
-                        self.advance();
-                        self.skip_newlines();
-                        true
-                    } else {
-                        false
-                    };
-                    let return_type = if self.is(Token::Arrow) {
-                        self.advance();
-                        self.skip_newlines();
-                        Box::new(self.parse_type()?)
-                    } else {
-                        Box::new(Type::Void)
-                    };
-                    Ok(Expression::Signature(Signature {
-                        parameters: parameters,
-                        return_type,
-                        is_variadic,
-                    }))
-                } else if self.is_struct_literal_start() {
+                if self.is_struct_literal_start() {
                     let fields = self.parse_struct_fields(Token::RParen, false)?;
                     Ok(Expression::Struct(fields))
                 } else {
@@ -1603,8 +1574,84 @@ impl Parser {
                 let elements = self.parse_argument_list(Token::RBracket)?;
                 Ok(Expression::Array(elements))
             }
-            Token::If => self.parse_if_expression(),
+            Token::LBrace => self.parse_block(),
+            Token::If | Token::DoIf => self.parse_if_expression(),
             Token::Match => self.parse_match_expression(),
+            Token::Let => {
+                self.advance();
+                let name = self.expect_identifier()?;
+                if self.is(Token::ColonColon) {
+                    return Err(format!(
+                        "constants cannot be declared without an initialiser: 'let {} :: ...' is prohibited, use 'let {} := <value>'",
+                        name, name
+                    ));
+                }
+                self.expect(Token::ColonEqual)?;
+                self.skip_newlines();
+                let value = self.parse_expression()?;
+                Ok(Expression::Let {
+                    name,
+                    value: Box::new(value),
+                })
+            }
+            Token::Var => {
+                self.advance();
+                let name = self.expect_identifier()?;
+                if self.is(Token::ColonColon) {
+                    self.advance();
+                    self.skip_newlines();
+                    let ty = self.parse_type()?;
+                    let value = if self.is(Token::ColonEqual) {
+                        self.advance();
+                        self.skip_newlines();
+                        Some(Box::new(self.parse_expression()?))
+                    } else {
+                        None
+                    };
+                    Ok(Expression::Var {
+                        name,
+                        ty: Some(ty),
+                        value,
+                    })
+                } else if self.is(Token::ColonEqual) {
+                    self.advance();
+                    self.skip_newlines();
+                    let value = self.parse_expression()?;
+                    Ok(Expression::Var {
+                        name,
+                        ty: None,
+                        value: Some(Box::new(value)),
+                    })
+                } else {
+                    Err(format!(
+                        "expected '::' or ':=' after 'var {}', found {:?}",
+                        name,
+                        self.peek()
+                    ))
+                }
+            }
+            Token::Return => {
+                self.advance();
+                if self.is(Token::Newline) || self.is(Token::RBrace) || self.is(Token::Eof) {
+                    Ok(Expression::Return(None))
+                } else {
+                    self.skip_newlines();
+                    let expr = self.parse_expression()?;
+                    Ok(Expression::Return(Some(Box::new(expr))))
+                }
+            }
+            Token::DoTimes => {
+                self.advance();
+                self.skip_newlines();
+                let count = self.parse_expression()?;
+                self.expect(Token::FatArrow)?;
+                self.skip_newlines();
+                let body = self.parse_expression()?;
+                Ok(Expression::DoTimes {
+                    count: Box::new(count),
+                    body: Box::new(body),
+                })
+            }
             token => Err(format!("unexpected token in expression: {:?}", token)),
         }
     }
@@ -1692,53 +1739,8 @@ impl Parser {
         })
     }
 
-    fn is_signature_start(&self) -> bool {
-        let mut idx = self.cursor;
-        while idx < self.tokens.len() {
-            if self.tokens[idx] == Token::ColonColon {
-                return true;
-            }
-            if self.tokens[idx] == Token::RParen || self.tokens[idx] == Token::Eof {
-                break;
-            }
-            idx += 1;
-        }
-        false
-    }
-
-    fn parse_signature_inner(&mut self) -> Result<(Vec<Parameter>, bool), String> {
-        let mut parameters = Vec::new();
-        let mut is_variadic = false;
-        self.skip_newlines();
-
-        while !self.is(Token::RParen) && !self.is(Token::Eof) {
-            if self.is(Token::DotDotDot) {
-                self.advance();
-                is_variadic = true;
-                break;
-            }
-
-            let name = self.expect_field_name()?;
-            self.expect(Token::ColonColon)?;
-            self.skip_newlines();
-            let ty = self.parse_type()?;
-            parameters.push(Parameter { name, ty });
-
-            while self.is(Token::Comma) || self.is(Token::Newline) {
-                self.advance();
-            }
-            self.skip_newlines();
-
-            if self.is(Token::RParen) {
-                break;
-            }
-        }
-
-        Ok((parameters, is_variadic))
-    }
-
     fn parse_if_expression(&mut self) -> Result<Expression, String> {
-        self.expect(Token::If)?;
+        self.advance(); // consume If or DoIf
         self.skip_newlines();
 
         let mut arms = Vec::new();
@@ -1768,163 +1770,48 @@ impl Parser {
         self.expect(Token::End)?;
 
         if !has_else {
-            return Err("expression 'if' requires a fallback 'else' arm".to_string());
+            arms.push(IfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Expression::Block(Vec::new())),
+            });
         }
 
         Ok(Expression::If { arms })
     }
 
-    pub fn parse_statement(&mut self) -> Result<Statement, String> {
-        let span = self.current_span().clone();
-        let statement = self.parse_statement_inner()?;
-        Ok(Statement::Spanned {
-            statement: Box::new(statement),
-            span,
-        })
-    }
-
-    fn parse_statement_inner(&mut self) -> Result<Statement, String> {
-        match self.peek() {
-            Token::LBrace => {
-                self.advance();
-                self.skip_newlines();
-                let mut body = Vec::new();
-                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                    body.push(self.parse_statement()?);
-                    self.skip_newlines();
-                }
-                self.expect(Token::RBrace)?;
-                self.consume_optional_newline();
-                Ok(Statement::Compound(body))
-            }
-            Token::Var => {
-                self.advance();
-                let name = self.expect_identifier()?;
-                if self.is(Token::ColonColon) {
-                    self.advance();
-                    self.skip_newlines();
-                    let ty = self.parse_type()?;
-                    self.consume_optional_newline();
-                    Ok(Statement::Declare { name, ty })
-                } else if self.is(Token::ColonEqual) {
-                    self.advance();
-                    self.skip_newlines();
-                    let value = self.parse_expression()?;
-                    self.consume_optional_newline();
-                    Ok(Statement::Define {
-                        name,
-                        is_mutable: true,
-                        value,
-                    })
-                } else {
-                    Err(format!(
-                        "expected '::' or ':=' after 'var {}', found {:?}",
-                        name,
-                        self.peek()
-                    ))
-                }
-            }
-            Token::Let => {
-                self.advance();
-                let name = self.expect_identifier()?;
-                if self.is(Token::ColonColon) {
-                    return Err(format!(
-                        "constants cannot be declared without an initialiser: 'let {} :: ...' is prohibited, use 'let {} := <value>'",
-                        name, name
-                    ));
-                }
-                self.expect(Token::ColonEqual)?;
-                self.skip_newlines();
-                let value = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Define {
-                    name,
-                    is_mutable: false,
-                    value,
-                })
-            }
-            Token::DoIf => self.parse_doif_statement(),
-            Token::DoTimes => {
-                self.advance();
-                self.skip_newlines();
-                let count = self.parse_expression()?;
-                self.expect(Token::FatArrow)?;
-                self.skip_newlines();
-                let body = self.parse_statement()?;
-                self.consume_optional_newline();
-                Ok(Statement::DoTimes {
-                    count,
-                    body: Box::new(body),
-                })
-            }
-            Token::Return => {
-                self.advance();
-                self.skip_newlines();
-                let expr = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Return(expr))
-            }
-            Token::Identifier(name)
-                if self.tokens.get(self.cursor + 1) == Some(&Token::ColonEqual) =>
-            {
-                let target = name.clone();
-                self.advance(); // consume Identifier
-                self.advance(); // consume ':='
-                self.skip_newlines();
-                let value = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Assign { target, value })
-            }
-            _ => {
-                let expression = self.parse_expression()?;
-                self.consume_optional_newline();
-                Ok(Statement::Discard(expression))
-            }
-        }
-    }
-
-    fn parse_doif_statement(&mut self) -> Result<Statement, String> {
-        self.expect(Token::DoIf)?;
+    pub fn parse_block(&mut self) -> Result<Expression, String> {
+        self.expect(Token::LBrace)?;
         self.skip_newlines();
 
-        let mut arms = Vec::new();
-        let mut has_else = false;
+        let mut expressions = Vec::new();
 
-        while !self.is(Token::End) && !self.is(Token::Eof) {
-            let condition = if self.is(Token::Else) {
-                self.advance();
-                has_else = true;
-                IfCondition::Else
-            } else {
-                IfCondition::Expression(self.parse_expression()?)
-            };
+        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+            let expr = self.parse_expression()?;
 
-            self.expect(Token::FatArrow)?;
-            self.skip_newlines();
-
-            let body = self.parse_statement()?;
-            arms.push(DoIfArm {
-                condition,
-                body: Box::new(body),
-            });
-            self.skip_newlines();
-
-            if has_else {
+            if self.is(Token::RBrace) {
+                // No trailing newline before '}' -> automatically return
+                let ret_expr = match expr {
+                    Expression::Return(_) => expr,
+                    _ => Expression::Return(Some(Box::new(expr))),
+                };
+                expressions.push(ret_expr);
                 break;
+            } else if self.is(Token::Newline) {
+                // Trailing newline present -> evaluate, discard value, continue
+                self.skip_newlines();
+                expressions.push(Expression::Discard(Box::new(expr)));
+            } else {
+                return Err(format!(
+                    "expected newline or '}}' after expression, found {:?}",
+                    self.peek()
+                ));
             }
         }
 
-        self.expect(Token::End)?;
+        self.expect(Token::RBrace)?;
         self.consume_optional_newline();
 
-        if !has_else {
-            arms.push(DoIfArm {
-                condition: IfCondition::Else,
-                body: Box::new(Statement::Compound(Vec::new())),
-            });
-        }
-
-        Ok(Statement::If { arms })
+        Ok(Expression::Block(expressions))
     }
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
@@ -2040,15 +1927,20 @@ impl Parser {
                 self.skip_newlines();
 
                 let mut fields = Vec::new();
-                if !self.is(Token::RParen) {
-                    let (parameters, _) = self.parse_signature_inner()?;
-                    fields = parameters
-                        .into_iter()
-                        .map(|p| StructFieldType {
-                            name: p.name,
-                            ty: p.ty,
-                        })
-                        .collect();
+                while !self.is(Token::RParen) && !self.is(Token::Eof) {
+                    let field_name = self.expect_field_name()?;
+                    self.expect(Token::ColonColon)?;
+                    self.skip_newlines();
+                    let ty = self.parse_type()?;
+                    fields.push(StructFieldType {
+                        name: field_name,
+                        ty,
+                    });
+                    self.skip_newlines();
+                    if self.is(Token::Comma) {
+                        self.advance();
+                        self.skip_newlines();
+                    }
                 }
                 self.expect(Token::RParen)?;
                 Ok(Type::Struct(fields))

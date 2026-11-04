@@ -14,8 +14,8 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use crate::sema::Checker;
 use crate::syntax::{
-    BinaryOperator, ComparisonOperator, Definition, DoIfArm, Expression, ExternalFunction, IfArm,
-    IfCondition, MatchArm, Program, Signature, Statement, StructFieldInit, StructFieldType, Type,
+    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
+    IfCondition, MatchArm, Program, Signature, StructFieldInit, StructFieldType, Type,
     UnaryOperator, format_error, unspanned_expression,
 };
 
@@ -91,7 +91,6 @@ pub struct Codegen<'ctx> {
 
     string_counter: usize,
     branch_counter: usize,
-    anon_counter: usize,
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -116,7 +115,6 @@ impl<'ctx> Codegen<'ctx> {
             atom_table: HashMap::new(),
             string_counter: 0,
             branch_counter: 0,
-            anon_counter: 0,
         }
     }
 
@@ -273,12 +271,10 @@ impl<'ctx> Codegen<'ctx> {
             if def.name == "main" {
                 continue;
             }
-            if let Expression::Block { signature, .. } = unspanned_expression(&def.value) {
-                if let Some(sig) = signature {
-                    self.function_signatures
-                        .insert(def.name.clone(), sig.clone());
-                }
-                let fn_type = self.signature_to_function_type(signature.as_ref())?;
+            if let Some(sig) = &def.signature {
+                self.function_signatures
+                    .insert(def.name.clone(), sig.clone());
+                let fn_type = self.signature_to_function_type(Some(sig))?;
                 self.module.add_function(&def.name, fn_type, None);
             }
         }
@@ -314,8 +310,8 @@ impl<'ctx> Codegen<'ctx> {
                 continue;
             }
 
-            if let Expression::Block { signature, body } = unspanned_expression(&def.value) {
-                self.codegen_named_function(&def.name, signature.as_ref(), body)?;
+            if let Some(sig) = &def.signature {
+                self.codegen_named_function(&def.name, Some(sig), &def.value)?;
             } else {
                 let binding = self.codegen_expression(&def.value)?;
                 let ty = self.binding_type(&binding)?;
@@ -362,7 +358,7 @@ impl<'ctx> Codegen<'ctx> {
                 .collect::<Result<Vec<_>, String>>()?;
 
             let ret_type = &sig.return_type;
-            if **ret_type == Type::Void {
+            if **ret_type == Type::Void || **ret_type == Type::Never {
                 Ok(self
                     .context
                     .void_type()
@@ -388,7 +384,7 @@ impl<'ctx> Codegen<'ctx> {
         &mut self,
         name: &str,
         signature: Option<&Signature>,
-        body: &[Statement],
+        body: &Expression,
     ) -> Result<(), String> {
         let llvm_function = self
             .module
@@ -429,7 +425,7 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        self.codegen_statements(body)?;
+        let body_binding = self.codegen_expression(body)?;
 
         let needs_terminator = self
             .builder
@@ -445,18 +441,12 @@ impl<'ctx> Codegen<'ctx> {
 
             self.exit_scope(stack_ptr)?;
 
-            if ret_ty == Type::Void {
+            if ret_ty == Type::Void || ret_ty == Type::Never {
                 self.builder.build_return(None).map_err(|e| e.to_string())?;
             } else {
-                let unreachable_bb = self
-                    .context
-                    .append_basic_block(llvm_function, "unreachable");
+                let return_val = self.binding_basic_value(&body_binding)?;
                 self.builder
-                    .build_unconditional_branch(unreachable_bb)
-                    .map_err(|e| e.to_string())?;
-                self.builder.position_at_end(unreachable_bb);
-                self.builder
-                    .build_unreachable()
+                    .build_return(Some(&return_val))
                     .map_err(|e| e.to_string())?;
             }
         } else {
@@ -493,11 +483,7 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|error| error.to_string())?;
         }
 
-        if let Expression::Block { body, .. } = unspanned_expression(&main_def.value) {
-            self.codegen_statements(body)?;
-        } else {
-            return Err("entry point '@main' must evaluate to a block".to_string());
-        }
+        let body_binding = self.codegen_expression(&main_def.value)?;
 
         let needs_terminator = self
             .builder
@@ -506,13 +492,12 @@ impl<'ctx> Codegen<'ctx> {
 
         if needs_terminator {
             self.exit_scope(stack_ptr)?;
-            let unreachable_bb = self.context.append_basic_block(function, "unreachable");
+            let return_val = match self.binding_basic_value(&body_binding) {
+                Ok(val) => val,
+                Err(_) => self.context.i32_type().const_zero().into(),
+            };
             self.builder
-                .build_unconditional_branch(unreachable_bb)
-                .map_err(|e| e.to_string())?;
-            self.builder.position_at_end(unreachable_bb);
-            self.builder
-                .build_unreachable()
+                .build_return(Some(&return_val))
                 .map_err(|e| e.to_string())?;
         } else {
             self.local_scopes.pop();
@@ -521,19 +506,6 @@ impl<'ctx> Codegen<'ctx> {
 
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
-        Ok(())
-    }
-
-    fn codegen_statements(&mut self, statements: &[Statement]) -> Result<(), String> {
-        for statement in statements {
-            self.codegen_statement(statement)?;
-
-            if let Some(current_block) = self.builder.get_insert_block() {
-                if current_block.get_terminator().is_some() {
-                    break;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -558,283 +530,6 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         Ok(binding)
-    }
-
-    fn codegen_statement(&mut self, statement: &Statement) -> Result<(), String> {
-        match statement {
-            Statement::Spanned { statement, span } => self
-                .codegen_statement(statement)
-                .map_err(|error| format_error(span, &error)),
-            Statement::Compound(statements) => {
-                self.codegen_statements(statements)?;
-                Ok(())
-            }
-            Statement::Declare { name, ty } => {
-                let llvm_ty = self.llvm_type(ty)?;
-
-                let alloca = self
-                    .builder
-                    .build_alloca(llvm_ty, name)
-                    .map_err(|e| e.to_string())?;
-
-                self.local_scopes.last_mut().unwrap().insert(
-                    name.clone(),
-                    LocalVar {
-                        ty: ty.clone(),
-                        alloca,
-                    },
-                );
-                Ok(())
-            }
-            Statement::DoTimes { count, body } => {
-                let count_binding = self.codegen_expression(count)?;
-                let count_val = self.binding_int_value(&count_binding)?;
-                let count_is_signed = self.is_signed(&self.binding_type(&count_binding)?);
-
-                let limit = if count_is_signed {
-                    self.builder.build_int_s_extend_or_bit_cast(
-                        count_val,
-                        self.ptr_sized_int_type(),
-                        "dotimes_limit",
-                    )
-                } else {
-                    self.builder.build_int_z_extend_or_bit_cast(
-                        count_val,
-                        self.ptr_sized_int_type(),
-                        "dotimes_limit",
-                    )
-                }
-                .map_err(|e| e.to_string())?;
-
-                let current_block = self
-                    .builder
-                    .get_insert_block()
-                    .ok_or_else(|| "cannot generate dotimes outside basic block".to_string())?;
-                let current_fn = current_block
-                    .get_parent()
-                    .ok_or_else(|| "current block has no parent function".to_string())?;
-
-                let id = self.branch_counter;
-                self.branch_counter += 1;
-
-                let cond_bb = self
-                    .context
-                    .append_basic_block(current_fn, &format!("dotimes.cond.{}", id));
-                let body_bb = self
-                    .context
-                    .append_basic_block(current_fn, &format!("dotimes.body.{}", id));
-                let merge_bb = self
-                    .context
-                    .append_basic_block(current_fn, &format!("dotimes.merge.{}", id));
-
-                let counter_alloca = self
-                    .builder
-                    .build_alloca(
-                        self.ptr_sized_int_type(),
-                        &format!("dotimes.counter.{}", id),
-                    )
-                    .map_err(|e| e.to_string())?;
-
-                self.builder
-                    .build_store(counter_alloca, self.ptr_sized_int_type().const_zero())
-                    .map_err(|e| e.to_string())?;
-
-                self.builder
-                    .build_unconditional_branch(cond_bb)
-                    .map_err(|e| e.to_string())?;
-
-                // --- Condition Block ---
-                self.builder.position_at_end(cond_bb);
-                let current_idx = self
-                    .builder
-                    .build_load(self.ptr_sized_int_type(), counter_alloca, "i")
-                    .map_err(|e| e.to_string())?
-                    .into_int_value();
-
-                let has_next = self
-                    .builder
-                    .build_int_compare(
-                        if count_is_signed {
-                            IntPredicate::SLT
-                        } else {
-                            IntPredicate::ULT
-                        },
-                        current_idx,
-                        limit,
-                        "dotimes_cmp",
-                    )
-                    .map_err(|e| e.to_string())?;
-
-                self.builder
-                    .build_conditional_branch(has_next, body_bb, merge_bb)
-                    .map_err(|e| e.to_string())?;
-
-                // --- Body Block ---
-                self.builder.position_at_end(body_bb);
-                self.codegen_statement(body)?;
-
-                if let Some(bb) = self.builder.get_insert_block() {
-                    if bb.get_terminator().is_none() {
-                        let cur = self
-                            .builder
-                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
-                            .map_err(|e| e.to_string())?
-                            .into_int_value();
-                        let next = self
-                            .builder
-                            .build_int_add(
-                                cur,
-                                self.ptr_sized_int_type().const_int(1, false),
-                                "next_i",
-                            )
-                            .map_err(|e| e.to_string())?;
-                        self.builder
-                            .build_store(counter_alloca, next)
-                            .map_err(|e| e.to_string())?;
-                        self.builder
-                            .build_unconditional_branch(cond_bb)
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-
-                self.builder.position_at_end(merge_bb);
-                Ok(())
-            }
-            Statement::Define { name, value, .. } => {
-                let current_binding = self.codegen_expression(value)?;
-                let ty = self.binding_type(&current_binding)?;
-                let llvm_ty = self.llvm_type(&ty)?;
-
-                let alloca = self
-                    .builder
-                    .build_alloca(llvm_ty, name)
-                    .map_err(|e| e.to_string())?;
-
-                let val = self.binding_basic_value(&current_binding)?;
-                self.builder
-                    .build_store(alloca, val)
-                    .map_err(|e| e.to_string())?;
-
-                self.local_scopes
-                    .last_mut()
-                    .unwrap()
-                    .insert(name.clone(), LocalVar { ty, alloca });
-                Ok(())
-            }
-            Statement::Assign { target, value } => {
-                let current_binding = self.codegen_expression(value)?;
-                let local = self
-                    .lookup_local(target)
-                    .ok_or_else(|| format!("unknown local variable '{}'", target))?;
-
-                let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
-                let val = self.binding_basic_value(&coerced_binding)?;
-                self.builder
-                    .build_store(local.alloca, val)
-                    .map_err(|e| e.to_string())?;
-
-                Ok(())
-            }
-            Statement::Discard(expression) => {
-                self.codegen_expression(expression)?;
-                Ok(())
-            }
-            Statement::Return(expression) => {
-                let binding = self.codegen_expression(expression)?;
-                self.exit_current_scope()?;
-                self.build_return(&binding)
-            }
-            Statement::If { arms } => self.codegen_doif_statement(arms),
-        }
-    }
-
-    fn codegen_doif_statement(&mut self, arms: &[DoIfArm]) -> Result<(), String> {
-        let current_block = self
-            .builder
-            .get_insert_block()
-            .ok_or_else(|| "cannot generate doif outside basic block".to_string())?;
-
-        let current_fn = current_block
-            .get_parent()
-            .ok_or_else(|| "current block has no parent function".to_string())?;
-
-        let id = self.branch_counter;
-        self.branch_counter += 1;
-
-        let merge_bb = self
-            .context
-            .append_basic_block(current_fn, &format!("doif.merge.{}", id));
-
-        let first_test_bb = self
-            .context
-            .append_basic_block(current_fn, &format!("doif.arm.0.{}", id));
-
-        self.builder
-            .build_unconditional_branch(first_test_bb)
-            .map_err(|e| e.to_string())?;
-
-        let mut next_test_bb = first_test_bb;
-
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.position_at_end(next_test_bb);
-
-            match &arm.condition {
-                IfCondition::Expression(cond_expr) => {
-                    let cond_binding = self.codegen_expression(cond_expr)?;
-                    let cond_val = match cond_binding {
-                        Binding::Boolean { value } => value,
-                        _ => return Err("doif condition must evaluate to a boolean".to_string()),
-                    };
-
-                    let then_bb = self
-                        .context
-                        .append_basic_block(current_fn, &format!("doif.then.{}.{}", i, id));
-                    let false_bb = self
-                        .context
-                        .append_basic_block(current_fn, &format!("doif.arm.{}.{}", i + 1, id));
-
-                    self.builder
-                        .build_conditional_branch(cond_val, then_bb, false_bb)
-                        .map_err(|e| e.to_string())?;
-
-                    self.builder.position_at_end(then_bb);
-                    self.codegen_statement(&arm.body)?;
-
-                    if let Some(bb) = self.builder.get_insert_block() {
-                        if bb.get_terminator().is_none() {
-                            self.builder
-                                .build_unconditional_branch(merge_bb)
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-
-                    next_test_bb = false_bb;
-                }
-                IfCondition::Else => {
-                    self.codegen_statement(&arm.body)?;
-
-                    if let Some(bb) = self.builder.get_insert_block() {
-                        if bb.get_terminator().is_none() {
-                            self.builder
-                                .build_unconditional_branch(merge_bb)
-                                .map_err(|e| e.to_string())?;
-                        }
-                    }
-                }
-            }
-        }
-
-        if merge_bb.get_first_use().is_none() {
-            unsafe {
-                merge_bb
-                    .delete()
-                    .map_err(|_| "failed to delete basic block".to_string())?;
-            }
-        } else {
-            self.builder.position_at_end(merge_bb);
-        }
-
-        Ok(())
     }
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
@@ -956,32 +651,221 @@ impl<'ctx> Codegen<'ctx> {
 
                 Err(format!("unknown identifier '{}'", name))
             }
-            Expression::Signature(_) => Ok(Binding::Void),
-            Expression::Block { signature, body } => {
-                let anon_name = format!("__anon_block_{}", self.anon_counter);
-                self.anon_counter += 1;
+            Expression::Block(exprs) => {
+                self.local_scopes.push(HashMap::new());
+                let mut last_binding = Binding::Void;
+                for expr in exprs {
+                    if let Some(bb) = self.builder.get_insert_block() {
+                        if bb.get_terminator().is_some() {
+                            break;
+                        }
+                    }
+                    last_binding = self.codegen_expression(expr)?;
+                }
+                self.local_scopes.pop();
+                Ok(last_binding)
+            }
+            Expression::Discard(expr) => {
+                self.codegen_expression(expr)?;
+                Ok(Binding::Void)
+            }
+            Expression::Return(opt_expr) => {
+                let binding = match opt_expr {
+                    Some(expr) => self.codegen_expression(expr)?,
+                    None => Binding::Void,
+                };
+                self.exit_current_scope()?;
+                self.build_return(&binding)?;
+                Ok(Binding::Void)
+            }
+            Expression::Let { name, value } => {
+                let current_binding = self.codegen_expression(value)?;
+                let ty = self.binding_type(&current_binding)?;
+                let llvm_ty = self.llvm_type(&ty)?;
 
-                let current_block = self.builder.get_insert_block();
+                let alloca = self
+                    .builder
+                    .build_alloca(llvm_ty, name)
+                    .map_err(|e| e.to_string())?;
 
-                let fn_type = self.signature_to_function_type(signature.as_ref())?;
-                let function = self.module.add_function(&anon_name, fn_type, None);
+                let val = self.binding_basic_value(&current_binding)?;
+                self.builder
+                    .build_store(alloca, val)
+                    .map_err(|e| e.to_string())?;
 
-                self.codegen_named_function(&anon_name, signature.as_ref(), body)?;
+                self.local_scopes
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), LocalVar { ty, alloca });
+                Ok(Binding::Void)
+            }
+            Expression::Var { name, ty, value } => {
+                if let Some(val_expr) = value {
+                    let current_binding = self.codegen_expression(val_expr)?;
+                    let expr_ty = self.binding_type(&current_binding)?;
+                    let final_ty = ty.as_ref().unwrap_or(&expr_ty);
+                    let coerced_binding = self.coerce_to_type(current_binding, final_ty)?;
+                    let llvm_ty = self.llvm_type(final_ty)?;
 
-                if let Some(bb) = current_block {
-                    self.builder.position_at_end(bb);
+                    let alloca = self
+                        .builder
+                        .build_alloca(llvm_ty, name)
+                        .map_err(|e| e.to_string())?;
+
+                    let val = self.binding_basic_value(&coerced_binding)?;
+                    self.builder
+                        .build_store(alloca, val)
+                        .map_err(|e| e.to_string())?;
+
+                    self.local_scopes
+                        .last_mut()
+                        .unwrap()
+                        .insert(name.clone(), LocalVar { ty: final_ty.clone(), alloca });
+                } else if let Some(decl_ty) = ty {
+                    let llvm_ty = self.llvm_type(decl_ty)?;
+
+                    let alloca = self
+                        .builder
+                        .build_alloca(llvm_ty, name)
+                        .map_err(|e| e.to_string())?;
+
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        LocalVar {
+                            ty: decl_ty.clone(),
+                            alloca,
+                        },
+                    );
+                }
+                Ok(Binding::Void)
+            }
+            Expression::Assign { target, value } => {
+                let current_binding = self.codegen_expression(value)?;
+                let local = self
+                    .lookup_local(target)
+                    .ok_or_else(|| format!("unknown local variable '{}'", target))?;
+
+                let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
+                let val = self.binding_basic_value(&coerced_binding)?;
+                self.builder
+                    .build_store(local.alloca, val)
+                    .map_err(|e| e.to_string())?;
+
+                Ok(Binding::Void)
+            }
+            Expression::DoTimes { count, body } => {
+                let count_binding = self.codegen_expression(count)?;
+                let count_val = self.binding_int_value(&count_binding)?;
+                let count_is_signed = self.is_signed(&self.binding_type(&count_binding)?);
+
+                let limit = if count_is_signed {
+                    self.builder.build_int_s_extend_or_bit_cast(
+                        count_val,
+                        self.ptr_sized_int_type(),
+                        "dotimes_limit",
+                    )
+                } else {
+                    self.builder.build_int_z_extend_or_bit_cast(
+                        count_val,
+                        self.ptr_sized_int_type(),
+                        "dotimes_limit",
+                    )
+                }
+                .map_err(|e| e.to_string())?;
+
+                let current_block = self
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| "cannot generate dotimes outside basic block".to_string())?;
+                let current_fn = current_block
+                    .get_parent()
+                    .ok_or_else(|| "current block has no parent function".to_string())?;
+
+                let id = self.branch_counter;
+                self.branch_counter += 1;
+
+                let cond_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.cond.{}", id));
+                let body_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.body.{}", id));
+                let merge_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("dotimes.merge.{}", id));
+
+                let counter_alloca = self
+                    .builder
+                    .build_alloca(
+                        self.ptr_sized_int_type(),
+                        &format!("dotimes.counter.{}", id),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_store(counter_alloca, self.ptr_sized_int_type().const_zero())
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Condition Block ---
+                self.builder.position_at_end(cond_bb);
+                let current_idx = self
+                    .builder
+                    .build_load(self.ptr_sized_int_type(), counter_alloca, "i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+
+                let has_next = self
+                    .builder
+                    .build_int_compare(
+                        if count_is_signed {
+                            IntPredicate::SLT
+                        } else {
+                            IntPredicate::ULT
+                        },
+                        current_idx,
+                        limit,
+                        "dotimes_cmp",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_conditional_branch(has_next, body_bb, merge_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Body Block ---
+                self.builder.position_at_end(body_bb);
+                self.codegen_expression(body)?;
+
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_none() {
+                        let cur = self
+                            .builder
+                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
+                            .map_err(|e| e.to_string())?
+                            .into_int_value();
+                        let next = self
+                            .builder
+                            .build_int_add(
+                                cur,
+                                self.ptr_sized_int_type().const_int(1, false),
+                                "next_i",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_store(counter_alloca, next)
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_unconditional_branch(cond_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
 
-                let sig = signature.clone().unwrap_or(Signature {
-                    parameters: vec![],
-                    return_type: Box::new(Type::Void),
-                    is_variadic: false,
-                });
-
-                Ok(Binding::Function {
-                    signature: sig,
-                    value: function,
-                })
+                self.builder.position_at_end(merge_bb);
+                Ok(Binding::Void)
             }
             Expression::If { arms } => self.codegen_if_expression(arms),
             Expression::Match {
@@ -3113,7 +2997,7 @@ impl<'ctx> Codegen<'ctx> {
         value: BasicValueEnum<'ctx>,
     ) -> Result<Binding<'ctx>, String> {
         match ty {
-            Type::Void => Ok(Binding::Void),
+            Type::Never | Type::Void => Ok(Binding::Void),
             Type::Alias(_) => self.binding_from_basic_value(self.resolve_alias_root(ty)?, value),
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
@@ -3289,7 +3173,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
-            Type::Void => Err("void type is not a basic type in LLVM".to_string()),
+            Type::Never | Type::Void => Err("void or never type is not a basic type in LLVM".to_string()),
             Type::Alias(_) => self.llvm_type(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.i32_type().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
@@ -3325,7 +3209,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
-            Type::Void => Err("void has no zero value".to_string()),
+            Type::Never | Type::Void => Err("void or never has no zero value".to_string()),
             Type::Alias(_) => self.zero_value(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.i32_type().const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),

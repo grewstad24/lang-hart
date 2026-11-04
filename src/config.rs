@@ -71,7 +71,7 @@ impl ModConfig {
                 }
                 Ok(())
             }
-            Expression::Block { .. } => Err(format!(
+            Expression::Block(..) => Err(format!(
                 "in '{}': functions ('fn...end') are prohibited in mod.yawn",
                 file_path
             )),

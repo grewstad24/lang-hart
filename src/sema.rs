@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Span, Statement, StructFieldType, Type,
-    TypeAlias, UnaryOperator, format_error, unspanned_expression, unspanned_expression_mut,
+    NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldType, Type, TypeAlias,
+    UnaryOperator, format_error,
 };
 
 fn expression_span(expression: &Expression) -> Option<&Span> {
@@ -183,11 +183,7 @@ impl ModuleResolver {
                     for file in &module.source_files {
                         if let Some(def) = file.definitions.iter().find(|d| d.name == *sym) {
                             let mut resolved_def = def.clone();
-                            if let Expression::Block {
-                                signature: Some(sig),
-                                ..
-                            } = unspanned_expression_mut(&mut resolved_def.value)
-                            {
+                            if let Some(sig) = &mut resolved_def.signature {
                                 for p in &mut sig.parameters {
                                     p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
                                 }
@@ -387,6 +383,7 @@ pub struct Checker<'a> {
 
     local_scopes: Vec<HashMap<String, BindingInfo>>,
     atom_table: HashMap<String, u32>,
+    current_function_return_type: Option<Type>,
 }
 
 impl<'a> Checker<'a> {
@@ -409,6 +406,7 @@ impl<'a> Checker<'a> {
             checked_bodies: HashSet::new(),
             local_scopes: Vec::new(),
             atom_table: HashMap::new(),
+            current_function_return_type: None,
         };
 
         checker.predeclare_scope_signatures();
@@ -435,6 +433,7 @@ impl<'a> Checker<'a> {
 
     pub fn canonical_type_key(ty: &Type) -> String {
         match ty {
+            Type::Never => "00_never".to_string(),
             Type::Void => "00_void".to_string(),
             Type::Bool => "01_bool".to_string(),
             Type::U8 => "02_u8".to_string(),
@@ -620,12 +619,17 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if unique.len() == 1 {
-            return Ok(unique.remove(0));
+        let mut non_never: Vec<Type> = unique.into_iter().filter(|t| *t != Type::Never).collect();
+        if non_never.is_empty() {
+            return Ok(Type::Never);
         }
 
-        unique.sort_by_key(Self::canonical_type_key);
-        Ok(Type::Union(unique))
+        if non_never.len() == 1 {
+            return Ok(non_never.remove(0));
+        }
+
+        non_never.sort_by_key(Self::canonical_type_key);
+        Ok(Type::Union(non_never))
     }
 
     fn coerce_expression_to_type(
@@ -660,26 +664,19 @@ impl<'a> Checker<'a> {
         }
 
         for (name, prov) in &self.scope.definitions {
-            if let Expression::Block { signature, .. } = unspanned_expression(&prov.item.value) {
+            if let Some(sig) = &prov.item.signature {
                 let mut param_types = Vec::new();
-                let mut expected_return = Type::Void;
-                let mut is_variadic = false;
-
-                if let Some(sig) = signature {
-                    for p in &sig.parameters {
-                        let res_ty = self.resolve_type(&p.ty).unwrap_or_else(|_| p.ty.clone());
-                        param_types.push(res_ty);
-                    }
-                    expected_return = self
-                        .resolve_type(&sig.return_type)
-                        .unwrap_or_else(|_| *sig.return_type.clone());
-                    is_variadic = sig.is_variadic;
+                for p in &sig.parameters {
+                    let res_ty = self.resolve_type(&p.ty).unwrap_or_else(|_| p.ty.clone());
+                    param_types.push(res_ty);
                 }
-
+                let expected_return = self
+                    .resolve_type(&sig.return_type)
+                    .unwrap_or_else(|_| *sig.return_type.clone());
                 let fn_ty = Type::Function {
                     parameters: param_types,
                     return_type: Box::new(expected_return),
-                    is_variadic,
+                    is_variadic: sig.is_variadic,
                 };
                 self.resolved_definitions.insert(name.clone(), fn_ty);
             }
@@ -721,52 +718,56 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        match unspanned_expression_mut(&mut def.value) {
-            Expression::Block { signature, body } => {
-                let mut expected_return = Type::Void;
-
-                self.enter_scope();
-
-                if let Some(sig) = signature {
-                    let mut seen_params = HashSet::new();
-                    for p in &mut sig.parameters {
-                        if !seen_params.insert(p.name.clone()) {
-                            self.exit_scope();
-                            return Err(format!(
-                                "in '{}': duplicate parameter name '{}' in block",
-                                self.current_file_path, p.name
-                            ));
-                        }
-                        let resolved_param_ty = self.resolve_type(&p.ty)?;
-                        if resolved_param_ty == Type::Void {
-                            self.exit_scope();
-                            return Err(format!(
-                                "in '{}': block parameter '{}' cannot be void",
-                                self.current_file_path, p.name
-                            ));
-                        }
-                        p.ty = resolved_param_ty.clone();
-                        self.local_scopes.last_mut().unwrap().insert(
-                            p.name.clone(),
-                            BindingInfo {
-                                ty: resolved_param_ty,
-                                is_mutable: false,
-                                is_initialized: true,
-                            },
-                        );
-                    }
-                    expected_return = self.resolve_type(sig.return_type.as_ref())?;
-                    *sig.return_type = expected_return.clone();
+        if let Some(sig) = &mut def.signature {
+            let mut seen_params = HashSet::new();
+            self.enter_scope();
+            for p in &mut sig.parameters {
+                if !seen_params.insert(p.name.clone()) {
+                    self.exit_scope();
+                    return Err(format!(
+                        "in '{}': duplicate parameter name '{}' in function '{}'",
+                        self.current_file_path, p.name, def.name
+                    ));
                 }
+                let resolved_param_ty = self.resolve_type(&p.ty)?;
+                if resolved_param_ty == Type::Void {
+                    self.exit_scope();
+                    return Err(format!(
+                        "in '{}': parameter '{}' cannot be void in function '{}'",
+                        self.current_file_path, p.name, def.name
+                    ));
+                }
+                p.ty = resolved_param_ty.clone();
+                self.local_scopes.last_mut().unwrap().insert(
+                    p.name.clone(),
+                    BindingInfo {
+                        ty: resolved_param_ty,
+                        is_mutable: false,
+                        is_initialized: true,
+                    },
+                );
+            }
+            let expected_return = self.resolve_type(sig.return_type.as_ref())?;
+            *sig.return_type = expected_return.clone();
 
-                let validate_res = self.validate_block(body, &expected_return);
-                self.exit_scope();
-                validate_res?;
+            let old_return_type = self.current_function_return_type.replace(expected_return.clone());
+            let body_ty_res = self.type_of_expression(&mut def.value);
+            self.current_function_return_type = old_return_type;
+            self.exit_scope();
+
+            let mut body_ty = body_ty_res?;
+            if body_ty != Type::Never {
+                body_ty = self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
+                if !self.are_types_compatible(&body_ty, &expected_return)? {
+                    return Err(format!(
+                        "in '{}': function '{}' return type mismatch: expected {:?}, found {:?}",
+                        self.current_file_path, def.name, expected_return, body_ty
+                    ));
+                }
             }
-            expr => {
-                let ty = self.type_of_expression(expr)?;
-                self.resolved_definitions.insert(def.name.clone(), ty);
-            }
+        } else {
+            let ty = self.type_of_expression(&mut def.value)?;
+            self.resolved_definitions.insert(def.name.clone(), ty);
         }
 
         Ok(())
@@ -999,87 +1000,219 @@ impl<'a> Checker<'a> {
                 ))
             }
 
-            Expression::Signature(sig) => {
-                let mut param_types = Vec::new();
-                let mut seen_params = HashSet::new();
-
-                for p in &mut sig.parameters {
-                    if !seen_params.insert(p.name.clone()) {
-                        return Err(format!(
-                            "in '{}': duplicate parameter name '{}' in signature",
-                            self.current_file_path, p.name
-                        ));
-                    }
-                    let resolved_p_ty = self.resolve_type(&p.ty)?;
-                    if resolved_p_ty == Type::Void {
-                        return Err(format!(
-                            "in '{}': parameter '{}' cannot be void",
-                            self.current_file_path, p.name
-                        ));
-                    }
-                    p.ty = resolved_p_ty.clone();
-                    param_types.push(resolved_p_ty);
-                }
-                let ret_ty = self.resolve_type(sig.return_type.as_ref())?;
-                *sig.return_type = ret_ty.clone();
-                Ok(Type::Function {
-                    parameters: param_types,
-                    return_type: Box::new(ret_ty),
-                    is_variadic: sig.is_variadic,
-                })
-            }
-
-            Expression::Block { signature, body } => {
-                let mut param_types = Vec::new();
-                let mut expected_return = Type::Void;
-                let mut is_variadic = false;
-
+            Expression::Block(exprs) => {
                 let enclosing_scopes = self.local_scopes.clone();
                 self.enter_scope();
 
-                if let Some(sig) = signature {
-                    let mut seen_params = HashSet::new();
-                    for p in &mut sig.parameters {
-                        if !seen_params.insert(p.name.clone()) {
-                            self.exit_scope();
-                            return Err(format!(
-                                "in '{}': duplicate parameter name '{}' in block",
-                                self.current_file_path, p.name
-                            ));
-                        }
-                        let resolved_p_ty = self.resolve_type(&p.ty)?;
-                        if resolved_p_ty == Type::Void {
-                            self.exit_scope();
-                            return Err(format!(
-                                "in '{}': block parameter '{}' cannot be void",
-                                self.current_file_path, p.name
-                            ));
-                        }
-                        p.ty = resolved_p_ty.clone();
-                        self.local_scopes.last_mut().unwrap().insert(
-                            p.name.clone(),
-                            BindingInfo {
-                                ty: resolved_p_ty.clone(),
-                                is_mutable: false,
-                                is_initialized: true,
-                            },
-                        );
-                        param_types.push(resolved_p_ty);
+                let mut block_ty = Type::Void;
+                let mut diverged = false;
+                let len = exprs.len();
+                for (i, expr) in exprs.iter_mut().enumerate() {
+                    let ty = self.type_of_expression(expr)?;
+                    if ty == Type::Never {
+                        diverged = true;
                     }
-                    expected_return = self.resolve_type(sig.return_type.as_ref())?;
-                    *sig.return_type = expected_return.clone();
-                    is_variadic = sig.is_variadic;
+                    if i == len - 1 {
+                        block_ty = ty;
+                    }
                 }
 
-                let validate_res = self.validate_block(body, &expected_return);
                 self.local_scopes = enclosing_scopes;
-                validate_res?;
+                if diverged {
+                    Ok(Type::Never)
+                } else {
+                    Ok(block_ty)
+                }
+            }
 
-                Ok(Type::Function {
-                    parameters: param_types,
-                    return_type: Box::new(expected_return),
-                    is_variadic,
-                })
+            Expression::Discard(expr) => {
+                let ty = self.type_of_expression(expr)?;
+                if ty == Type::Never {
+                    Ok(Type::Never)
+                } else {
+                    Ok(Type::Void)
+                }
+            }
+
+            Expression::Return(opt_expr) => {
+                let expected = self.current_function_return_type.clone().ok_or_else(|| {
+                    format!("in '{}': 'return' outside of function", self.current_file_path)
+                })?;
+                if let Some(expr) = opt_expr {
+                    let mut actual = self.type_of_expression(expr)?;
+                    actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
+                    if !self.are_types_compatible(&actual, &expected)? {
+                        return Err(format!(
+                            "in '{}': return type mismatch: expected {:?}, found {:?}",
+                            self.current_file_path, expected, actual
+                        ));
+                    }
+                } else {
+                    if !self.are_types_compatible(&Type::Void, &expected)? {
+                        return Err(format!(
+                            "in '{}': return type mismatch: expected {:?}, found {:?}",
+                            self.current_file_path, expected, Type::Void
+                        ));
+                    }
+                }
+                Ok(Type::Never)
+            }
+
+            Expression::Let { name, value } => {
+                if self.local_scopes.last().unwrap().contains_key(name) {
+                    return Err(format!(
+                        "in '{}': variable '{}' already declared in this scope",
+                        self.current_file_path, name
+                    ));
+                }
+                let raw_ty = self.type_of_expression(value)?;
+                let resolved_ty = self.resolve_type(&raw_ty)?;
+                if resolved_ty == Type::Void {
+                    return Err(format!(
+                        "in '{}': cannot bind variable '{}' to void expression",
+                        self.current_file_path, name
+                    ));
+                }
+                self.local_scopes.last_mut().unwrap().insert(
+                    name.clone(),
+                    BindingInfo {
+                        ty: resolved_ty,
+                        is_mutable: false,
+                        is_initialized: true,
+                    },
+                );
+                Ok(Type::Void)
+            }
+
+            Expression::Var { name, ty, value } => {
+                if self.local_scopes.last().unwrap().contains_key(name) {
+                    return Err(format!(
+                        "in '{}': variable '{}' already declared in this scope",
+                        self.current_file_path, name
+                    ));
+                }
+                if let Some(val) = value {
+                    let raw_ty = self.type_of_expression(val)?;
+                    let resolved_ty = self.resolve_type(&raw_ty)?;
+                    if resolved_ty == Type::Void {
+                        return Err(format!(
+                            "in '{}': cannot bind variable '{}' to void expression",
+                            self.current_file_path, name
+                        ));
+                    }
+                    let final_ty = if let Some(annotated_ty) = ty {
+                        let res_annotated = self.resolve_type(annotated_ty)?;
+                        *annotated_ty = res_annotated.clone();
+                        let coerced = self.coerce_expression_to_type(val, &resolved_ty, &res_annotated)?;
+                        if !self.are_types_compatible(&coerced, &res_annotated)? {
+                            return Err(format!(
+                                "in '{}': type mismatch for variable '{}': expected {:?}, found {:?}",
+                                self.current_file_path, name, res_annotated, coerced
+                            ));
+                        }
+                        res_annotated
+                    } else {
+                        resolved_ty
+                    };
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        BindingInfo {
+                            ty: final_ty,
+                            is_mutable: true,
+                            is_initialized: true,
+                        },
+                    );
+                } else if let Some(annotated_ty) = ty {
+                    let resolved_ty = self.resolve_type(annotated_ty)?;
+                    if resolved_ty == Type::Void {
+                        return Err(format!(
+                            "in '{}': variable '{}' cannot be declared with type void",
+                            self.current_file_path, name
+                        ));
+                    }
+                    *annotated_ty = resolved_ty.clone();
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        BindingInfo {
+                            ty: resolved_ty,
+                            is_mutable: true,
+                            is_initialized: false,
+                        },
+                    );
+                } else {
+                    return Err(format!(
+                        "in '{}': variable '{}' must specify either a type or an initial value",
+                        self.current_file_path, name
+                    ));
+                }
+                Ok(Type::Void)
+            }
+
+            Expression::Assign { target, value } => {
+                let mut val_ty = self.type_of_expression(value)?;
+
+                if self.scope.lookup_definition(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to global constant '@{}'",
+                        self.current_file_path, target
+                    ));
+                }
+                if self.scope.lookup_extern(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to external function '{}'",
+                        self.current_file_path, target
+                    ));
+                }
+                if self.scope.lookup_type_alias(target).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to type alias '{}'",
+                        self.current_file_path, target
+                    ));
+                }
+
+                if let Some(info) = self.lookup_binding(target) {
+                    if !info.is_mutable {
+                        return Err(format!(
+                            "in '{}': cannot reassign to immutable constant '{}'",
+                            self.current_file_path, target
+                        ));
+                    }
+                    val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
+                    if !self.are_types_compatible(&val_ty, &info.ty)? {
+                        return Err(format!(
+                            "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
+                            self.current_file_path, target, info.ty, val_ty
+                        ));
+                    }
+
+                    if let Some(info_mut) = self.lookup_binding_mut(target) {
+                        info_mut.is_initialized = true;
+                    }
+                } else {
+                    return Err(format!(
+                        "in '{}': unknown variable '{}'",
+                        self.current_file_path, target
+                    ));
+                }
+                Ok(Type::Void)
+            }
+
+            Expression::DoTimes { count, body } => {
+                let raw_count_ty = self.type_of_expression(count)?;
+                let count_ty = self.resolve_type(&raw_count_ty)?;
+
+                if !Self::is_integer_type(&count_ty) {
+                    return Err(format!(
+                        "in '{}': dotimes count must be an integer, found {:?}",
+                        self.current_file_path, count_ty
+                    ));
+                }
+
+                let scopes_before_loop = self.local_scopes.clone();
+                let body_result = self.type_of_expression(body);
+                self.restore_initialization_state(scopes_before_loop);
+                body_result?;
+                Ok(Type::Void)
             }
 
             Expression::If { arms } => {
@@ -1095,8 +1228,12 @@ impl<'a> Checker<'a> {
 
                 let num_arms = arms.len();
                 let mut arm_types = Vec::new();
+                let scopes_before_if = self.local_scopes.clone();
+                let initial_state = self.initialization_state();
+                let mut reachable_states = Vec::new();
 
                 for (i, arm) in arms.iter_mut().enumerate() {
+                    self.local_scopes = scopes_before_if.clone();
                     match &mut arm.condition {
                         IfCondition::Expression(cond) => {
                             let cond_ty = self.type_of_expression(cond)?;
@@ -1118,7 +1255,21 @@ impl<'a> Checker<'a> {
                     }
 
                     let arm_ty = self.type_of_expression(&mut arm.body)?;
-                    arm_types.push(self.resolve_type(&arm_ty)?);
+                    let resolved_arm_ty = self.resolve_type(&arm_ty)?;
+                    arm_types.push(resolved_arm_ty.clone());
+
+                    if resolved_arm_ty != Type::Never {
+                        reachable_states.push(self.initialization_state());
+                    }
+                }
+
+                if !has_else {
+                    reachable_states.push(initial_state);
+                }
+
+                self.local_scopes = scopes_before_if;
+                if !reachable_states.is_empty() {
+                    self.merge_initialization_states(&reachable_states);
                 }
 
                 let unified_return_ty = self.unify_to_sum_type(&arm_types)?;
@@ -1126,7 +1277,7 @@ impl<'a> Checker<'a> {
                 if let Type::Union(_) = unified_return_ty {
                     for (i, arm) in arms.iter_mut().enumerate() {
                         let arm_ty = &arm_types[i];
-                        if arm_ty != &unified_return_ty {
+                        if arm_ty != &Type::Never && arm_ty != &unified_return_ty {
                             let orig = std::mem::replace(
                                 &mut arm.body,
                                 Box::new(Expression::Boolean(false)),
@@ -1259,7 +1410,7 @@ impl<'a> Checker<'a> {
                 if let Type::Union(_) = unified_return_ty {
                     for (i, arm) in arms.iter_mut().enumerate() {
                         let arm_ty = &arm_types[i];
-                        if arm_ty != &unified_return_ty {
+                        if arm_ty != &Type::Never && arm_ty != &unified_return_ty {
                             let orig = std::mem::replace(
                                 &mut arm.body,
                                 Box::new(Expression::Boolean(false)),
@@ -1623,6 +1774,10 @@ impl<'a> Checker<'a> {
                 return true;
             }
 
+            if provided == &Type::Never {
+                return true;
+            }
+
             if matches!(provided, Type::Alias(_)) || matches!(expected, Type::Alias(_)) {
                 let pair = (
                     Checker::canonical_type_key(provided),
@@ -1727,243 +1882,6 @@ impl<'a> Checker<'a> {
         compatible(provided, expected, aliases, &mut HashSet::new())
     }
 
-    fn statement_definitely_returns(stmt: &Statement) -> bool {
-        match stmt {
-            Statement::Spanned { statement, .. } => Self::statement_definitely_returns(statement),
-            Statement::Return(_) => true,
-            Statement::Compound(stmts) => stmts.iter().any(Self::statement_definitely_returns),
-            Statement::If { arms } => {
-                !arms.is_empty()
-                    && arms
-                        .iter()
-                        .all(|arm| Self::statement_definitely_returns(&arm.body))
-            }
-            Statement::DoTimes { .. } => false,
-            _ => false,
-        }
-    }
-
-    fn validate_statement(
-        &mut self,
-        stmt: &mut Statement,
-        expected_type: &Type,
-    ) -> Result<(), String> {
-        if let Statement::Spanned { statement, span } = stmt {
-            return self
-                .validate_statement(statement, expected_type)
-                .map_err(|error| format_error(span, &error));
-        }
-        self.validate_statement_inner(stmt, expected_type)
-    }
-
-    fn validate_statement_inner(
-        &mut self,
-        stmt: &mut Statement,
-        expected_type: &Type,
-    ) -> Result<(), String> {
-        match stmt {
-            Statement::Spanned { statement, span } => {
-                return self
-                    .validate_statement(statement, expected_type)
-                    .map_err(|error| format_error(span, &error));
-            }
-            Statement::Compound(stmts) => {
-                for s in stmts {
-                    self.validate_statement(s, expected_type)?;
-                }
-            }
-            Statement::DoTimes { count, body } => {
-                let raw_count_ty = self.type_of_expression(count)?;
-                let count_ty = self.resolve_type(&raw_count_ty)?;
-
-                if !Self::is_integer_type(&count_ty) {
-                    return Err(format!(
-                        "in '{}': dotimes count must be an integer, found {:?}",
-                        self.current_file_path, count_ty
-                    ));
-                }
-
-                let scopes_before_loop = self.local_scopes.clone();
-                let body_result = self.validate_statement(body, expected_type);
-                self.restore_initialization_state(scopes_before_loop);
-                body_result?;
-            }
-            Statement::Declare { name, ty } => {
-                let resolved_ty = self.resolve_type(ty)?;
-                if resolved_ty == Type::Void {
-                    return Err(format!(
-                        "in '{}': variable '{}' cannot be declared with type void",
-                        self.current_file_path, name
-                    ));
-                }
-                if self.local_scopes.last().unwrap().contains_key(name) {
-                    return Err(format!(
-                        "in '{}': variable '{}' already declared in this scope",
-                        self.current_file_path, name
-                    ));
-                }
-                *ty = resolved_ty.clone();
-                self.local_scopes.last_mut().unwrap().insert(
-                    name.clone(),
-                    BindingInfo {
-                        ty: resolved_ty,
-                        is_mutable: true,
-                        is_initialized: false,
-                    },
-                );
-            }
-
-            Statement::Define {
-                name,
-                is_mutable,
-                value,
-            } => {
-                if self.local_scopes.last().unwrap().contains_key(name) {
-                    return Err(format!(
-                        "in '{}': variable '{}' already declared in this scope",
-                        self.current_file_path, name
-                    ));
-                }
-                let raw_ty = self.type_of_expression(value)?;
-                let resolved_ty = self.resolve_type(&raw_ty)?;
-                if resolved_ty == Type::Void {
-                    return Err(format!(
-                        "in '{}': cannot bind variable '{}' to void expression",
-                        self.current_file_path, name
-                    ));
-                }
-                self.local_scopes.last_mut().unwrap().insert(
-                    name.clone(),
-                    BindingInfo {
-                        ty: resolved_ty,
-                        is_mutable: *is_mutable,
-                        is_initialized: true,
-                    },
-                );
-            }
-
-            Statement::Assign { target, value } => {
-                let mut val_ty = self.type_of_expression(value)?;
-
-                if self.scope.lookup_definition(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to global constant '@{}'",
-                        self.current_file_path, target
-                    ));
-                }
-                if self.scope.lookup_extern(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to external function '{}'",
-                        self.current_file_path, target
-                    ));
-                }
-                if self.scope.lookup_type_alias(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to type alias '{}'",
-                        self.current_file_path, target
-                    ));
-                }
-
-                if let Some(info) = self.lookup_binding(target) {
-                    if !info.is_mutable {
-                        return Err(format!(
-                            "in '{}': cannot reassign to immutable constant '{}'",
-                            self.current_file_path, target
-                        ));
-                    }
-                    val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
-                    if !self.are_types_compatible(&val_ty, &info.ty)? {
-                        return Err(format!(
-                            "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
-                            self.current_file_path, target, info.ty, val_ty
-                        ));
-                    }
-
-                    if let Some(info_mut) = self.lookup_binding_mut(target) {
-                        info_mut.is_initialized = true;
-                    }
-                } else {
-                    return Err(format!(
-                        "in '{}': unknown variable '{}'",
-                        self.current_file_path, target
-                    ));
-                }
-            }
-
-            Statement::Return(expr) => {
-                let mut actual = self.type_of_expression(expr)?;
-                actual = self.coerce_expression_to_type(expr, &actual, expected_type)?;
-                if !self.are_types_compatible(&actual, expected_type)? {
-                    return Err(format!(
-                        "in '{}': return type mismatch: expected {:?}, found {:?}",
-                        self.current_file_path, expected_type, actual
-                    ));
-                }
-            }
-
-            Statement::Discard(expr) => {
-                self.type_of_expression(expr)?;
-            }
-
-            Statement::If { arms } => {
-                let scopes_before_if = self.local_scopes.clone();
-                let initial_state = self.initialization_state();
-                let has_else = arms
-                    .iter()
-                    .any(|arm| matches!(arm.condition, IfCondition::Else));
-                let mut reachable_states = Vec::new();
-
-                for arm in arms {
-                    self.local_scopes = scopes_before_if.clone();
-                    if let IfCondition::Expression(cond) = &mut arm.condition {
-                        let cond_ty = self.type_of_expression(cond)?;
-                        if cond_ty != Type::Bool {
-                            return Err(format!(
-                                "in '{}': if condition must evaluate to Bool, found {:?}",
-                                self.current_file_path, cond_ty
-                            ));
-                        }
-                    }
-                    self.validate_statement(&mut arm.body, expected_type)?;
-                    if !Self::statement_definitely_returns(&arm.body) {
-                        reachable_states.push(self.initialization_state());
-                    }
-                }
-
-                if !has_else {
-                    reachable_states.push(initial_state);
-                }
-
-                self.local_scopes = scopes_before_if;
-                if !reachable_states.is_empty() {
-                    self.merge_initialization_states(&reachable_states);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_block(
-        &mut self,
-        statements: &mut [Statement],
-        expected_type: &Type,
-    ) -> Result<(), String> {
-        for stmt in statements.iter_mut() {
-            self.validate_statement(stmt, expected_type)?;
-        }
-
-        if *expected_type != Type::Void
-            && !statements.iter().any(Self::statement_definitely_returns)
-        {
-            return Err(format!(
-                "in '{}': missing return statement: non-void function expecting return type {:?} must return a value along all execution paths",
-                self.current_file_path, expected_type
-            ));
-        }
-
-        Ok(())
-    }
-
     pub fn is_integer_type(ty: &Type) -> bool {
         matches!(
             ty,
@@ -1995,6 +1913,10 @@ impl<'a> Checker<'a> {
             visited: &mut HashSet<(String, String)>,
         ) -> bool {
             if source == target {
+                return true;
+            }
+
+            if source == &Type::Never {
                 return true;
             }
 
