@@ -1,5 +1,5 @@
 fn main() -> :none {
-        let num := heap_new(5)
+        let num := heap_new(s32, 5)
         println(num.*)
 
         num.* := 42

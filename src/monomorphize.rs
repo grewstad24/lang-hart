@@ -286,35 +286,6 @@ fn rewrite_target_identifier(expr: &mut Expression, new_name: String) {
     }
 }
 
-fn infer_type_param(
-    param_ty: &Type,
-    arg_ty: &Type,
-    substitutions: &mut HashMap<String, Type>,
-) {
-    match (param_ty, arg_ty) {
-        (Type::Alias(name), concrete) => {
-            if !substitutions.contains_key(name) {
-                substitutions.insert(name.clone(), concrete.clone());
-            }
-        }
-        (Type::Pointer { element: p_elem }, Type::Pointer { element: a_elem }) => {
-            infer_type_param(p_elem, a_elem, substitutions);
-        }
-        (Type::Slice { element: p_elem }, Type::Slice { element: a_elem }) => {
-            infer_type_param(p_elem, a_elem, substitutions);
-        }
-        (Type::Array { element: p_elem, .. }, Type::Array { element: a_elem, .. }) => {
-            infer_type_param(p_elem, a_elem, substitutions);
-        }
-        (Type::Struct(p_fields), Type::Struct(a_fields)) => {
-            for (pf, af) in p_fields.iter().zip(a_fields.iter()) {
-                infer_type_param(&pf.ty, &af.ty, substitutions);
-            }
-        }
-        _ => {}
-    }
-}
-
 struct GeneratedSpecialization {
     base_name: String,
     originating_file: String,
@@ -347,55 +318,24 @@ fn scan_and_rewrite_expression(
                             .as_ref()
                             .ok_or_else(|| format!("meta fn '{}' has no signature", fn_name))?;
 
-                        let non_meta_params: Vec<&Parameter> = sig
-                            .parameters
-                            .iter()
-                            .filter(|p| p.ty != Type::MetaType)
-                            .collect();
-                        let meta_params: Vec<&Parameter> = sig
-                            .parameters
-                            .iter()
-                            .filter(|p| p.ty == Type::MetaType)
-                            .collect();
+                        if arguments.len() != sig.parameters.len() {
+                            return Err(format!(
+                                "meta fn '{}' expects {} arguments, found {}",
+                                fn_name,
+                                sig.parameters.len(),
+                                arguments.len()
+                            ));
+                        }
 
                         let mut substitutions = HashMap::new();
                         let mut type_arg_mangles = Vec::new();
-                        let is_explicit = arguments.len() == sig.parameters.len();
 
-                        if is_explicit {
-                            for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
-                                if param.ty == Type::MetaType {
-                                    let type_arg = extract_type_argument(arg, scope)?;
-                                    type_arg_mangles.push(mangle_type(&type_arg));
-                                    substitutions.insert(param.name.clone(), type_arg);
-                                }
+                        for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
+                            if param.ty == Type::MetaType {
+                                let type_arg = extract_type_argument(arg, scope)?;
+                                type_arg_mangles.push(mangle_type(&type_arg));
+                                substitutions.insert(param.name.clone(), type_arg);
                             }
-                        } else if arguments.len() == non_meta_params.len() {
-                            let mut checker = crate::sema::Checker::new(scope);
-                            for (param, arg) in non_meta_params.iter().zip(arguments.iter_mut()) {
-                                if let Ok(arg_ty) = checker.type_of_expression(arg) {
-                                    if let Ok(resolved) = checker.resolve_type(&arg_ty) {
-                                        infer_type_param(&param.ty, &resolved, &mut substitutions);
-                                    }
-                                }
-                            }
-                            for meta_param in &meta_params {
-                                let type_arg = substitutions.get(&meta_param.name).ok_or_else(|| {
-                                    format!(
-                                        "could not infer type parameter '{}' for meta fn '{}'",
-                                        meta_param.name, fn_name
-                                    )
-                                })?;
-                                type_arg_mangles.push(mangle_type(type_arg));
-                            }
-                        } else {
-                            return Err(format!(
-                                "meta fn '{}' expects {} arguments (or {} with inferred types), found {}",
-                                fn_name,
-                                sig.parameters.len(),
-                                non_meta_params.len(),
-                                arguments.len()
-                            ));
                         }
 
                         let mangled_suffix = type_arg_mangles.join("__");
@@ -433,17 +373,15 @@ fn scan_and_rewrite_expression(
                         // Rewrite call site
                         rewrite_target_identifier(target, mangled_name);
 
-                        // If explicit type args were passed, remove meta arguments
-                        if is_explicit {
-                            let old_args = std::mem::take(arguments);
-                            let mut new_args = Vec::new();
-                            for (arg, param) in old_args.into_iter().zip(sig.parameters.iter()) {
-                                if param.ty != Type::MetaType {
-                                    new_args.push(arg);
-                                }
+                        // Remove meta arguments
+                        let old_args = std::mem::take(arguments);
+                        let mut new_args = Vec::new();
+                        for (arg, param) in old_args.into_iter().zip(sig.parameters.iter()) {
+                            if param.ty != Type::MetaType {
+                                new_args.push(arg);
                             }
-                            *arguments = new_args;
                         }
+                        *arguments = new_args;
 
                         *changed = true;
                     }
@@ -667,6 +605,55 @@ mod tests {
                 element: Box::new(Type::S32)
             }
         );
+    }
+
+    #[test]
+    fn test_explicit_type_arguments_required() {
+        let mut scope = ModuleScope::new("test".to_string());
+        scope.definitions.insert(
+            "heap_new".to_string(),
+            crate::sema::SymbolProvenance {
+                originating_file: "test.zzz".to_string(),
+                item: Definition {
+                    name: "heap_new".to_string(),
+                    signature: Some(crate::syntax::Signature {
+                        parameters: vec![
+                            Parameter {
+                                name: "T".to_string(),
+                                ty: Type::MetaType,
+                            },
+                            Parameter {
+                                name: "val".to_string(),
+                                ty: Type::Alias("T".to_string()),
+                            },
+                        ],
+                        return_type: Box::new(Type::Pointer {
+                            element: Box::new(Type::Alias("T".to_string())),
+                        }),
+                        is_variadic: false,
+                    }),
+                    value: Expression::Atom("none".to_string()),
+                    is_meta: true,
+                },
+            },
+        );
+
+        let mut generated = Vec::new();
+        let mut changed = false;
+
+        // Calling heap_new(5) with 1 argument when 2 are expected must fail
+        let mut call_missing_type = Expression::Call {
+            target: Box::new(Expression::Identifier("heap_new".to_string())),
+            arguments: vec![Expression::Integer(5)],
+        };
+        assert!(scan_and_rewrite_expression(&mut call_missing_type, &scope, &mut generated, &mut changed).is_err());
+
+        // Calling heap_new(s32, 5) with both arguments succeeds
+        let mut call_explicit = Expression::Call {
+            target: Box::new(Expression::Identifier("heap_new".to_string())),
+            arguments: vec![Expression::Type(Type::S32), Expression::Integer(5)],
+        };
+        assert!(scan_and_rewrite_expression(&mut call_explicit, &scope, &mut generated, &mut changed).is_ok());
     }
 }
 
