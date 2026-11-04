@@ -370,7 +370,6 @@ pub enum Token {
     Extern,
     Pipe,
     At,
-    Hash,
     DotDot,
     DotDotDot,
     FatArrow,
@@ -472,9 +471,6 @@ impl Lexer {
                     self.position += 1;
                     tokens.push(Token::Newline);
                 }
-                ';' => {
-                    self.skip_comment(&mut tokens);
-                }
                 '@' => {
                     self.position += 1;
                     tokens.push(Token::At);
@@ -530,8 +526,7 @@ impl Lexer {
                     tokens.push(Token::Caret);
                 }
                 '#' => {
-                    self.position += 1;
-                    tokens.push(Token::Hash);
+                    self.skip_comment(&mut tokens);
                 }
                 '.' => {
                     if self.peek_char(1) == Some('.') && self.peek_char(2) == Some('.') {
@@ -652,7 +647,7 @@ impl Lexer {
     }
 
     fn skip_comment(&mut self, tokens: &mut Vec<Token>) {
-        debug_assert_eq!(self.chars[self.position], ';');
+        debug_assert_eq!(self.chars[self.position], '#');
         self.position += 1;
 
         while self.position < self.chars.len() {

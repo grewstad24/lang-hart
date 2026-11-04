@@ -1,4 +1,6 @@
+# Entry point for the application
 fn main() -> :none {
+        # Create and print a record
         @record (
                 id := "bob123"
                 number := 68
@@ -9,15 +11,15 @@ fn main() -> :none {
                 )
         ) ..print()
 
-        5..
+        5.. # chain arithmetic operations
         add(5)..
         sub(3)..
         mul(65)..
         div(65)..
         println()
 
-        var a := 100
-        let ptr := a.&
+        var a := 100 # local variable
+        let ptr := a.& # address-of
         println( ptr.* )
 
         let x := if { a < 50 => 50 }
@@ -27,14 +29,16 @@ fn main() -> :none {
                 :none => println("none")
         }
 
+        # Testing loop constructs
+        # 1. repeat without binder
         repeat 3 => print("repeat without binder! ")
         print(:nl)
 
+        # 2. repeat with binder
         repeat 5 using i => {
                 print("i: ")
                 print(i)
                 print(" ")
         }
         print(:nl)
-
 }

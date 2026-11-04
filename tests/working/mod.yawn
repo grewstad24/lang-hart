@@ -1,2 +1,3 @@
+# module configuration
 export := []
-import := []
+import := [] # no imports
