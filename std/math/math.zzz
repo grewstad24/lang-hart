@@ -1,15 +1,15 @@
-fn add(a :: s32, b :: s32) -> s32
+fn add(a :: s32, b :: s32) -> s32 {
     return a + b
-end
+}
 
-fn sub(a :: s32, b :: s32) -> s32
+fn sub(a :: s32, b :: s32) -> s32 {
     return a - b
-end
+}
 
-fn mul(a :: s32, b :: s32) -> s32
+fn mul(a :: s32, b :: s32) -> s32 {
     return a * b
-end
+}
 
-fn div(a :: s32, b :: s32) -> s32
+fn div(a :: s32, b :: s32) -> s32 {
     return a / b
-end
+}

@@ -1201,12 +1201,15 @@ impl Parser {
         };
 
         self.skip_newlines();
+        self.expect(Token::LBrace)?;
+        self.skip_newlines();
+
         let mut body = Vec::new();
-        while !self.is(Token::End) && !self.is(Token::Eof) {
+        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
             body.push(self.parse_statement()?);
             self.skip_newlines();
         }
-        self.expect(Token::End)?;
+        self.expect(Token::RBrace)?;
         self.consume_optional_newline();
 
         let signature = Signature {

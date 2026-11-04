@@ -2,19 +2,19 @@ extern fn printf( ptr :: *u8, ...) -> s32
 
 type Printable := String | Integer | :nl | :t | bool | []Printable | Record
 
-fn print_string(s :: []u8)
+fn print_string(s :: []u8) {
     printf("%s".ptr, s.ptr)
-end
+}
 
-fn pr_nl()
+fn pr_nl() {
     printf("\n".ptr)
-end
+}
 
-fn pr_tab()
+fn pr_tab() {
     printf("\t".ptr)
-end
+}
 
-fn print_int(num :: Integer)
+fn print_int(num :: Integer) {
     match num with z
         s32 => printf("%d".ptr, z)
         s16 => printf("%d".ptr, z as s32)
@@ -23,17 +23,17 @@ fn print_int(num :: Integer)
         u32 => printf("%u".ptr, z)
         u64 => printf("%llu".ptr, z)
     over
-end
+}
 
-fn printa(arr :: []Printable)
+fn printa(arr :: []Printable) {
     var i := 0
     dotimes arr.len => {
         print(arr[i])
         i := i + 1
     }
-end
+}
 
-fn print(x :: Printable)
+fn print(x :: Printable) {
     match x with z
         String      => print_string(z)
         Integer     => print_int(z)
@@ -46,14 +46,14 @@ fn print(x :: Printable)
         end
         Record      => printr(z)
     over
-end
+}
 
-fn println(x :: Printable)
-    print(x)
-    pr_nl()
-end
+fn println(x :: Printable) {
+        print(x)
+        pr_nl()
+}
 
-fn printr(r :: Record)
+fn printr(r :: Record) {
     var i := 0
     let header := r.*
     let keys := header.key
@@ -69,4 +69,4 @@ fn printr(r :: Record)
 
         i := i + 1
     }
-end
+}

@@ -1,15 +1,20 @@
-fn main() -> s32
-        print(my_data)
+fn main() -> s32 {
+        @record (
+                id := "bob123"
+                number := 68
+                valid := true
+                more := (
+                        is_cool := false
+                        friend := "alice345"
+                )
+        ) ..print()
+
+        5..
+        add(5)..
+        sub(3)..
+        mul(65)..
+        div(65)..
+        println()
 
         return 0
-end
-
-val my_data := @record (
-        id := "bob123"
-        number := 68
-        valid := true
-        more := (
-                is_cool := false
-                friend := "alice345"
-        )
-)
+}
