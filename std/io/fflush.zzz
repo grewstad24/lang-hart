@@ -1,1 +1,3 @@
+mod io
+
 extern fn fflush(ptr :: *u8) -> s32

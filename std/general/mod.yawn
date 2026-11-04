@@ -1,8 +1,0 @@
-export := [
-        (
-                symbol := ["String", "Integer", "Record", "Generic"]
-                to := []
-        )
-]
-
-import := []

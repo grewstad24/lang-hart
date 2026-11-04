@@ -1,3 +1,6 @@
+export { print, println } to .
+export { print, println } to .print
+
 extern fn printf( ptr :: *u8, ...) -> s32
 
 type Printable := String | Integer | :nl | :t | bool | []Printable | Record

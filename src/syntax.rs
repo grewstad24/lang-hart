@@ -317,6 +317,27 @@ pub struct Variable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExportRule {
+    pub symbols: Vec<String>,
+    pub target: NamespacePath,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModuleDecl {
+    Declaration {
+        name: String,
+        exports: Vec<ExportRule>,
+        imports: Vec<NamespacePath>,
+        span: Span,
+    },
+    Member {
+        name: String,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceFile {
     pub file_path: String,
     pub extern_functions: Vec<ExternalFunction>,
@@ -326,10 +347,19 @@ pub struct SourceFile {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicalModule {
+    pub name: Option<String>,
     pub dir_path: String,
     pub source_files: Vec<SourceFile>,
-    pub exports: Vec<crate::config::ExportRule>,
-    pub imports: Vec<Vec<String>>,
+    pub exports: Vec<ExportRule>,
+    pub imports: Vec<NamespacePath>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedFile {
+    pub module_decl: Option<ModuleDecl>,
+    pub exports: Vec<ExportRule>,
+    pub imports: Vec<NamespacePath>,
+    pub source_file: SourceFile,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -396,6 +426,11 @@ pub enum Token {
     Not,
     Repeat,
     Meta,
+    Decl,
+    Mod,
+    Export,
+    Import,
+    To,
     TypeOpaque,
     Val,
     Never,
@@ -760,6 +795,11 @@ impl Lexer {
             "not" => Token::Not,
             "repeat" => Token::Repeat,
             "meta" => Token::Meta,
+            "decl" => Token::Decl,
+            "mod" => Token::Mod,
+            "export" => Token::Export,
+            "import" => Token::Import,
+            "to" => Token::To,
             "opaque" => Token::TypeOpaque,
             "never" => Token::Never,
             _ => Token::Identifier(text),
@@ -1018,6 +1058,26 @@ impl Parser {
                 self.advance();
                 Ok("meta".to_string())
             }
+            Token::Decl => {
+                self.advance();
+                Ok("decl".to_string())
+            }
+            Token::Mod => {
+                self.advance();
+                Ok("mod".to_string())
+            }
+            Token::Export => {
+                self.advance();
+                Ok("export".to_string())
+            }
+            Token::Import => {
+                self.advance();
+                Ok("import".to_string())
+            }
+            Token::To => {
+                self.advance();
+                Ok("to".to_string())
+            }
             Token::TypeOpaque => {
                 self.advance();
                 Ok("opaque".to_string())
@@ -1080,10 +1140,91 @@ impl Parser {
         Ok(Expression::Block(expressions))
     }
 
+    pub fn parse_namespace_path(&mut self) -> Result<NamespacePath, String> {
+        self.skip_newlines();
+        if !self.is(Token::Dot) {
+            return Err(format!("expected namespace starting with '.', found {:?}", self.peek()));
+        }
+        self.advance(); // consume '.'
+        let mut segments = Vec::new();
+        if self.is_identifier_like() {
+            segments.push(self.expect_field_name()?);
+            while self.is(Token::Dot) && self.is_identifier_like_at(self.cursor + 1) {
+                self.advance(); // consume '.'
+                segments.push(self.expect_field_name()?);
+            }
+        }
+        Ok(NamespacePath::from_segments(segments))
+    }
+
+    pub fn parse_export_rule(&mut self) -> Result<ExportRule, String> {
+        let span = self.current_span().clone();
+        self.expect(Token::Export)?;
+        self.skip_newlines();
+        let mut symbols = Vec::new();
+        if self.is(Token::LBrace) {
+            self.advance();
+            self.skip_newlines();
+            while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                symbols.push(self.expect_field_name()?);
+                self.skip_newlines();
+                if self.is(Token::Comma) {
+                    self.advance();
+                    self.skip_newlines();
+                }
+            }
+            self.expect(Token::RBrace)?;
+        } else {
+            while !self.is(Token::To) && !self.is(Token::Eof) {
+                symbols.push(self.expect_field_name()?);
+                self.skip_newlines();
+                if self.is(Token::Comma) {
+                    self.advance();
+                    self.skip_newlines();
+                }
+            }
+        }
+        self.skip_newlines();
+        self.expect(Token::To)?;
+        let target = self.parse_namespace_path()?;
+        self.consume_optional_newline();
+        Ok(ExportRule {
+            symbols,
+            target,
+            span,
+        })
+    }
+
+    pub fn parse_import_directive(&mut self) -> Result<Vec<NamespacePath>, String> {
+        self.expect(Token::Import)?;
+        self.skip_newlines();
+        let mut imports = Vec::new();
+        if self.is(Token::LBrace) {
+            self.advance();
+            self.skip_newlines();
+            while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                imports.push(self.parse_namespace_path()?);
+                self.skip_newlines();
+                if self.is(Token::Comma) {
+                    self.advance();
+                    self.skip_newlines();
+                }
+            }
+            self.expect(Token::RBrace)?;
+        } else {
+            imports.push(self.parse_namespace_path()?);
+        }
+        self.consume_optional_newline();
+        Ok(imports)
+    }
+
     pub fn parse_file_declarations(
         &mut self,
-        file_name: &str,
-    ) -> Result<(Vec<ExternalFunction>, Vec<Definition>, Vec<TypeAlias>), String> {
+        file_path: &str,
+    ) -> Result<ParsedFile, String> {
+        let mut module_decl: Option<ModuleDecl> = None;
+        let mut exports = Vec::new();
+        let mut imports = Vec::new();
         let mut extern_functions = Vec::new();
         let mut definitions = Vec::new();
         let mut type_aliases = Vec::new();
@@ -1093,6 +1234,112 @@ impl Parser {
         while !self.is(Token::Eof) {
             let declaration_span = self.current_span().clone();
             match self.peek() {
+                Token::Decl => {
+                    if module_decl.is_some() {
+                        return Err(format!(
+                            "in '{}': file cannot declare more than one module declaration",
+                            file_path
+                        ));
+                    }
+                    self.advance(); // consume 'decl'
+                    self.skip_newlines();
+                    self.expect(Token::Mod)?;
+                    self.skip_newlines();
+                    let name = self.expect_field_name()?;
+                    self.skip_newlines();
+                    self.expect(Token::LBrace)?;
+                    self.skip_newlines();
+                    let mut decl_exports = Vec::new();
+                    let mut decl_imports = Vec::new();
+                    while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                        self.skip_newlines();
+                        if self.is(Token::RBrace) {
+                            break;
+                        }
+                        match self.peek() {
+                            Token::Export => {
+                                let rule = self.parse_export_rule()?;
+                                decl_exports.push(rule);
+                            }
+                            Token::Import => {
+                                let mut imps = self.parse_import_directive()?;
+                                decl_imports.append(&mut imps);
+                            }
+                            Token::Newline => {
+                                self.skip_newlines();
+                            }
+                            token => {
+                                return Err(format!(
+                                    "in '{}': unexpected token inside 'decl mod {}': {:?}. Only 'export' and 'import' are allowed.",
+                                    file_path, name, token
+                                ));
+                            }
+                        }
+                        self.skip_newlines();
+                    }
+                    self.expect(Token::RBrace)?;
+                    self.consume_optional_newline();
+                    module_decl = Some(ModuleDecl::Declaration {
+                        name,
+                        exports: decl_exports,
+                        imports: decl_imports,
+                        span: declaration_span,
+                    });
+                }
+                Token::Mod => {
+                    if module_decl.is_some() {
+                        return Err(format!(
+                            "in '{}': file cannot declare more than one module declaration",
+                            file_path
+                        ));
+                    }
+                    if !exports.is_empty() || !imports.is_empty() {
+                        return Err(format!(
+                            "in '{}': only the module declaration site ('decl mod') can declare imports and exports; member files cannot",
+                            file_path
+                        ));
+                    }
+                    self.advance(); // consume 'mod'
+                    self.skip_newlines();
+                    let name = self.expect_field_name()?;
+                    self.consume_optional_newline();
+                    module_decl = Some(ModuleDecl::Member {
+                        name,
+                        span: declaration_span,
+                    });
+                }
+                Token::Export => {
+                    if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
+                        return Err(format!(
+                            "in '{}': member file of module '{}' cannot declare exports. Only 'decl mod {}' can declare exports.",
+                            file_path, name, name
+                        ));
+                    }
+                    if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
+                        return Err(format!(
+                            "in '{}': exports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
+                            file_path, name, name
+                        ));
+                    }
+                    let rule = self.parse_export_rule()?;
+                    exports.push(rule);
+                }
+                Token::Import => {
+                    if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
+                        return Err(format!(
+                            "in '{}': member file of module '{}' cannot declare imports. Only 'decl mod {}' can declare imports.",
+                            file_path, name, name
+                        ));
+                    }
+                    if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
+                        return Err(format!(
+                            "in '{}': imports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
+                            file_path, name, name
+                        ));
+                    }
+                    let mut imps = self.parse_import_directive()?;
+                    imports.append(&mut imps);
+                }
                 Token::FnKeyword => {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
@@ -1199,8 +1446,8 @@ impl Parser {
                 }
                 token => {
                     return Err(format!(
-                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'type', 'val', or 'extern'",
-                        file_name, token
+                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'type', 'val', 'extern', 'decl mod', 'mod', 'export', or 'import'",
+                        file_path, token
                     ));
                 }
             }
@@ -1208,7 +1455,31 @@ impl Parser {
             self.skip_newlines();
         }
 
-        Ok((extern_functions, definitions, type_aliases))
+        if let Some(ModuleDecl::Declaration { exports: ref decl_exports, imports: ref mut decl_imports, .. }) = module_decl {
+            if !decl_imports.contains(&NamespacePath::root()) {
+                decl_imports.insert(0, NamespacePath::root());
+            }
+            exports = decl_exports.clone();
+            imports = decl_imports.clone();
+        } else {
+            if !imports.contains(&NamespacePath::root()) {
+                imports.insert(0, NamespacePath::root());
+            }
+        }
+
+        let source_file = SourceFile {
+            file_path: file_path.to_string(),
+            extern_functions,
+            definitions,
+            type_aliases,
+        };
+
+        Ok(ParsedFile {
+            module_decl,
+            exports,
+            imports,
+            source_file,
+        })
     }
 
     fn parse_fn_definition(&mut self) -> Result<Definition, String> {
@@ -1520,6 +1791,51 @@ impl Parser {
         Ok(arguments)
     }
 
+    pub fn is_identifier_like_at(&self, idx: usize) -> bool {
+        if idx >= self.tokens.len() {
+            return false;
+        }
+        matches!(
+            &self.tokens[idx],
+            Token::Identifier(_)
+                | Token::Val
+                | Token::Var
+                | Token::Let
+                | Token::If
+                | Token::Else
+                | Token::Match
+                | Token::With
+                | Token::Using
+                | Token::Over
+                | Token::Return
+                | Token::As
+                | Token::Not
+                | Token::Repeat
+                | Token::Meta
+                | Token::Decl
+                | Token::Mod
+                | Token::Export
+                | Token::Import
+                | Token::To
+                | Token::TypeOpaque
+                | Token::TypeBool
+                | Token::TypeKeyword
+                | Token::TypeS16
+                | Token::TypeS32
+                | Token::TypeS64
+                | Token::TypeU8
+                | Token::TypeU16
+                | Token::TypeU32
+                | Token::TypeU64
+                | Token::TypeUSize
+                | Token::TypeSSize
+        )
+    }
+
+    pub fn is_identifier_like(&self) -> bool {
+        self.is_identifier_like_at(self.cursor)
+    }
+
     fn is_struct_type_start(&self) -> bool {
         let mut idx = self.cursor;
         while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
@@ -1542,6 +1858,11 @@ impl Parser {
                 | Token::Not
                 | Token::Repeat
                 | Token::Meta
+                | Token::Decl
+                | Token::Mod
+                | Token::Export
+                | Token::Import
+                | Token::To
                 | Token::TypeOpaque
                 | Token::TypeS16
                 | Token::TypeS32
@@ -1587,6 +1908,11 @@ impl Parser {
                 | Token::Not
                 | Token::Repeat
                 | Token::Meta
+                | Token::Decl
+                | Token::Mod
+                | Token::Export
+                | Token::Import
+                | Token::To
                 | Token::TypeOpaque
                 | Token::TypeS16
                 | Token::TypeS32

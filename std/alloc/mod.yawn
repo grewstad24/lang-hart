@@ -1,8 +1,0 @@
-export := [
-        (
-                symbol := [ "alloc", "heap_new" ]
-                to := []
-        )
-]
-
-import := []

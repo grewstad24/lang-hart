@@ -1,0 +1,3 @@
+decl mod io {
+        export { fflush, read, write } to .io.raw
+}

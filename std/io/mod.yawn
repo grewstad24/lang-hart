@@ -1,8 +1,0 @@
-export := [
-        (
-                symbol := ["read", "write", "fflush"]
-                to := ["io"]
-        )
-]
-
-import := []

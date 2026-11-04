@@ -9,11 +9,11 @@ use inkwell::context::Context;
 use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
 
 use crate::codegen::Codegen;
-use crate::config::ModConfig;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm, Parameter,
-    Parser, Program, Signature, SourceFile, StructFieldInit, Type, TypeAlias, format_error,
+    Definition, ExportRule, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
+    ModuleDecl, NamespacePath, Parameter, Parser, Program, Signature, SourceFile, StructFieldInit,
+    Type, TypeAlias, format_error,
 };
 
 pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
@@ -58,12 +58,12 @@ fn get_musl_lib_dir() -> Result<PathBuf, String> {
 }
 
 pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, String> {
-    let mut modules = Vec::new();
+    let mut zzz_files = Vec::new();
     let mut visited_dirs = Vec::new();
 
-    fn walk_dir(
+    fn collect_zzz_files(
         dir: &Path,
-        modules: &mut Vec<LogicalModule>,
+        files: &mut Vec<PathBuf>,
         visited: &mut Vec<PathBuf>,
     ) -> Result<(), String> {
         let canonical = dir.canonicalize().map_err(|e| e.to_string())?;
@@ -72,74 +72,23 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
         }
         visited.push(canonical);
 
-        let mut zzz_file_paths = Vec::new();
-        let mut subdirs = Vec::new();
-        let mut has_mod_yawn = false;
-
         let entries =
             fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {}", dir.display(), e))?;
 
+        let mut subdirs = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
-
             if path.is_dir() {
                 subdirs.push(path);
-            } else if path.file_name().and_then(|n| n.to_str()) == Some("mod.yawn") {
-                has_mod_yawn = true;
             } else if path.extension().and_then(|e| e.to_str()) == Some("zzz") {
-                zzz_file_paths.push(path);
+                files.push(path);
             }
         }
 
-        if !zzz_file_paths.is_empty() {
-            if !has_mod_yawn {
-                return Err(format!(
-                    "missing required 'mod.yawn' in directory '{}'",
-                    dir.display()
-                ));
-            }
-
-            let mod_yawn_path = dir.join("mod.yawn");
-            let yawn_source = fs::read_to_string(&mod_yawn_path)
-                .map_err(|e| format!("failed to read '{}': {}", mod_yawn_path.display(), e))?;
-
-            let mod_config =
-                ModConfig::parse_and_validate(&yawn_source, &mod_yawn_path.display().to_string())?;
-
-            let mut source_files = Vec::new();
-            zzz_file_paths.sort();
-
-            for path in zzz_file_paths {
-                let code = fs::read_to_string(&path)
-                    .map_err(|e| format!("failed to read '{}': {}", path.display(), e))?;
-
-                let (tokens, spans) =
-                    Lexer::new_with_file(code, path.display().to_string()).tokenize_with_spans()?;
-
-                let mut parser = Parser::new_with_spans(tokens, spans);
-                let parsed = parser.parse_file_declarations(&path.display().to_string());
-                let (extern_functions, definitions, type_aliases) =
-                    parsed.map_err(|error| format_error(parser.current_span(), &error))?;
-
-                source_files.push(SourceFile {
-                    file_path: path.display().to_string(),
-                    extern_functions,
-                    definitions,
-                    type_aliases,
-                });
-            }
-
-            modules.push(LogicalModule {
-                dir_path: dir.display().to_string(),
-                source_files,
-                exports: mod_config.exports,
-                imports: mod_config.imports,
-            });
-        }
-
+        subdirs.sort();
         for subdir in subdirs {
-            walk_dir(&subdir, modules, visited)?;
+            collect_zzz_files(&subdir, files, visited)?;
         }
 
         Ok(())
@@ -147,11 +96,114 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
 
     for dir in dirs {
         if dir.is_dir() {
-            walk_dir(dir, &mut modules, &mut visited_dirs)?;
+            collect_zzz_files(dir, &mut zzz_files, &mut visited_dirs)?;
         }
     }
 
-    Ok(modules)
+    zzz_files.sort();
+
+    // Map named module -> (Option<Declaration (exports, imports, decl_path)>, Vec<SourceFile>)
+    let mut named_modules: HashMap<
+        String,
+        (
+            Option<(Vec<ExportRule>, Vec<NamespacePath>, PathBuf)>,
+            Vec<SourceFile>,
+        ),
+    > = HashMap::new();
+    let mut unnamed_modules: Vec<LogicalModule> = Vec::new();
+
+    for path in zzz_files {
+        let code = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read '{}': {}", path.display(), e))?;
+
+        let (tokens, spans) =
+            Lexer::new_with_file(code, path.display().to_string()).tokenize_with_spans()?;
+
+        let mut parser = Parser::new_with_spans(tokens, spans);
+        let parsed_file = parser
+            .parse_file_declarations(&path.display().to_string())
+            .map_err(|error| format_error(parser.current_span(), &error))?;
+
+        match parsed_file.module_decl {
+            Some(ModuleDecl::Declaration {
+                name,
+                exports,
+                imports,
+                span: _,
+            }) => {
+                let entry = named_modules
+                    .entry(name.clone())
+                    .or_insert_with(|| (None, Vec::new()));
+                if entry.0.is_some() {
+                    return Err(format!(
+                        "duplicate declaration of module '{}' in '{}'",
+                        name,
+                        path.display()
+                    ));
+                }
+                entry.0 = Some((exports, imports, path.clone()));
+                entry.1.push(parsed_file.source_file);
+            }
+            Some(ModuleDecl::Member { name, span: _ }) => {
+                let entry = named_modules
+                    .entry(name.clone())
+                    .or_insert_with(|| (None, Vec::new()));
+                entry.1.push(parsed_file.source_file);
+            }
+            None => {
+                let mut imports = parsed_file.imports;
+                if !imports.contains(&NamespacePath::root()) {
+                    imports.insert(0, NamespacePath::root());
+                }
+                unnamed_modules.push(LogicalModule {
+                    name: None,
+                    dir_path: path
+                        .parent()
+                        .unwrap_or(Path::new(""))
+                        .display()
+                        .to_string(),
+                    source_files: vec![parsed_file.source_file],
+                    exports: parsed_file.exports,
+                    imports,
+                });
+            }
+        }
+    }
+
+    let mut result = unnamed_modules;
+
+    let mut named_keys: Vec<String> = named_modules.keys().cloned().collect();
+    named_keys.sort();
+
+    for name in named_keys {
+        let (decl, files) = named_modules.remove(&name).unwrap();
+        match decl {
+            Some((exports, mut imports, decl_path)) => {
+                if !imports.contains(&NamespacePath::root()) {
+                    imports.insert(0, NamespacePath::root());
+                }
+                result.push(LogicalModule {
+                    name: Some(name),
+                    dir_path: decl_path
+                        .parent()
+                        .unwrap_or(Path::new(""))
+                        .display()
+                        .to_string(),
+                    source_files: files,
+                    exports,
+                    imports,
+                });
+            }
+            None => {
+                return Err(format!(
+                    "module '{}' is referenced with 'mod {}' but never declared with 'decl mod {}'",
+                    name, name, name
+                ));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 fn canonicalize_type(ty: &Type, checker: &Checker) -> Result<Type, String> {

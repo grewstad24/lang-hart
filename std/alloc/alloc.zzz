@@ -1,3 +1,8 @@
+export { alloc, heap_new } to .
+export { alloc, heap_new } to .alloc
+export { alloc, heap_new } to .heap
+export { malloc } to .heap.raw_malloc
+
 extern fn malloc( size :: usize ) -> *opaque
 
 meta fn alloc( T :: type ) -> *T { malloc( @sizeOf T ) as *T }
