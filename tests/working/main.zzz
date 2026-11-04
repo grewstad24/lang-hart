@@ -1,4 +1,4 @@
-fn main() -> s32 {
+fn main() -> :none {
         @record (
                 id := "bob123"
                 number := 68
@@ -16,4 +16,7 @@ fn main() -> s32 {
         div(65)..
         println()
 
-        0 }
+        var a := 100
+        let ptr := a.&
+        println( ptr.* )
+}

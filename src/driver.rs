@@ -274,12 +274,8 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             Ok(Expression::Block(resolved))
         }
         Expression::Discard(e) => Ok(Expression::Discard(Box::new(canonicalize_expression(e, checker)?))),
-        Expression::Return(opt_e) => {
-            let resolved = match opt_e {
-                Some(e) => Some(Box::new(canonicalize_expression(e, checker)?)),
-                None => None,
-            };
-            Ok(Expression::Return(resolved))
+        Expression::Return(e) => {
+            Ok(Expression::Return(Box::new(canonicalize_expression(e, checker)?)))
         }
         Expression::Let { name, value } => Ok(Expression::Let {
             name: name.clone(),
@@ -403,6 +399,15 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 let resolved_value = canonicalize_expression(&def.value, &checker)?;
 
                 if def.name == "main" {
+                    if let Some(sig) = &resolved_sig {
+                        let ret = &sig.return_type;
+                        if **ret != Type::S32 && !matches!(**ret, Type::Atom(ref name) if name == "none") {
+                            return Err(format!(
+                                "in '{}': entry point 'main' must return 's32' or ':none', found {:?}",
+                                file.file_path, ret
+                            ));
+                        }
+                    }
                     has_main = true;
                     if !seen_def_names.insert("main".to_string()) {
                         continue;

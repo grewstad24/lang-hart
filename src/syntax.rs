@@ -80,7 +80,6 @@ pub struct StructFieldInit {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Never,
-    Void,
     S16,
     S32,
     S64,
@@ -233,7 +232,7 @@ pub enum Expression {
     // Block & Value Control Flow
     Block(Vec<Expression>),
     Discard(Box<Expression>),
-    Return(Option<Box<Expression>>),
+    Return(Box<Expression>),
     If {
         arms: Vec<IfArm>,
     },
@@ -243,7 +242,7 @@ pub enum Expression {
         arms: Vec<MatchArm>,
     },
 
-    // Binding & Mutation Expressions (evaluate to Type::Void)
+    // Binding & Mutation Expressions (evaluate to Type::none())
     Let {
         name: String,
         value: Box<Expression>,
@@ -393,6 +392,7 @@ pub enum Token {
     Not,
     DoTimes,
     Val,
+    Never,
     TypeS16,
     TypeS32,
     TypeS64,
@@ -758,6 +758,7 @@ impl Lexer {
             "false" => Token::Boolean(false),
             "not" => Token::Not,
             "dotimes" => Token::DoTimes,
+            "never" => Token::Never,
             _ => Token::Identifier(text),
         }
     }
@@ -1121,13 +1122,12 @@ impl Parser {
                     self.expect(Token::RParen)?;
 
                     self.skip_newlines();
-                    let return_type = if self.is(Token::Arrow) {
-                        self.advance();
-                        self.skip_newlines();
-                        self.parse_type()?
-                    } else {
-                        Type::Void
-                    };
+                    if !self.is(Token::Arrow) {
+                        return Err("expected '->' followed by return type".to_string());
+                    }
+                    self.advance();
+                    self.skip_newlines();
+                    let return_type = self.parse_type()?;
                     self.consume_optional_newline();
 
                     let signature = Signature {
@@ -1184,13 +1184,12 @@ impl Parser {
         self.expect(Token::RParen)?;
 
         self.skip_newlines();
-        let return_type = if self.is(Token::Arrow) {
-            self.advance();
-            self.skip_newlines();
-            self.parse_type()?
-        } else {
-            Type::Void
-        };
+        if !self.is(Token::Arrow) {
+            return Err("expected '->' followed by return type".to_string());
+        }
+        self.advance();
+        self.skip_newlines();
+        let return_type = self.parse_type()?;
 
         self.skip_newlines();
         let body = self.parse_block()?;
@@ -1341,11 +1340,6 @@ impl Parser {
                     operand: Box::new(self.parse_unary()?),
                 })
             }
-            Token::Ampersand => {
-                self.advance();
-                self.skip_newlines();
-                Ok(Expression::AddressOf(Box::new(self.parse_unary()?)))
-            }
             Token::Not => {
                 self.advance();
                 self.skip_newlines();
@@ -1397,6 +1391,9 @@ impl Parser {
                     if self.is(Token::Star) {
                         self.advance();
                         expression = Expression::Dereference(Box::new(expression));
+                    } else if self.is(Token::Ampersand) {
+                        self.advance();
+                        expression = Expression::AddressOf(Box::new(expression));
                     } else {
                         let field = self.expect_field_name()?;
                         expression = Expression::Member {
@@ -1632,13 +1629,9 @@ impl Parser {
             }
             Token::Return => {
                 self.advance();
-                if self.is(Token::Newline) || self.is(Token::RBrace) || self.is(Token::Eof) {
-                    Ok(Expression::Return(None))
-                } else {
-                    self.skip_newlines();
-                    let expr = self.parse_expression()?;
-                    Ok(Expression::Return(Some(Box::new(expr))))
-                }
+                self.skip_newlines();
+                let expr = self.parse_expression()?;
+                Ok(Expression::Return(Box::new(expr)))
             }
             Token::DoTimes => {
                 self.advance();
@@ -1792,7 +1785,7 @@ impl Parser {
                 // No trailing newline before '}' -> automatically return
                 let ret_expr = match expr {
                     Expression::Return(_) => expr,
-                    _ => Expression::Return(Some(Box::new(expr))),
+                    _ => Expression::Return(Box::new(expr)),
                 };
                 expressions.push(ret_expr);
                 break;
@@ -1835,6 +1828,10 @@ impl Parser {
     fn parse_single_type(&mut self) -> Result<Type, String> {
         self.skip_newlines();
         match self.peek().clone() {
+            Token::Never => {
+                self.advance();
+                Ok(Type::Never)
+            }
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Type::Alias(name))

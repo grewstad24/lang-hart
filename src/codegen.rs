@@ -21,7 +21,6 @@ use crate::syntax::{
 
 #[derive(Debug, Clone)]
 enum Binding<'ctx> {
-    Void,
     Integer {
         ty: Type,
         value: IntValue<'ctx>,
@@ -31,7 +30,7 @@ enum Binding<'ctx> {
     },
     Atom {
         name: String,
-        value: IntValue<'ctx>,
+        value: StructValue<'ctx>,
     },
     Array {
         ty: Type,
@@ -87,7 +86,6 @@ pub struct Codegen<'ctx> {
     extern_functions: HashMap<String, Signature>,
     function_signatures: HashMap<String, Signature>,
     type_aliases: HashMap<String, Type>,
-    atom_table: HashMap<String, u32>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -112,7 +110,6 @@ impl<'ctx> Codegen<'ctx> {
             extern_functions: HashMap::new(),
             function_signatures: HashMap::new(),
             type_aliases: HashMap::new(),
-            atom_table: HashMap::new(),
             string_counter: 0,
             branch_counter: 0,
         }
@@ -126,6 +123,13 @@ impl<'ctx> Codegen<'ctx> {
     fn ptr_byte_size(&self) -> u64 {
         self.target_data
             .get_pointer_byte_size(Some(AddressSpace::default())) as u64
+    }
+
+    fn atom_binding(&self, name: &str) -> Binding<'ctx> {
+        Binding::Atom {
+            name: name.to_string(),
+            value: self.context.struct_type(&[], false).const_zero(),
+        }
     }
 
     fn resolve_alias_root<'a>(&'a self, mut ty: &'a Type) -> Result<&'a Type, String> {
@@ -160,16 +164,6 @@ impl<'ctx> Codegen<'ctx> {
                 .insert(external.name.clone(), external.signature.clone());
         }
         Ok(())
-    }
-
-    fn get_atom_id(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.atom_table.get(name) {
-            id
-        } else {
-            let id = self.atom_table.len() as u32;
-            self.atom_table.insert(name.to_string(), id);
-            id
-        }
     }
 
     fn get_stacksave_intrinsic(&self) -> FunctionValue<'ctx> {
@@ -240,27 +234,13 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_externals(&mut self, extern_functions: &[ExternalFunction]) -> Result<(), String> {
         for external in extern_functions {
-            let param_types: Vec<BasicMetadataTypeEnum> = external
-                .signature
-                .parameters
-                .iter()
-                .map(|param| {
-                    let llvm_ty = self.llvm_type(&param.ty)?;
-                    Ok(llvm_ty.into())
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-
-            let ret_type = &external.signature.return_type;
-
-            let fn_type = match self.llvm_type(ret_type) {
-                Ok(basic_ty) => basic_ty.fn_type(&param_types, external.signature.is_variadic),
-                Err(_) => self
-                    .context
-                    .void_type()
-                    .fn_type(&param_types, external.signature.is_variadic),
-            };
-
-            self.module.add_function(&external.name, fn_type, None);
+            let fn_type = self.signature_to_function_type(Some(&external.signature))?;
+            let func = self.module.add_function(&external.name, fn_type, None);
+            if *external.signature.return_type == Type::Never {
+                let attr_id = inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
+                let attr = self.context.create_enum_attribute(attr_id, 0);
+                func.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+            }
         }
 
         Ok(())
@@ -275,7 +255,12 @@ impl<'ctx> Codegen<'ctx> {
                 self.function_signatures
                     .insert(def.name.clone(), sig.clone());
                 let fn_type = self.signature_to_function_type(Some(sig))?;
-                self.module.add_function(&def.name, fn_type, None);
+                let f = self.module.add_function(&def.name, fn_type, None);
+                if *sig.return_type == Type::Never {
+                    let attr_id = inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
+                    let attr = self.context.create_enum_attribute(attr_id, 0);
+                    f.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+                }
             }
         }
 
@@ -358,7 +343,7 @@ impl<'ctx> Codegen<'ctx> {
                 .collect::<Result<Vec<_>, String>>()?;
 
             let ret_type = &sig.return_type;
-            if **ret_type == Type::Void || **ret_type == Type::Never {
+            if **ret_type == Type::Never {
                 Ok(self
                     .context
                     .void_type()
@@ -436,13 +421,13 @@ impl<'ctx> Codegen<'ctx> {
             let ret_ty = if let Some(sig) = signature {
                 (*sig.return_type).clone()
             } else {
-                Type::Void
+                Type::Atom("none".to_string())
             };
 
             self.exit_scope(stack_ptr)?;
 
-            if ret_ty == Type::Void || ret_ty == Type::Never {
-                self.builder.build_return(None).map_err(|e| e.to_string())?;
+            if ret_ty == Type::Never {
+                self.builder.build_unreachable().map_err(|e| e.to_string())?;
             } else {
                 let return_val = self.binding_basic_value(&body_binding)?;
                 self.builder
@@ -492,9 +477,9 @@ impl<'ctx> Codegen<'ctx> {
 
         if needs_terminator {
             self.exit_scope(stack_ptr)?;
-            let return_val = match self.binding_basic_value(&body_binding) {
-                Ok(val) => val,
-                Err(_) => self.context.i32_type().const_zero().into(),
+            let return_val: BasicValueEnum<'ctx> = match &body_binding {
+                Binding::Integer { value, .. } => (*value).into(),
+                _ => self.context.i32_type().const_zero().into(),
             };
             self.builder
                 .build_return(Some(&return_val))
@@ -548,11 +533,10 @@ impl<'ctx> Codegen<'ctx> {
                     .const_int(if *value { 1 } else { 0 }, false),
             }),
             Expression::Atom(name) => {
-                let id = self.get_atom_id(name);
-                let value = self.context.i32_type().const_int(id as u64, false);
+                let empty_struct = self.context.struct_type(&[], false).const_zero();
                 Ok(Binding::Atom {
                     name: name.clone(),
-                    value,
+                    value: empty_struct,
                 })
             }
             Expression::String(value) => self.codegen_string_literal(value),
@@ -639,7 +623,7 @@ impl<'ctx> Codegen<'ctx> {
                     } else {
                         Signature {
                             parameters: vec![],
-                            return_type: Box::new(Type::Void),
+                            return_type: Box::new(Type::Atom("none".to_string())),
                             is_variadic: false,
                         }
                     };
@@ -653,7 +637,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Block(exprs) => {
                 self.local_scopes.push(HashMap::new());
-                let mut last_binding = Binding::Void;
+                let mut last_binding = self.atom_binding("none");
                 for expr in exprs {
                     if let Some(bb) = self.builder.get_insert_block() {
                         if bb.get_terminator().is_some() {
@@ -667,16 +651,13 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Discard(expr) => {
                 self.codegen_expression(expr)?;
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
-            Expression::Return(opt_expr) => {
-                let binding = match opt_expr {
-                    Some(expr) => self.codegen_expression(expr)?,
-                    None => Binding::Void,
-                };
+            Expression::Return(expr) => {
+                let binding = self.codegen_expression(expr)?;
                 self.exit_current_scope()?;
                 self.build_return(&binding)?;
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
             Expression::Let { name, value } => {
                 let current_binding = self.codegen_expression(value)?;
@@ -697,7 +678,7 @@ impl<'ctx> Codegen<'ctx> {
                     .last_mut()
                     .unwrap()
                     .insert(name.clone(), LocalVar { ty, alloca });
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
             Expression::Var { name, ty, value } => {
                 if let Some(val_expr) = value {
@@ -737,7 +718,7 @@ impl<'ctx> Codegen<'ctx> {
                         },
                     );
                 }
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
             Expression::Assign { target, value } => {
                 let current_binding = self.codegen_expression(value)?;
@@ -751,7 +732,7 @@ impl<'ctx> Codegen<'ctx> {
                     .build_store(local.alloca, val)
                     .map_err(|e| e.to_string())?;
 
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
             Expression::DoTimes { count, body } => {
                 let count_binding = self.codegen_expression(count)?;
@@ -865,7 +846,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 self.builder.position_at_end(merge_bb);
-                Ok(Binding::Void)
+                Ok(self.atom_binding("none"))
             }
             Expression::If { arms } => self.codegen_if_expression(arms),
             Expression::Match {
@@ -1195,9 +1176,10 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(merge_bb);
 
-        let ty = result_type.unwrap_or(Type::Void);
-        if ty == Type::Void {
-            Ok(Binding::Void)
+        let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
+        if incoming.is_empty() {
+            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            Ok(self.atom_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
             let phi = self
@@ -1420,11 +1402,12 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 let sub_payload_size = self.union_payload_size(inner_vars)?;
-                let copy_size = self.ptr_sized_int_type().const_int(sub_payload_size, false);
-
-                self.builder
-                    .build_memcpy(sub_payload_ptr, 1, payload_ptr, 1, copy_size)
-                    .map_err(|e| e.to_string())?;
+                if sub_payload_size > 0 {
+                    let copy_size = self.ptr_sized_int_type().const_int(sub_payload_size, false);
+                    self.builder
+                        .build_memcpy(sub_payload_ptr, 1, payload_ptr, 1, copy_size)
+                        .map_err(|e| e.to_string())?;
+                }
 
                 self.local_scopes.last_mut().unwrap().insert(
                     binding_name.to_string(),
@@ -1434,10 +1417,13 @@ impl<'ctx> Codegen<'ctx> {
                     },
                 );
             } else {
-                let loaded_variant = self
-                    .builder
-                    .build_load(arm_llvm_ty, payload_ptr, binding_name)
-                    .map_err(|e| e.to_string())?;
+                let loaded_variant = if self.llvm_type_size(variant_type)? == 0 {
+                    self.zero_value(variant_type)?
+                } else {
+                    self.builder
+                        .build_load(arm_llvm_ty, payload_ptr, binding_name)
+                        .map_err(|e| e.to_string())?
+                };
 
                 let alloca = self
                     .builder
@@ -1482,9 +1468,10 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(merge_bb);
 
-        let ty = result_type.unwrap_or(Type::Void);
-        if ty == Type::Void {
-            Ok(Binding::Void)
+        let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
+        if incoming.is_empty() {
+            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            Ok(self.atom_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
             let phi = self
@@ -1838,13 +1825,22 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        let (left_value, right_value) = match (left, right) {
-            (Binding::Atom { value: v1, .. }, Binding::Atom { value: v2, .. }) => (*v1, *v2),
-            _ => (
-                self.binding_int_value(left)?,
-                self.binding_int_value(right)?,
-            ),
-        };
+        if let (Binding::Atom { name: n1, .. }, Binding::Atom { name: n2, .. }) = (left, right) {
+            let is_equal = n1 == n2;
+            let result = match operator {
+                ComparisonOperator::Equal => is_equal,
+                ComparisonOperator::NotEqual => !is_equal,
+                _ => return Err("invalid comparison operator for atoms".to_string()),
+            };
+            return Ok(Binding::Boolean {
+                value: self.context.bool_type().const_int(if result { 1 } else { 0 }, false),
+            });
+        }
+
+        let (left_value, right_value) = (
+            self.binding_int_value(left)?,
+            self.binding_int_value(right)?,
+        );
 
         let predicate = match operator {
             ComparisonOperator::Equal => IntPredicate::EQ,
@@ -2320,9 +2316,11 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 let val = self.binding_basic_value(&converted)?;
-                self.builder
-                    .build_store(payload_ptr, val)
-                    .map_err(|e| e.to_string())?;
+                if self.llvm_type_size(&target_vars[target_index])? > 0 {
+                    self.builder
+                        .build_store(payload_ptr, val)
+                        .map_err(|e| e.to_string())?;
+                }
             }
 
             let loaded = self
@@ -2426,14 +2424,17 @@ impl<'ctx> Codegen<'ctx> {
             for (index, (_, case_bb)) in candidates.iter().zip(cases.iter()) {
                 let source_variant = &variants[*index];
                 self.builder.position_at_end(*case_bb);
-                let source_value = self
-                    .builder
-                    .build_load(
-                        self.llvm_type(source_variant)?,
-                        payload_ptr,
-                        "unboxed_value",
-                    )
-                    .map_err(|e| e.to_string())?;
+                let source_value = if self.llvm_type_size(source_variant)? == 0 {
+                    self.zero_value(source_variant)?
+                } else {
+                    self.builder
+                        .build_load(
+                            self.llvm_type(source_variant)?,
+                            payload_ptr,
+                            "unboxed_value",
+                        )
+                        .map_err(|e| e.to_string())?
+                };
                 let source_binding = self.binding_from_basic_value(source_variant, source_value)?;
                 let converted =
                     self.codegen_cast_inner(source_binding, target_type.clone(), visited)?;
@@ -2557,7 +2558,7 @@ impl<'ctx> Codegen<'ctx> {
                         } else {
                             let ret = match func.get_type().get_return_type() {
                                 Some(_) => Type::S32,
-                                None => Type::Void,
+                                None => Type::Never,
                             };
                             (ret, func.get_type(), Vec::new())
                         };
@@ -2643,8 +2644,9 @@ impl<'ctx> Codegen<'ctx> {
             .build_indirect_call(fn_type, function_ptr, &argument_values, "calltmp")
             .map_err(|error| error.to_string())?;
 
-        if ret_ty == Type::Void {
-            Ok(Binding::Void)
+        if ret_ty == Type::Never {
+            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            Ok(self.atom_binding("none"))
         } else {
             let return_value = call
                 .try_as_basic_value()
@@ -2670,7 +2672,7 @@ impl<'ctx> Codegen<'ctx> {
                     })
                     .collect::<Result<Vec<_>, String>>()?;
 
-                let fn_type = if **return_type == Type::Void {
+                let fn_type = if **return_type == Type::Never {
                     self.context.void_type().fn_type(&param_types, *is_variadic)
                 } else {
                     self.llvm_type(return_type)?
@@ -2904,7 +2906,40 @@ impl<'ctx> Codegen<'ctx> {
                     other => Err(format!("cannot take address of value of type {:?}", other)),
                 }
             }
-            _ => Err("address-of requires a local variable or array index".to_string()),
+            Expression::Member { expression, field } => {
+                let binding = self.codegen_expression(expression)?;
+                match binding {
+                    Binding::Struct { ref ty, storage, .. } => {
+                        let fields = match ty {
+                            Type::Struct(flds) => flds,
+                            _ => return Err("expected struct type".to_string()),
+                        };
+                        let (idx, field_type) = fields
+                            .iter()
+                            .enumerate()
+                            .find(|(_, f)| f.name == *field)
+                            .map(|(i, f)| (i, f.ty.clone()))
+                            .ok_or_else(|| format!("unknown struct field '{}'", field))?;
+                        if let Some(storage_ptr) = storage {
+                            let llvm_struct_ty = self.llvm_type(ty)?.into_struct_type();
+                            let field_gep = self
+                                .builder
+                                .build_struct_gep(llvm_struct_ty, storage_ptr, idx as u32, field)
+                                .map_err(|e| e.to_string())?;
+                            Ok(Binding::Pointer {
+                                ty: Type::Pointer {
+                                    element: Box::new(field_type),
+                                },
+                                value: field_gep,
+                            })
+                        } else {
+                            Err("cannot take address of field of a temporary struct without storage".to_string())
+                        }
+                    }
+                    _ => Err("cannot take address of member of non-struct".to_string()),
+                }
+            }
+            _ => Err("address-of requires an lvalue (variable, struct member, array index, or dereference)".to_string()),
         }
     }
 
@@ -2997,11 +3032,11 @@ impl<'ctx> Codegen<'ctx> {
         value: BasicValueEnum<'ctx>,
     ) -> Result<Binding<'ctx>, String> {
         match ty {
-            Type::Never | Type::Void => Ok(Binding::Void),
+            Type::Never => Err("never type has no basic value".to_string()),
             Type::Alias(_) => self.binding_from_basic_value(self.resolve_alias_root(ty)?, value),
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
-                value: value.into_int_value(),
+                value: value.into_struct_value(),
             }),
             Type::Bool => Ok(Binding::Boolean {
                 value: value.into_int_value(),
@@ -3050,7 +3085,6 @@ impl<'ctx> Codegen<'ctx> {
 
     fn binding_type(&self, binding: &Binding<'ctx>) -> Result<Type, String> {
         match binding {
-            Binding::Void => Ok(Type::Void),
             Binding::Atom { name, .. } => Ok(Type::Atom(name.clone())),
             Binding::Integer { ty, .. } => Ok(ty.clone()),
             Binding::Boolean { .. } => Ok(Type::Bool),
@@ -3072,7 +3106,6 @@ impl<'ctx> Codegen<'ctx> {
 
     fn binding_basic_value(&self, binding: &Binding<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         match binding {
-            Binding::Void => Err("cannot treat void as a basic value".to_string()),
             Binding::Atom { value, .. } => Ok((*value).into()),
             Binding::Integer { value, .. } => Ok((*value).into()),
             Binding::Boolean { value } => Ok((*value).into()),
@@ -3096,19 +3129,24 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn build_return(&self, binding: &Binding<'ctx>) -> Result<(), String> {
-        match binding {
-            Binding::Void => {
-                self.builder
-                    .build_return(None)
-                    .map_err(|error| error.to_string())?;
-            }
-            _ => {
-                let value = self.binding_basic_value(binding)?;
-                self.builder
-                    .build_return(Some(&value))
-                    .map_err(|error| error.to_string())?;
+        if let Some(bb) = self.builder.get_insert_block() {
+            if let Some(f) = bb.get_parent() {
+                if f.get_name().to_str() == Ok("main") {
+                    let return_val: BasicValueEnum<'ctx> = match binding {
+                        Binding::Integer { value, .. } => (*value).into(),
+                        _ => self.context.i32_type().const_zero().into(),
+                    };
+                    self.builder
+                        .build_return(Some(&return_val))
+                        .map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
             }
         }
+        let value = self.binding_basic_value(binding)?;
+        self.builder
+            .build_return(Some(&value))
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -3122,22 +3160,31 @@ impl<'ctx> Codegen<'ctx> {
             }
             max_alignment = max_alignment.max(self.llvm_type_align(v)?);
         }
+        if max_size == 0 {
+            return Ok(0);
+        }
         let padding = (max_alignment - max_size % max_alignment) % max_alignment;
         Ok(max_size + padding)
     }
 
     fn union_payload_storage_type(&self, variants: &[Type]) -> Result<BasicTypeEnum<'ctx>, String> {
+        let payload_size = self.union_payload_size(variants)?;
+        if payload_size == 0 {
+            return Ok(self.context.i8_type().array_type(0).into());
+        }
+
         let mut storage_element = None;
         let mut storage_element_size = 0;
         let mut max_alignment = 0;
 
         for variant in variants {
-            let llvm_type = self.llvm_type(variant)?;
-            let alignment = self.target_data.get_abi_alignment(&llvm_type) as u64;
-            let size = self.target_data.get_abi_size(&llvm_type);
-            if alignment > max_alignment
-                || (alignment == max_alignment && size > storage_element_size)
+            let alignment = self.llvm_type_align(variant)?;
+            let size = self.llvm_type_size(variant)?;
+            if size > 0
+                && (alignment > max_alignment
+                    || (alignment == max_alignment && size > storage_element_size))
             {
+                let llvm_type = self.llvm_type(variant)?;
                 storage_element = Some(llvm_type);
                 storage_element_size = size;
                 max_alignment = alignment;
@@ -3148,18 +3195,23 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(self.context.i8_type().array_type(0).into());
         };
 
-        let payload_size = self.union_payload_size(variants)?;
-        let element_count = payload_size.div_ceil(storage_element_size.max(1)).max(1);
+        let element_count = payload_size.div_ceil(storage_element_size);
         Ok(storage_element.array_type(element_count as u32).into())
     }
 
     fn llvm_type_align(&self, ty: &Type) -> Result<u64, String> {
-        let llvm_type = self.llvm_type(ty)?;
-        Ok(self.target_data.get_abi_alignment(&llvm_type) as u64)
+        match ty {
+            Type::Atom(_) => Ok(1),
+            _ => {
+                let llvm_type = self.llvm_type(ty)?;
+                Ok(self.target_data.get_abi_alignment(&llvm_type) as u64)
+            }
+        }
     }
 
     fn llvm_type_size(&self, ty: &Type) -> Result<u64, String> {
         match ty {
+            Type::Atom(_) => Ok(0),
             Type::USize | Type::SSize | Type::Pointer { .. } | Type::Function { .. } => {
                 Ok(self.ptr_byte_size())
             }
@@ -3173,9 +3225,9 @@ impl<'ctx> Codegen<'ctx> {
 
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
-            Type::Never | Type::Void => Err("void or never type is not a basic type in LLVM".to_string()),
+            Type::Never => Err("never type is not a basic type in LLVM".to_string()),
             Type::Alias(_) => self.llvm_type(self.resolve_alias_root(ty)?),
-            Type::Atom(_) => Ok(self.context.i32_type().into()),
+            Type::Atom(_) => Ok(self.context.struct_type(&[], false).into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
@@ -3209,9 +3261,9 @@ impl<'ctx> Codegen<'ctx> {
 
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
-            Type::Never | Type::Void => Err("void or never has no zero value".to_string()),
+            Type::Never => Err("never has no zero value".to_string()),
             Type::Alias(_) => self.zero_value(self.resolve_alias_root(ty)?),
-            Type::Atom(_) => Ok(self.context.i32_type().const_zero().into()),
+            Type::Atom(_) => Ok(self.context.struct_type(&[], false).const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),

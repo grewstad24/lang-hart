@@ -2,30 +2,30 @@ extern fn printf( ptr :: *u8, ...) -> s32
 
 type Printable := String | Integer | :nl | :t | bool | []Printable | Record
 
-fn print_string(s :: []u8) {
+fn print_string(s :: []u8) -> :none {
     printf("%s".ptr, s.ptr)
 }
 
-fn pr_nl() {
+fn pr_nl() -> :none {
     printf("\n".ptr)
 }
 
-fn pr_tab() {
+fn pr_tab() -> :none {
     printf("\t".ptr)
 }
 
-fn print_int(num :: Integer) {
-    match num with z
-        s32 => printf("%d".ptr, z)
-        s16 => printf("%d".ptr, z as s32)
-        s64 => printf("%lld".ptr, z)
-        u16 => printf("%u".ptr, z as u32)
-        u32 => printf("%u".ptr, z)
-        u64 => printf("%llu".ptr, z)
-    over
+fn print_int(num :: Integer) -> :none {
+        match num using z {
+                s32 => printf("%d".ptr, z)
+                s16 => printf("%d".ptr, z as s32)
+                s64 => printf("%lld".ptr, z)
+                u16 => printf("%u".ptr, z as u32)
+                u32 => printf("%u".ptr, z)
+                u64 => printf("%llu".ptr, z)
+        }
 }
 
-fn printa(arr :: []Printable) {
+fn printa(arr :: []Printable) -> :none {
     var i := 0
     dotimes arr.len => {
         print(arr[i])
@@ -33,40 +33,40 @@ fn printa(arr :: []Printable) {
     }
 }
 
-fn print(x :: Printable) {
-    match x with z
-        String      => print_string(z)
-        Integer     => print_int(z)
-        :nl         => pr_nl()
-        :t          => pr_tab()
-        []Printable => printa(z)
-        bool => if
-            z = true => print("true")
-            else     => print("false")
-        end
-        Record      => printr(z)
-    over
+fn print(x :: Printable) -> :none {
+        match x using z {
+                String      => print_string(z)
+                Integer     => print_int(z)
+                :nl         => pr_nl()
+                :t          => pr_tab()
+                []Printable => printa(z)
+                bool => if
+                        z = true => print("true")
+                        else     => print("false")
+                end
+                Record      => printr(z)
+        }
 }
 
-fn println(x :: Printable) {
+fn println(x :: Printable) -> :none {
         print(x)
         pr_nl()
 }
 
-fn printr(r :: Record) {
-    var i := 0
-    let header := r.*
-    let keys := header.key
-    let values := header.val
+fn printr(r :: Record) -> :none {
+        var i := 0
+        let header := r.*
+        let keys := header.key
+        let values := header.val
 
-    dotimes header.len => {
-        [ keys[i], " : " ] ..print()
+        dotimes header.len => {
+                [ keys[i], " : " ] ..print()
 
-        match values[i] with z
-            Record => [:nl, "(", :nl, z, ")", :nl] ..print()
-            _      => [z, :nl] ..print()
-        over
+                match values[i] with z
+                        Record => [:nl, "(", :nl, z, ")", :nl] ..print()
+                        _      => [z, :nl] ..print()
+                over
 
-        i := i + 1
-    }
+                i := i + 1
+        }
 }

@@ -434,7 +434,6 @@ impl<'a> Checker<'a> {
     pub fn canonical_type_key(ty: &Type) -> String {
         match ty {
             Type::Never => "00_never".to_string(),
-            Type::Void => "00_void".to_string(),
             Type::Bool => "01_bool".to_string(),
             Type::U8 => "02_u8".to_string(),
             Type::U16 => "03_u16".to_string(),
@@ -596,7 +595,7 @@ impl<'a> Checker<'a> {
 
     pub fn unify_to_sum_type(&self, types: &[Type]) -> Result<Type, String> {
         if types.is_empty() {
-            return Ok(Type::Void);
+            return Ok(Type::Atom("none".to_string()));
         }
 
         let mut flattened = Vec::new();
@@ -730,10 +729,10 @@ impl<'a> Checker<'a> {
                     ));
                 }
                 let resolved_param_ty = self.resolve_type(&p.ty)?;
-                if resolved_param_ty == Type::Void {
+                if resolved_param_ty == Type::Never {
                     self.exit_scope();
                     return Err(format!(
-                        "in '{}': parameter '{}' cannot be void in function '{}'",
+                        "in '{}': parameter '{}' cannot be never in function '{}'",
                         self.current_file_path, p.name, def.name
                     ));
                 }
@@ -799,9 +798,9 @@ impl<'a> Checker<'a> {
                 ));
             }
             let resolved_p_ty = self.resolve_type(&p.ty)?;
-            if resolved_p_ty == Type::Void {
+            if resolved_p_ty == Type::Never {
                 return Err(format!(
-                    "in '{}': parameter '{}' in extern function '{}' cannot be void",
+                    "in '{}': parameter '{}' in extern function '{}' cannot be never",
                     self.current_file_path, p.name, name
                 ));
             }
@@ -1004,7 +1003,7 @@ impl<'a> Checker<'a> {
                 let enclosing_scopes = self.local_scopes.clone();
                 self.enter_scope();
 
-                let mut block_ty = Type::Void;
+                let mut block_ty = Type::Atom("none".to_string());
                 let mut diverged = false;
                 let len = exprs.len();
                 for (i, expr) in exprs.iter_mut().enumerate() {
@@ -1030,30 +1029,21 @@ impl<'a> Checker<'a> {
                 if ty == Type::Never {
                     Ok(Type::Never)
                 } else {
-                    Ok(Type::Void)
+                    Ok(Type::Atom("none".to_string()))
                 }
             }
 
-            Expression::Return(opt_expr) => {
+            Expression::Return(expr) => {
                 let expected = self.current_function_return_type.clone().ok_or_else(|| {
                     format!("in '{}': 'return' outside of function", self.current_file_path)
                 })?;
-                if let Some(expr) = opt_expr {
-                    let mut actual = self.type_of_expression(expr)?;
-                    actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
-                    if !self.are_types_compatible(&actual, &expected)? {
-                        return Err(format!(
-                            "in '{}': return type mismatch: expected {:?}, found {:?}",
-                            self.current_file_path, expected, actual
-                        ));
-                    }
-                } else {
-                    if !self.are_types_compatible(&Type::Void, &expected)? {
-                        return Err(format!(
-                            "in '{}': return type mismatch: expected {:?}, found {:?}",
-                            self.current_file_path, expected, Type::Void
-                        ));
-                    }
+                let mut actual = self.type_of_expression(expr)?;
+                actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
+                if !self.are_types_compatible(&actual, &expected)? {
+                    return Err(format!(
+                        "in '{}': return type mismatch: expected {:?}, found {:?}",
+                        self.current_file_path, expected, actual
+                    ));
                 }
                 Ok(Type::Never)
             }
@@ -1067,9 +1057,9 @@ impl<'a> Checker<'a> {
                 }
                 let raw_ty = self.type_of_expression(value)?;
                 let resolved_ty = self.resolve_type(&raw_ty)?;
-                if resolved_ty == Type::Void {
+                if resolved_ty == Type::Never {
                     return Err(format!(
-                        "in '{}': cannot bind variable '{}' to void expression",
+                        "in '{}': cannot bind variable '{}' to never expression",
                         self.current_file_path, name
                     ));
                 }
@@ -1081,7 +1071,7 @@ impl<'a> Checker<'a> {
                         is_initialized: true,
                     },
                 );
-                Ok(Type::Void)
+                Ok(Type::Atom("none".to_string()))
             }
 
             Expression::Var { name, ty, value } => {
@@ -1094,9 +1084,9 @@ impl<'a> Checker<'a> {
                 if let Some(val) = value {
                     let raw_ty = self.type_of_expression(val)?;
                     let resolved_ty = self.resolve_type(&raw_ty)?;
-                    if resolved_ty == Type::Void {
+                    if resolved_ty == Type::Never {
                         return Err(format!(
-                            "in '{}': cannot bind variable '{}' to void expression",
+                            "in '{}': cannot bind variable '{}' to never expression",
                             self.current_file_path, name
                         ));
                     }
@@ -1124,9 +1114,9 @@ impl<'a> Checker<'a> {
                     );
                 } else if let Some(annotated_ty) = ty {
                     let resolved_ty = self.resolve_type(annotated_ty)?;
-                    if resolved_ty == Type::Void {
+                    if resolved_ty == Type::Never {
                         return Err(format!(
-                            "in '{}': variable '{}' cannot be declared with type void",
+                            "in '{}': variable '{}' cannot be declared with type never",
                             self.current_file_path, name
                         ));
                     }
@@ -1145,7 +1135,7 @@ impl<'a> Checker<'a> {
                         self.current_file_path, name
                     ));
                 }
-                Ok(Type::Void)
+                Ok(Type::Atom("none".to_string()))
             }
 
             Expression::Assign { target, value } => {
@@ -1194,7 +1184,7 @@ impl<'a> Checker<'a> {
                         self.current_file_path, target
                     ));
                 }
-                Ok(Type::Void)
+                Ok(Type::Atom("none".to_string()))
             }
 
             Expression::DoTimes { count, body } => {
@@ -1212,7 +1202,7 @@ impl<'a> Checker<'a> {
                 let body_result = self.type_of_expression(body);
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
-                Ok(Type::Void)
+                Ok(Type::Atom("none".to_string()))
             }
 
             Expression::If { arms } => {
@@ -1729,8 +1719,14 @@ impl<'a> Checker<'a> {
                         ))
                     }
                 }
+                Expression::Member { .. } => {
+                    let field_type = self.type_of_expression(expression)?;
+                    Ok(Type::Pointer {
+                        element: Box::new(field_type),
+                    })
+                }
                 _ => Err(format!(
-                    "in '{}': address-of requires a variable or array index",
+                    "in '{}': address-of requires an lvalue (variable, struct member, array index, or dereference)",
                     self.current_file_path
                 )),
             },
