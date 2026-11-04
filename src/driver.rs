@@ -297,7 +297,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             })
         }
         Expression::Assign { target, value } => Ok(Expression::Assign {
-            target: target.clone(),
+            target: Box::new(canonicalize_expression(target, checker)?),
             value: Box::new(canonicalize_expression(value, checker)?),
         }),
         Expression::Repeat { count, binder, body } => Ok(Expression::Repeat {
@@ -347,6 +347,8 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
                 arms: resolved_arms,
             })
         }
+        Expression::SizeOf(ty) => Ok(Expression::SizeOf(canonicalize_type(ty, checker)?)),
+        Expression::Type(ty) => Ok(Expression::Type(canonicalize_type(ty, checker)?)),
     }
 }
 
@@ -366,7 +368,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     }
 
     let resolver = ModuleResolver::new();
-    let module_scopes = resolver.resolve_modules(&modules)?;
+    let mut module_scopes = resolver.resolve_modules(&modules)?;
+
+    crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
 
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
@@ -392,6 +396,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     .or_insert_with(|| alias.clone());
             }
             for def in &file.definitions {
+                if def.is_meta {
+                    continue;
+                }
                 let resolved_sig = def
                     .signature
                     .as_ref()
@@ -417,6 +424,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                         name: "main".to_string(),
                         signature: resolved_sig,
                         value: resolved_value,
+                        is_meta: false,
                     });
                     continue;
                 }
@@ -429,6 +437,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     name: def.name.clone(),
                     signature: resolved_sig,
                     value: resolved_value,
+                    is_meta: false,
                 });
             }
 

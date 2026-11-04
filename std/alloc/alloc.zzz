@@ -1,0 +1,8 @@
+extern fn malloc( size :: usize ) -> *opaque
+
+meta fn alloc( T :: type ) -> *T { malloc( @sizeOf T ) as *T }
+
+meta fn heap_new( T :: type, val :: T ) -> *T {
+        let ptr := alloc(T)
+        ptr.* := val
+ptr }

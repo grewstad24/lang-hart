@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
     NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldType, Type, TypeAlias,
-    UnaryOperator, format_error,
+    UnaryOperator, format_error, unspanned_expression_mut,
 };
 
 fn expression_span(expression: &Expression) -> Option<&Span> {
@@ -433,6 +433,8 @@ impl<'a> Checker<'a> {
 
     pub fn canonical_type_key(ty: &Type) -> String {
         match ty {
+            Type::Opaque => "00_opaque".to_string(),
+            Type::MetaType => "00_metatype".to_string(),
             Type::Never => "00_never".to_string(),
             Type::Bool => "01_bool".to_string(),
             Type::U8 => "02_u8".to_string(),
@@ -663,6 +665,9 @@ impl<'a> Checker<'a> {
         }
 
         for (name, prov) in &self.scope.definitions {
+            if prov.item.is_meta {
+                continue;
+            }
             if let Some(sig) = &prov.item.signature {
                 let mut param_types = Vec::new();
                 for p in &sig.parameters {
@@ -713,6 +718,10 @@ impl<'a> Checker<'a> {
     }
 
     fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
+        if def.is_meta {
+            return Ok(());
+        }
+
         if !self.checked_bodies.insert(def.name.clone()) {
             return Ok(());
         }
@@ -837,6 +846,13 @@ impl<'a> Checker<'a> {
                 self.current_file_path, name
             )
         })?;
+
+        if def.is_meta {
+            return Err(format!(
+                "in '{}': meta function '{}' cannot be referenced as a runtime value",
+                self.current_file_path, name
+            ));
+        }
 
         if !self.resolving_definitions.insert(name.to_string()) {
             return Err(format!(
@@ -1146,52 +1162,89 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Assign { target, value } => {
-                let mut val_ty = self.type_of_expression(value)?;
+                match unspanned_expression_mut(target) {
+                    Expression::Identifier(name) => {
+                        let name = name.clone();
+                        let mut val_ty = self.type_of_expression(value)?;
 
-                if self.scope.lookup_definition(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to global constant '@{}'",
-                        self.current_file_path, target
-                    ));
-                }
-                if self.scope.lookup_extern(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to external function '{}'",
-                        self.current_file_path, target
-                    ));
-                }
-                if self.scope.lookup_type_alias(target).is_some() {
-                    return Err(format!(
-                        "in '{}': cannot assign to type alias '{}'",
-                        self.current_file_path, target
-                    ));
-                }
+                        if self.scope.lookup_definition(&name).is_some() {
+                            return Err(format!(
+                                "in '{}': cannot assign to global constant '@{}'",
+                                self.current_file_path, name
+                            ));
+                        }
+                        if self.scope.lookup_extern(&name).is_some() {
+                            return Err(format!(
+                                "in '{}': cannot assign to external function '{}'",
+                                self.current_file_path, name
+                            ));
+                        }
+                        if self.scope.lookup_type_alias(&name).is_some() {
+                            return Err(format!(
+                                "in '{}': cannot assign to type alias '{}'",
+                                self.current_file_path, name
+                            ));
+                        }
 
-                if let Some(info) = self.lookup_binding(target) {
-                    if !info.is_mutable {
-                        return Err(format!(
-                            "in '{}': cannot reassign to immutable constant '{}'",
-                            self.current_file_path, target
-                        ));
-                    }
-                    val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
-                    if !self.are_types_compatible(&val_ty, &info.ty)? {
-                        return Err(format!(
-                            "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
-                            self.current_file_path, target, info.ty, val_ty
-                        ));
-                    }
+                        if let Some(info) = self.lookup_binding(&name) {
+                            if !info.is_mutable {
+                                return Err(format!(
+                                    "in '{}': cannot reassign to immutable constant '{}'",
+                                    self.current_file_path, name
+                                ));
+                            }
+                            val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
+                            if !self.are_types_compatible(&val_ty, &info.ty)? {
+                                return Err(format!(
+                                    "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
+                                    self.current_file_path, name, info.ty, val_ty
+                                ));
+                            }
 
-                    if let Some(info_mut) = self.lookup_binding_mut(target) {
-                        info_mut.is_initialized = true;
+                            if let Some(info_mut) = self.lookup_binding_mut(&name) {
+                                info_mut.is_initialized = true;
+                            }
+                        } else {
+                            return Err(format!(
+                                "in '{}': unknown variable '{}'",
+                                self.current_file_path, name
+                            ));
+                        }
+                        Ok(Type::Atom("none".to_string()))
                     }
-                } else {
-                    return Err(format!(
-                        "in '{}': unknown variable '{}'",
-                        self.current_file_path, target
-                    ));
+                    Expression::Dereference(ptr_expr) => {
+                        let raw_ptr_ty = self.type_of_expression(ptr_expr.as_mut())?;
+                        let ptr_ty = self.resolve_type(&raw_ptr_ty)?;
+                        let Type::Pointer { element } = ptr_ty else {
+                            return Err(format!(
+                                "in '{}': cannot dereference non-pointer type {:?} in assignment target",
+                                self.current_file_path, ptr_ty
+                            ));
+                        };
+                        if *element == Type::Opaque {
+                            return Err(format!(
+                                "in '{}': cannot assign through untyped pointer '*opaque'",
+                                self.current_file_path
+                            ));
+                        }
+                        let target_ty = self.resolve_type(&element)?;
+                        let mut val_ty = self.type_of_expression(value)?;
+                        val_ty = self.coerce_expression_to_type(value, &val_ty, &target_ty)?;
+                        if !self.are_types_compatible(&val_ty, &target_ty)? {
+                            return Err(format!(
+                                "in '{}': type mismatch in pointer dereference assignment: expected {:?}, found {:?}",
+                                self.current_file_path, target_ty, val_ty
+                            ));
+                        }
+                        Ok(Type::Atom("none".to_string()))
+                    }
+                    _ => {
+                        Err(format!(
+                            "in '{}': invalid assignment target: only variables and pointer dereferences ('ptr.*') are supported as assignment targets",
+                            self.current_file_path
+                        ))
+                    }
                 }
-                Ok(Type::Atom("none".to_string()))
             }
 
             Expression::Repeat { count, binder, body } => {
@@ -1644,7 +1697,15 @@ impl<'a> Checker<'a> {
             Expression::Dereference(expression) => {
                 let raw_pointer_type = self.type_of_expression(expression)?;
                 match self.resolve_type(&raw_pointer_type)? {
-                    Type::Pointer { element } => Ok(*element),
+                    Type::Pointer { element } => {
+                        if *element == Type::Opaque {
+                            return Err(format!(
+                                "in '{}': cannot dereference untyped pointer '*opaque'",
+                                self.current_file_path
+                            ));
+                        }
+                        Ok(*element)
+                    }
                     other => Err(format!(
                         "in '{}': cannot dereference non-pointer type {:?}",
                         self.current_file_path, other
@@ -1700,6 +1761,10 @@ impl<'a> Checker<'a> {
                 Expression::Dereference(pointer_expression) => {
                     let pointer_type = self.type_of_expression(pointer_expression)?;
                     match self.resolve_type(&pointer_type)? {
+                        Type::Pointer { element } if *element == Type::Opaque => Err(format!(
+                            "in '{}': cannot dereference untyped pointer '*opaque'",
+                            self.current_file_path
+                        )),
                         Type::Pointer { .. } => Ok(pointer_type),
                         other => Err(format!(
                             "in '{}': cannot take address of dereference of {:?}",
@@ -1734,6 +1799,13 @@ impl<'a> Checker<'a> {
                     self.current_file_path
                 )),
             },
+
+            Expression::SizeOf(ty) => {
+                let _ = self.resolve_type(ty);
+                Ok(Type::USize)
+            }
+
+            Expression::Type(_) => Ok(Type::MetaType),
         }
     }
 
@@ -1840,6 +1912,9 @@ impl<'a> Checker<'a> {
                     true
                 }
                 (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
+                    if **e2 == Type::Opaque {
+                        return true;
+                    }
                     compatible(e1, e2, aliases, visited)
                 }
                 (
@@ -2000,6 +2075,9 @@ impl<'a> Checker<'a> {
                     return supported(source, target, aliases, visited);
                 }
                 (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
+                    if **source == Type::Opaque || **target == Type::Opaque {
+                        return true;
+                    }
                     return Checker::types_compatible_with_aliases(source, target, aliases);
                 }
                 (
@@ -2035,10 +2113,8 @@ impl<'a> Checker<'a> {
                 return true;
             }
 
-            if (matches!(source, Type::Pointer { .. } | Type::Function { .. })
-                && Checker::is_integer_type(target))
-                || (Checker::is_integer_type(source)
-                    && matches!(target, Type::Pointer { .. } | Type::Function { .. }))
+            if matches!(source, Type::Pointer { .. } | Type::Function { .. })
+                && Checker::is_integer_type(target)
             {
                 return true;
             }
@@ -2090,5 +2166,75 @@ impl<'a> Checker<'a> {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pointer_cast_invariants() {
+        let ptr_opaque = Type::Pointer {
+            element: Box::new(Type::Opaque),
+        };
+        let ptr_s32 = Type::Pointer {
+            element: Box::new(Type::S32),
+        };
+        let ptr_u8 = Type::Pointer {
+            element: Box::new(Type::U8),
+        };
+
+        // *opaque as *T -> allowed
+        assert!(Checker::is_supported_cast(&ptr_opaque, &ptr_s32));
+        assert!(Checker::is_supported_cast(&ptr_opaque, &ptr_u8));
+
+        // *T as *opaque -> allowed
+        assert!(Checker::is_supported_cast(&ptr_s32, &ptr_opaque));
+        assert!(Checker::is_supported_cast(&ptr_u8, &ptr_opaque));
+
+        // *T as *U -> rejected
+        assert!(!Checker::is_supported_cast(&ptr_s32, &ptr_u8));
+        assert!(!Checker::is_supported_cast(&ptr_u8, &ptr_s32));
+
+        // int as *T -> rejected
+        assert!(!Checker::is_supported_cast(&Type::USize, &ptr_s32));
+        assert!(!Checker::is_supported_cast(&Type::U64, &ptr_s32));
+        assert!(!Checker::is_supported_cast(&Type::S32, &ptr_s32));
+    }
+
+    #[test]
+    fn test_dereference_assignment_semantics() {
+        let scope = ModuleScope::new("test".to_string());
+        let mut checker = Checker::new(&scope);
+        checker.enter_scope();
+        checker.local_scopes.last_mut().unwrap().insert(
+            "ptr".to_string(),
+            BindingInfo {
+                ty: Type::Pointer {
+                    element: Box::new(Type::S32),
+                },
+                is_mutable: false,
+                is_initialized: true,
+            },
+        );
+
+        // ptr.* := 10 -> valid
+        let mut assign = Expression::Assign {
+            target: Box::new(Expression::Dereference(Box::new(Expression::Identifier("ptr".to_string())))),
+            value: Box::new(Expression::Integer(10)),
+        };
+        assert!(checker.type_of_expression(&mut assign).is_ok());
+
+        // invalid target: (1 + 2) := 10 -> rejected
+        let mut invalid_assign = Expression::Assign {
+            target: Box::new(Expression::Binary {
+                left: Box::new(Expression::Integer(1)),
+                operator: crate::syntax::BinaryOperator::Add,
+                right: Box::new(Expression::Integer(2)),
+            }),
+            value: Box::new(Expression::Integer(10)),
+        };
+        assert!(checker.type_of_expression(&mut invalid_assign).is_err());
     }
 }

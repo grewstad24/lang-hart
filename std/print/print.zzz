@@ -26,9 +26,9 @@ fn print_int(num :: Integer) -> :none {
 }
 
 fn printa(arr :: []Printable) -> :none {
-    repeat arr.len using i => {
-        print(arr[i])
-    }
+        repeat arr.len using i => {
+                print(arr[i])
+        }
 }
 
 fn print(x :: Printable) -> :none {

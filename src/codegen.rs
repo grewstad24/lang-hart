@@ -722,17 +722,47 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Assign { target, value } => {
                 let current_binding = self.codegen_expression(value)?;
-                let local = self
-                    .lookup_local(target)
-                    .ok_or_else(|| format!("unknown local variable '{}'", target))?;
+                match unspanned_expression(target) {
+                    Expression::Identifier(name) => {
+                        let local = self
+                            .lookup_local(name)
+                            .ok_or_else(|| format!("unknown local variable '{}'", name))?;
 
-                let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
-                let val = self.binding_basic_value(&coerced_binding)?;
-                self.builder
-                    .build_store(local.alloca, val)
-                    .map_err(|e| e.to_string())?;
+                        let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
+                        let val = self.binding_basic_value(&coerced_binding)?;
+                        self.builder
+                            .build_store(local.alloca, val)
+                            .map_err(|e| e.to_string())?;
 
-                Ok(self.atom_binding("none"))
+                        Ok(self.atom_binding("none"))
+                    }
+                    Expression::Dereference(ptr_expr) => {
+                        let ptr_binding = self.codegen_expression(ptr_expr)?;
+                        let ptr_type = self.binding_type(&ptr_binding)?;
+                        let Type::Pointer { element } = ptr_type else {
+                            return Err(format!(
+                                "expected pointer type for dereference assignment, found {:?}",
+                                ptr_type
+                            ));
+                        };
+                        if *element == Type::Opaque {
+                            return Err("cannot assign through untyped pointer '*opaque'".to_string());
+                        }
+                        let dest_ptr = match ptr_binding {
+                            Binding::Pointer { value, .. } => value,
+                            _ => return Err("expected pointer binding for dereference assignment".to_string()),
+                        };
+
+                        let coerced_binding = self.coerce_to_type(current_binding, &element)?;
+                        let val = self.binding_basic_value(&coerced_binding)?;
+                        self.builder
+                            .build_store(dest_ptr, val)
+                            .map_err(|e| e.to_string())?;
+
+                        Ok(self.atom_binding("none"))
+                    }
+                    _ => Err("unsupported assignment target".to_string()),
+                }
             }
             Expression::Repeat { count, binder, body } => {
                 let count_binding = self.codegen_expression(count)?;
@@ -922,6 +952,14 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Member { expression, field } => self.codegen_member(expression, field),
             Expression::AddressOf(expression) => self.codegen_address_of(expression),
             Expression::Dereference(expression) => self.codegen_dereference(expression),
+            Expression::SizeOf(ty) => {
+                let size = self.llvm_type_size(ty)?;
+                Ok(Binding::Integer {
+                    ty: Type::USize,
+                    value: self.ptr_sized_int_type().const_int(size, false),
+                })
+            }
+            Expression::Type(_) => Ok(self.atom_binding("none")),
         }
     }
 
@@ -934,6 +972,9 @@ impl<'ctx> Codegen<'ctx> {
                 pointer_type
             ));
         };
+        if *element == Type::Opaque {
+            return Err("cannot dereference untyped pointer '*opaque'".to_string());
+        }
         let pointer_value = match pointer_binding {
             Binding::Pointer { value, .. } => value,
             _ => return Err("expected pointer binding for dereference".to_string()),
@@ -3116,6 +3157,9 @@ impl<'ctx> Codegen<'ctx> {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
             }),
+            Type::Opaque | Type::MetaType => {
+                Err("opaque or meta type has no runtime representation".to_string())
+            }
         }
     }
 
@@ -3292,6 +3336,9 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
             Type::Slice { .. } => Ok(self.slice_type().into()),
+            Type::Opaque | Type::MetaType => {
+                Err("opaque or meta type has no runtime representation".to_string())
+            }
         }
     }
 
@@ -3334,6 +3381,9 @@ impl<'ctx> Codegen<'ctx> {
                 .const_null()
                 .into()),
             Type::Slice { .. } => Ok(self.slice_type().const_zero().into()),
+            Type::Opaque | Type::MetaType => {
+                Err("opaque or meta type has no zero value".to_string())
+            }
         }
     }
 

@@ -79,6 +79,8 @@ pub struct StructFieldInit {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    Opaque,
+    MetaType,
     Never,
     S16,
     S32,
@@ -253,7 +255,7 @@ pub enum Expression {
         value: Option<Box<Expression>>,
     },
     Assign {
-        target: String,
+        target: Box<Expression>,
         value: Box<Expression>,
     },
     Repeat {
@@ -261,6 +263,8 @@ pub enum Expression {
         binder: Option<String>,
         body: Box<Expression>,
     },
+    SizeOf(Type),
+    Type(Type),
 }
 
 pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
@@ -288,6 +292,7 @@ pub struct Definition {
     pub name: String,
     pub signature: Option<Signature>,
     pub value: Expression,
+    pub is_meta: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -390,6 +395,8 @@ pub enum Token {
     As,
     Not,
     Repeat,
+    Meta,
+    TypeOpaque,
     Val,
     Never,
     TypeS16,
@@ -752,6 +759,8 @@ impl Lexer {
             "false" => Token::Boolean(false),
             "not" => Token::Not,
             "repeat" => Token::Repeat,
+            "meta" => Token::Meta,
+            "opaque" => Token::TypeOpaque,
             "never" => Token::Never,
             _ => Token::Identifier(text),
         }
@@ -1005,6 +1014,14 @@ impl Parser {
                 self.advance();
                 Ok("repeat".to_string())
             }
+            Token::Meta => {
+                self.advance();
+                Ok("meta".to_string())
+            }
+            Token::TypeOpaque => {
+                self.advance();
+                Ok("opaque".to_string())
+            }
             Token::TypeBool => {
                 self.advance();
                 Ok("bool".to_string())
@@ -1080,6 +1097,16 @@ impl Parser {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
                 }
+                Token::Meta => {
+                    self.advance(); // consume 'meta'
+                    self.skip_newlines();
+                    if !self.is(Token::FnKeyword) {
+                        return Err(format!("expected 'fn' after 'meta', found {:?}", self.peek()));
+                    }
+                    let mut def = self.parse_fn_definition()?;
+                    def.is_meta = true;
+                    definitions.push(def);
+                }
                 Token::TypeKeyword => {
                     self.advance(); // consume 'type'
                     self.skip_newlines();
@@ -1108,6 +1135,7 @@ impl Parser {
                         name,
                         signature: None,
                         value,
+                        is_meta: false,
                     });
                 }
                 Token::Extern => {
@@ -1228,16 +1256,33 @@ impl Parser {
             name,
             signature: Some(signature),
             value: body,
+            is_meta: false,
         })
     }
 
     pub fn parse_expression(&mut self) -> Result<Expression, String> {
         let span = self.current_span().clone();
-        let expression = self.parse_comparison()?;
+        let expression = self.parse_assignment()?;
         Ok(Expression::Spanned {
             expression: Box::new(expression),
             span,
         })
+    }
+
+    fn parse_assignment(&mut self) -> Result<Expression, String> {
+        let expression = self.parse_comparison()?;
+
+        if self.is(Token::ColonEqual) {
+            self.advance();
+            self.skip_newlines();
+            let value = self.parse_assignment()?;
+            return Ok(Expression::Assign {
+                target: Box::new(expression),
+                value: Box::new(value),
+            });
+        }
+
+        Ok(expression)
     }
 
     fn parse_comparison(&mut self) -> Result<Expression, String> {
@@ -1475,6 +1520,51 @@ impl Parser {
         Ok(arguments)
     }
 
+    fn is_struct_type_start(&self) -> bool {
+        let mut idx = self.cursor;
+        while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
+            idx += 1;
+        }
+        if idx < self.tokens.len() {
+            match &self.tokens[idx] {
+                Token::Identifier(_)
+                | Token::Val
+                | Token::Var
+                | Token::Let
+                | Token::If
+                | Token::Else
+                | Token::Match
+                | Token::With
+                | Token::Using
+                | Token::Over
+                | Token::Return
+                | Token::As
+                | Token::Not
+                | Token::Repeat
+                | Token::Meta
+                | Token::TypeOpaque
+                | Token::TypeS16
+                | Token::TypeS32
+                | Token::TypeS64
+                | Token::TypeU8
+                | Token::TypeU16
+                | Token::TypeU32
+                | Token::TypeU64
+                | Token::TypeUSize
+                | Token::TypeSSize
+                | Token::TypeBool => {
+                    idx += 1;
+                    while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
+                        idx += 1;
+                    }
+                    return idx < self.tokens.len() && self.tokens[idx] == Token::ColonColon;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn is_struct_literal_start(&self) -> bool {
         let mut idx = self.cursor;
         while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
@@ -1496,6 +1586,8 @@ impl Parser {
                 | Token::As
                 | Token::Not
                 | Token::Repeat
+                | Token::Meta
+                | Token::TypeOpaque
                 | Token::TypeS16
                 | Token::TypeS32
                 | Token::TypeS64
@@ -1536,24 +1628,11 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Atom(name))
             }
-            Token::Identifier(name)
-                if self.tokens.get(self.cursor + 1) == Some(&Token::ColonEqual) =>
-            {
-                let target = name.clone();
-                self.advance(); // consume Identifier
-                self.advance(); // consume ':='
-                self.skip_newlines();
-                let value = self.parse_expression()?;
-                Ok(Expression::Assign {
-                    target,
-                    value: Box::new(value),
-                })
-            }
             Token::Identifier(name) => {
                 self.advance();
                 Ok(Expression::Identifier(name))
             }
-            Token::Val => {
+            Token::Val | Token::ValKeyword => {
                 self.advance();
                 Ok(Expression::Identifier("val".to_string()))
             }
@@ -1561,10 +1640,14 @@ impl Parser {
                 self.advance();
                 let tag = self.expect_identifier()?;
                 self.skip_newlines();
+                if tag == "sizeOf" {
+                    let ty = self.parse_type()?;
+                    return Ok(Expression::SizeOf(ty));
+                }
                 let is_record = tag == "record";
                 if tag != "record" && tag != "struct" {
                     return Err(format!(
-                        "unknown struct tag '@{}', expected '@record' or '@struct'",
+                        "unknown struct tag '@{}', expected '@record', '@struct', or '@sizeOf'",
                         tag
                     ));
                 }
@@ -1580,7 +1663,26 @@ impl Parser {
                 self.advance();
                 self.skip_newlines();
 
-                if self.is_struct_literal_start() {
+                if self.is_struct_type_start() {
+                    let mut fields = Vec::new();
+                    while !self.is(Token::RParen) && !self.is(Token::Eof) {
+                        let field_name = self.expect_field_name()?;
+                        self.expect(Token::ColonColon)?;
+                        self.skip_newlines();
+                        let ty = self.parse_type()?;
+                        fields.push(StructFieldType {
+                            name: field_name,
+                            ty,
+                        });
+                        self.skip_newlines();
+                        if self.is(Token::Comma) {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    Ok(Expression::Type(Type::Struct(fields)))
+                } else if self.is_struct_literal_start() {
                     let fields = self.parse_struct_fields(Token::RParen, false)?;
                     Ok(Expression::Struct(fields))
                 } else {
@@ -1590,9 +1692,48 @@ impl Parser {
                 }
             }
             Token::LBracket => {
-                self.advance();
-                let elements = self.parse_argument_list(Token::RBracket)?;
-                Ok(Expression::Array(elements))
+                let is_slice_type = self.cursor + 1 < self.tokens.len()
+                    && self.tokens[self.cursor + 1] == Token::RBracket
+                    && self.cursor + 2 < self.tokens.len()
+                    && matches!(
+                        &self.tokens[self.cursor + 2],
+                        Token::Identifier(_)
+                            | Token::TypeS16
+                            | Token::TypeS32
+                            | Token::TypeS64
+                            | Token::TypeU8
+                            | Token::TypeU16
+                            | Token::TypeU32
+                            | Token::TypeU64
+                            | Token::TypeUSize
+                            | Token::TypeSSize
+                            | Token::TypeBool
+                            | Token::TypeOpaque
+                            | Token::Star
+                    );
+                if is_slice_type {
+                    let ty = self.parse_single_type()?;
+                    Ok(Expression::Type(ty))
+                } else {
+                    self.advance();
+                    let elements = self.parse_argument_list(Token::RBracket)?;
+                    Ok(Expression::Array(elements))
+                }
+            }
+            Token::TypeS16
+            | Token::TypeS32
+            | Token::TypeS64
+            | Token::TypeU8
+            | Token::TypeU16
+            | Token::TypeU32
+            | Token::TypeU64
+            | Token::TypeUSize
+            | Token::TypeSSize
+            | Token::TypeBool
+            | Token::TypeOpaque
+            | Token::Star => {
+                let ty = self.parse_single_type()?;
+                Ok(Expression::Type(ty))
             }
             Token::LBrace => self.parse_block(),
             Token::If => self.parse_if_expression(),
@@ -1919,6 +2060,14 @@ impl Parser {
             Token::TypeBool => {
                 self.advance();
                 Ok(Type::Bool)
+            }
+            Token::TypeOpaque => {
+                self.advance();
+                Ok(Type::Opaque)
+            }
+            Token::TypeKeyword => {
+                self.advance();
+                Ok(Type::MetaType)
             }
             Token::Star => {
                 self.advance();

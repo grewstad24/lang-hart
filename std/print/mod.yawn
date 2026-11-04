@@ -1,10 +1,6 @@
 export := [
         (
-                symbol := ["pr_nl", "pr_tab", "print_int", "print_string"]
-                to := ["print"]
-        )
-        (
-                symbol := ["print", "println", "printr"]
+                symbol := ["print", "println"]
                 to := []
         )
 ]
