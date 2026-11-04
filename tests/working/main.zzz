@@ -19,4 +19,11 @@ fn main() -> :none {
         var a := 100
         let ptr := a.&
         println( ptr.* )
+
+        let x := if { a < 50 => 50 }
+
+        match x using z {
+                s32 => print(z)
+                :none => println("none")
+        }
 }

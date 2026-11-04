@@ -749,14 +749,17 @@ impl<'a> Checker<'a> {
             let expected_return = self.resolve_type(sig.return_type.as_ref())?;
             *sig.return_type = expected_return.clone();
 
-            let old_return_type = self.current_function_return_type.replace(expected_return.clone());
+            let old_return_type = self
+                .current_function_return_type
+                .replace(expected_return.clone());
             let body_ty_res = self.type_of_expression(&mut def.value);
             self.current_function_return_type = old_return_type;
             self.exit_scope();
 
             let mut body_ty = body_ty_res?;
             if body_ty != Type::Never {
-                body_ty = self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
+                body_ty =
+                    self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
                 if !self.are_types_compatible(&body_ty, &expected_return)? {
                     return Err(format!(
                         "in '{}': function '{}' return type mismatch: expected {:?}, found {:?}",
@@ -1035,7 +1038,10 @@ impl<'a> Checker<'a> {
 
             Expression::Return(expr) => {
                 let expected = self.current_function_return_type.clone().ok_or_else(|| {
-                    format!("in '{}': 'return' outside of function", self.current_file_path)
+                    format!(
+                        "in '{}': 'return' outside of function",
+                        self.current_file_path
+                    )
                 })?;
                 let mut actual = self.type_of_expression(expr)?;
                 actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
@@ -1093,7 +1099,8 @@ impl<'a> Checker<'a> {
                     let final_ty = if let Some(annotated_ty) = ty {
                         let res_annotated = self.resolve_type(annotated_ty)?;
                         *annotated_ty = res_annotated.clone();
-                        let coerced = self.coerce_expression_to_type(val, &resolved_ty, &res_annotated)?;
+                        let coerced =
+                            self.coerce_expression_to_type(val, &resolved_ty, &res_annotated)?;
                         if !self.are_types_compatible(&coerced, &res_annotated)? {
                             return Err(format!(
                                 "in '{}': type mismatch for variable '{}': expected {:?}, found {:?}",
@@ -1206,20 +1213,9 @@ impl<'a> Checker<'a> {
             }
 
             Expression::If { arms } => {
-                let has_else = arms
-                    .iter()
-                    .any(|a| matches!(a.condition, IfCondition::Else));
-                if !has_else {
-                    return Err(format!(
-                        "in '{}': expression 'if' must have a fallback 'else' arm",
-                        self.current_file_path
-                    ));
-                }
-
                 let num_arms = arms.len();
                 let mut arm_types = Vec::new();
                 let scopes_before_if = self.local_scopes.clone();
-                let initial_state = self.initialization_state();
                 let mut reachable_states = Vec::new();
 
                 for (i, arm) in arms.iter_mut().enumerate() {
@@ -1229,7 +1225,7 @@ impl<'a> Checker<'a> {
                             let cond_ty = self.type_of_expression(cond)?;
                             if cond_ty != Type::Bool {
                                 return Err(format!(
-                                    "in '{}': if condition must evaluate to Bool, found {:?}",
+                                    "in '{}': if condition must evaluate to bool, found {:?}",
                                     self.current_file_path, cond_ty
                                 ));
                             }
@@ -1251,10 +1247,6 @@ impl<'a> Checker<'a> {
                     if resolved_arm_ty != Type::Never {
                         reachable_states.push(self.initialization_state());
                     }
-                }
-
-                if !has_else {
-                    reachable_states.push(initial_state);
                 }
 
                 self.local_scopes = scopes_before_if;
@@ -1348,13 +1340,13 @@ impl<'a> Checker<'a> {
                     } else {
                         if arm_idx != num_arms - 1 {
                             return Err(format!(
-                                "in '{}': wildcard match arm '_' must be the last arm",
+                                "in '{}': fallback 'else' arm must be the final arm in match",
                                 self.current_file_path
                             ));
                         }
                         if unhandled.is_empty() {
                             return Err(format!(
-                                "in '{}': wildcard match arm '_' is unreachable; all variants already matched",
+                                "in '{}': fallback 'else' arm is unreachable; all variants already matched",
                                 self.current_file_path
                             ));
                         }
@@ -2088,4 +2080,3 @@ impl<'a> Checker<'a> {
         }
     }
 }
-

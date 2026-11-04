@@ -381,9 +381,7 @@ pub enum Token {
     Var,
     Let,
     If,
-    DoIf,
     Else,
-    End,
     Match,
     With,
     Using,
@@ -737,9 +735,7 @@ impl Lexer {
             "var" => Token::Var,
             "let" => Token::Let,
             "if" => Token::If,
-            "doif" => Token::DoIf,
             "else" => Token::Else,
-            "end" => Token::End,
             "match" => Token::Match,
             "with" => Token::With,
             "using" => Token::Using,
@@ -941,17 +937,9 @@ impl Parser {
                 self.advance();
                 Ok("if".to_string())
             }
-            Token::DoIf => {
-                self.advance();
-                Ok("doif".to_string())
-            }
             Token::Else => {
                 self.advance();
                 Ok("else".to_string())
-            }
-            Token::End => {
-                self.advance();
-                Ok("end".to_string())
             }
             Token::Match => {
                 self.advance();
@@ -1043,6 +1031,41 @@ impl Parser {
         if self.is(Token::Newline) {
             self.advance();
         }
+    }
+
+    pub fn parse_block(&mut self) -> Result<Expression, String> {
+        self.expect(Token::LBrace)?;
+        self.skip_newlines();
+
+        let mut expressions = Vec::new();
+
+        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+            let expr = self.parse_expression()?;
+
+            if self.is(Token::RBrace) {
+                // No trailing newline before '}' -> automatically return
+                let ret_expr = match expr {
+                    Expression::Return(_) => expr,
+                    _ => Expression::Return(Box::new(expr)),
+                };
+                expressions.push(ret_expr);
+                break;
+            } else if self.is(Token::Newline) {
+                // Trailing newline present -> evaluate, discard value, continue
+                self.skip_newlines();
+                expressions.push(Expression::Discard(Box::new(expr)));
+            } else {
+                return Err(format!(
+                    "expected newline or '}}' after expression, found {:?}",
+                    self.peek()
+                ));
+            }
+        }
+
+        self.expect(Token::RBrace)?;
+        self.consume_optional_newline();
+
+        Ok(Expression::Block(expressions))
     }
 
     pub fn parse_file_declarations(
@@ -1469,9 +1492,7 @@ impl Parser {
                 | Token::Var
                 | Token::Let
                 | Token::If
-                | Token::DoIf
                 | Token::Else
-                | Token::End
                 | Token::Match
                 | Token::With
                 | Token::Using
@@ -1579,7 +1600,7 @@ impl Parser {
                 Ok(Expression::Array(elements))
             }
             Token::LBrace => self.parse_block(),
-            Token::If | Token::DoIf => self.parse_if_expression(),
+            Token::If => self.parse_if_expression(),
             Token::Match => self.parse_match_expression(),
             Token::Let => {
                 self.advance();
@@ -1733,7 +1754,7 @@ impl Parser {
         };
 
         while !is_at_end(self) && !self.is(Token::Eof) {
-            let variant_type = if self.is(Token::Underscore) {
+            let variant_type = if self.is(Token::Else) {
                 self.advance();
                 None
             } else {
@@ -1766,13 +1787,15 @@ impl Parser {
     }
 
     fn parse_if_expression(&mut self) -> Result<Expression, String> {
-        self.advance(); // consume If or DoIf
+        self.expect(Token::If)?;
+        self.skip_newlines();
+        self.expect(Token::LBrace)?;
         self.skip_newlines();
 
         let mut arms = Vec::new();
         let mut has_else = false;
 
-        while !self.is(Token::End) && !self.is(Token::Eof) {
+        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
             let condition = if self.is(Token::Else) {
                 self.advance();
                 has_else = true;
@@ -1788,56 +1811,32 @@ impl Parser {
             arms.push(IfArm { condition, body });
             self.skip_newlines();
 
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
+
             if has_else {
                 break;
-            }
-        }
-
-        self.expect(Token::End)?;
-
-        if !has_else {
-            arms.push(IfArm {
-                condition: IfCondition::Else,
-                body: Box::new(Expression::Block(Vec::new())),
-            });
-        }
-
-        Ok(Expression::If { arms })
-    }
-
-    pub fn parse_block(&mut self) -> Result<Expression, String> {
-        self.expect(Token::LBrace)?;
-        self.skip_newlines();
-
-        let mut expressions = Vec::new();
-
-        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-            let expr = self.parse_expression()?;
-
-            if self.is(Token::RBrace) {
-                // No trailing newline before '}' -> automatically return
-                let ret_expr = match expr {
-                    Expression::Return(_) => expr,
-                    _ => Expression::Return(Box::new(expr)),
-                };
-                expressions.push(ret_expr);
-                break;
-            } else if self.is(Token::Newline) {
-                // Trailing newline present -> evaluate, discard value, continue
-                self.skip_newlines();
-                expressions.push(Expression::Discard(Box::new(expr)));
-            } else {
-                return Err(format!(
-                    "expected newline or '}}' after expression, found {:?}",
-                    self.peek()
-                ));
             }
         }
 
         self.expect(Token::RBrace)?;
         self.consume_optional_newline();
 
-        Ok(Expression::Block(expressions))
+        if arms.is_empty() {
+            return Err("if block must contain at least one arm".to_string());
+        }
+
+        // Synthesize fallback: else => :none
+        if !has_else {
+            arms.push(IfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Expression::Atom("none".to_string())),
+            });
+        }
+
+        Ok(Expression::If { arms })
     }
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
