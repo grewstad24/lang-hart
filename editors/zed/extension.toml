@@ -1,0 +1,12 @@
+id = "snore"
+name = "Snore"
+version = "0.1.0"
+schema_version = 1
+authors = ["Arihan Bhor"]
+description = "Snore language support"
+repository = "https://codeberg.org/grewstad/snore"
+
+[grammars.snore]
+repository = "https://codeberg.org/grewstad/snore"
+path = "tree-sitter-snore"
+rev = "main"

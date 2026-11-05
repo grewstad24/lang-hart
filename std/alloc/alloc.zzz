@@ -9,4 +9,5 @@ meta fn alloc( T: type ) -> *T { malloc( @sizeOf T ) as *T }
 meta fn heap_new( T: type, val: T ) -> *T {
       let ptr := alloc(type T)
       ptr.* := val
-ptr }
+      return ptr
+}
