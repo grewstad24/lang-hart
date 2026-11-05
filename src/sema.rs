@@ -1277,6 +1277,44 @@ impl<'a> Checker<'a> {
                 Ok(Type::Atom("none".to_string()))
             }
 
+            Expression::For {
+                iterable,
+                binder,
+                body,
+            } => {
+                let raw_iter_ty = self.type_of_expression(iterable)?;
+                let iter_ty = self.resolve_type(&raw_iter_ty)?;
+
+                let element_ty = match &iter_ty {
+                    Type::Array { element, .. } => self.resolve_type(element)?,
+                    Type::Slice { element } => self.resolve_type(element)?,
+                    other => {
+                        return Err(format!(
+                            "in '{}': for loop expects slice or array iterable, found {:?}",
+                            self.current_file_path, other
+                        ));
+                    }
+                };
+
+                let scopes_before_loop = self.local_scopes.clone();
+                if let Some(binder_name) = binder {
+                    self.enter_scope();
+                    self.local_scopes.last_mut().unwrap().insert(
+                        binder_name.clone(),
+                        BindingInfo {
+                            ty: element_ty,
+                            is_mutable: false,
+                            is_initialized: true,
+                        },
+                    );
+                }
+
+                let body_result = self.type_of_expression(body);
+                self.restore_initialization_state(scopes_before_loop);
+                body_result?;
+                Ok(Type::Atom("none".to_string()))
+            }
+
             Expression::If { arms } => {
                 let num_arms = arms.len();
                 let mut arm_types = Vec::new();

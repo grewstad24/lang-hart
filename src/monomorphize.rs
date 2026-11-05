@@ -198,6 +198,10 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
             substitute_expression(count, substitutions);
             substitute_expression(body, substitutions);
         }
+        Expression::For { iterable, body, .. } => {
+            substitute_expression(iterable, substitutions);
+            substitute_expression(body, substitutions);
+        }
         Expression::If { arms } => {
             for arm in arms {
                 if let crate::syntax::IfCondition::Expression(e) = &mut arm.condition {
@@ -423,6 +427,10 @@ fn scan_and_rewrite_expression(
         }
         Expression::Repeat { count, body, .. } => {
             scan_and_rewrite_expression(count, scope, generated, changed)?;
+            scan_and_rewrite_expression(body, scope, generated, changed)?;
+        }
+        Expression::For { iterable, body, .. } => {
+            scan_and_rewrite_expression(iterable, scope, generated, changed)?;
             scan_and_rewrite_expression(body, scope, generated, changed)?;
         }
         Expression::If { arms } => {

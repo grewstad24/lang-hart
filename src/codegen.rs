@@ -572,6 +572,20 @@ impl<'ctx> Codegen<'ctx> {
                         });
                     }
 
+                    if let Type::Array { .. } = &local.ty {
+                        let loaded = self
+                            .builder
+                            .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
+                            .map_err(|e| e.to_string())?
+                            .into_array_value();
+
+                        return Ok(Binding::Array {
+                            ty: local.ty.clone(),
+                            value: loaded,
+                            storage: Some(local.alloca),
+                        });
+                    }
+
                     let loaded = self
                         .builder
                         .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
@@ -602,6 +616,20 @@ impl<'ctx> Codegen<'ctx> {
                             .into_struct_value();
 
                         return Ok(Binding::Union {
+                            ty: global_var.ty.clone(),
+                            value: loaded,
+                            storage: Some(global_var.pointer),
+                        });
+                    }
+
+                    if let Type::Array { .. } = &global_var.ty {
+                        let loaded = self
+                            .builder
+                            .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
+                            .map_err(|e| e.to_string())?
+                            .into_array_value();
+
+                        return Ok(Binding::Array {
                             ty: global_var.ty.clone(),
                             value: loaded,
                             storage: Some(global_var.pointer),
@@ -876,6 +904,190 @@ impl<'ctx> Codegen<'ctx> {
                         name.clone(),
                         LocalVar {
                             ty: count_ty.clone(),
+                            alloca,
+                        },
+                    );
+                }
+
+                self.codegen_expression(body)?;
+
+                if binder.is_some() {
+                    self.local_scopes.pop();
+                }
+
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_none() {
+                        let cur = self
+                            .builder
+                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
+                            .map_err(|e| e.to_string())?
+                            .into_int_value();
+                        let next = self
+                            .builder
+                            .build_int_add(
+                                cur,
+                                self.ptr_sized_int_type().const_int(1, false),
+                                "next_i",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_store(counter_alloca, next)
+                            .map_err(|e| e.to_string())?;
+                        self.builder
+                            .build_unconditional_branch(cond_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                self.builder.position_at_end(merge_bb);
+                Ok(self.atom_binding("none"))
+            }
+            Expression::For {
+                iterable,
+                binder,
+                body,
+            } => {
+                let iter_binding = self.codegen_expression(iterable)?;
+                let iter_ty = self.binding_type(&iter_binding)?;
+
+                let (element_ty, len_val, data_ptr) = match iter_ty {
+                    Type::Array { ref element, size } => {
+                        let len = self.ptr_sized_int_type().const_int(size as u64, false);
+                        let elem_clone = (**element).clone();
+                        let storage = self.array_storage(iter_binding, &elem_clone, size)?;
+                        let llvm_array_type = self
+                            .llvm_type(&Type::Array {
+                                element: Box::new(elem_clone.clone()),
+                                size,
+                            })?
+                            .into_array_type();
+                        let zero = self.ptr_sized_int_type().const_zero();
+                        let first_elem_ptr = unsafe {
+                            self.builder
+                                .build_gep(
+                                    llvm_array_type,
+                                    storage,
+                                    &[zero, zero],
+                                    "for_arr_data",
+                                )
+                                .map_err(|e| e.to_string())?
+                        };
+                        (elem_clone, len, first_elem_ptr)
+                    }
+                    Type::Slice { ref element } => {
+                        let slice_struct = match iter_binding {
+                            Binding::Slice { value, .. } => value,
+                            _ => return Err("expected slice binding".to_string()),
+                        };
+                        let ptr_val = self
+                            .builder
+                            .build_extract_value(slice_struct, 0, "sliceptr")
+                            .map_err(|e| e.to_string())?
+                            .into_pointer_value();
+                        let len_val = self
+                            .builder
+                            .build_extract_value(slice_struct, 1, "slicelen")
+                            .map_err(|e| e.to_string())?
+                            .into_int_value();
+                        ((**element).clone(), len_val, ptr_val)
+                    }
+                    other => return Err(format!("cannot iterate over type {:?}", other)),
+                };
+
+                let current_block = self
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| "cannot generate for loop outside basic block".to_string())?;
+                let current_fn = current_block
+                    .get_parent()
+                    .ok_or_else(|| "current block has no parent function".to_string())?;
+
+                let id = self.branch_counter;
+                self.branch_counter += 1;
+
+                let cond_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("for.cond.{}", id));
+                let body_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("for.body.{}", id));
+                let merge_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("for.merge.{}", id));
+
+                let counter_alloca = self
+                    .builder
+                    .build_alloca(
+                        self.ptr_sized_int_type(),
+                        &format!("for.counter.{}", id),
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_store(counter_alloca, self.ptr_sized_int_type().const_zero())
+                    .map_err(|e| e.to_string())?;
+
+                let binder_alloca = if let Some(name) = binder {
+                    let binder_llvm_ty = self.llvm_type(&element_ty)?;
+                    let alloca = self
+                        .builder
+                        .build_alloca(binder_llvm_ty, &format!("for.binder.{}.{}", name, id))
+                        .map_err(|e| e.to_string())?;
+                    Some(alloca)
+                } else {
+                    None
+                };
+
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Condition Block ---
+                self.builder.position_at_end(cond_bb);
+                let current_idx = self
+                    .builder
+                    .build_load(self.ptr_sized_int_type(), counter_alloca, "i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+
+                let has_next = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::ULT,
+                        current_idx,
+                        len_val,
+                        "for_cmp",
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                self.builder
+                    .build_conditional_branch(has_next, body_bb, merge_bb)
+                    .map_err(|e| e.to_string())?;
+
+                // --- Body Block ---
+                self.builder.position_at_end(body_bb);
+
+                if let (Some(name), Some(alloca)) = (binder, binder_alloca) {
+                    let elem_llvm_ty = self.llvm_type(&element_ty)?;
+                    let elem_ptr = unsafe {
+                        self.builder
+                            .build_gep(elem_llvm_ty, data_ptr, &[current_idx], "for_elem_ptr")
+                            .map_err(|e| e.to_string())?
+                    };
+                    let loaded = self
+                        .builder
+                        .build_load(elem_llvm_ty, elem_ptr, "for_elem_val")
+                        .map_err(|e| e.to_string())?;
+
+                    self.builder
+                        .build_store(alloca, loaded)
+                        .map_err(|e| e.to_string())?;
+
+                    self.local_scopes.push(HashMap::new());
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        LocalVar {
+                            ty: element_ty.clone(),
                             alloca,
                         },
                     );

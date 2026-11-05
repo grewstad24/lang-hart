@@ -263,6 +263,11 @@ pub enum Expression {
         binder: Option<String>,
         body: Box<Expression>,
     },
+    For {
+        iterable: Box<Expression>,
+        binder: Option<String>,
+        body: Box<Expression>,
+    },
     SizeOf(Type),
     Type(Type),
 }
@@ -418,6 +423,7 @@ pub enum Token {
     If,
     Else,
     Match,
+    Switch,
     With,
     Using,
     Over,
@@ -425,6 +431,7 @@ pub enum Token {
     As,
     Not,
     Repeat,
+    For,
     Meta,
     Decl,
     Mod,
@@ -792,6 +799,7 @@ impl Lexer {
             "if" => Token::If,
             "else" => Token::Else,
             "match" => Token::Match,
+            "switch" => Token::Switch,
             "with" => Token::With,
             "using" => Token::Using,
             "over" => Token::Over,
@@ -811,6 +819,7 @@ impl Lexer {
             "false" => Token::Boolean(false),
             "not" => Token::Not,
             "repeat" => Token::Repeat,
+            "for" => Token::For,
             "meta" => Token::Meta,
             "decl" => Token::Decl,
             "mod" => Token::Mod,
@@ -885,6 +894,7 @@ pub struct Parser {
     tokens: Vec<Token>,
     spans: Vec<Span>,
     cursor: usize,
+    switch_counter: usize,
 }
 
 impl Parser {
@@ -901,6 +911,7 @@ impl Parser {
             tokens,
             spans,
             cursor: 0,
+            switch_counter: 0,
         }
     }
 
@@ -910,6 +921,7 @@ impl Parser {
             tokens,
             spans,
             cursor: 0,
+            switch_counter: 0,
         }
     }
 
@@ -1007,6 +1019,10 @@ impl Parser {
                 self.advance();
                 Ok("match".to_string())
             }
+            Token::Switch => {
+                self.advance();
+                Ok("switch".to_string())
+            }
             Token::With => {
                 self.advance();
                 Ok("with".to_string())
@@ -1070,6 +1086,10 @@ impl Parser {
             Token::Repeat => {
                 self.advance();
                 Ok("repeat".to_string())
+            }
+            Token::For => {
+                self.advance();
+                Ok("for".to_string())
             }
             Token::Meta => {
                 self.advance();
@@ -1829,6 +1849,7 @@ impl Parser {
                 | Token::If
                 | Token::Else
                 | Token::Match
+                | Token::Switch
                 | Token::With
                 | Token::Using
                 | Token::Over
@@ -1836,6 +1857,7 @@ impl Parser {
                 | Token::As
                 | Token::Not
                 | Token::Repeat
+                | Token::For
                 | Token::Meta
                 | Token::Decl
                 | Token::Mod
@@ -1875,6 +1897,7 @@ impl Parser {
                 | Token::If
                 | Token::Else
                 | Token::Match
+                | Token::Switch
                 | Token::With
                 | Token::Using
                 | Token::Over
@@ -1882,6 +1905,7 @@ impl Parser {
                 | Token::As
                 | Token::Not
                 | Token::Repeat
+                | Token::For
                 | Token::Meta
                 | Token::Decl
                 | Token::Mod
@@ -1926,6 +1950,7 @@ impl Parser {
                 | Token::If
                 | Token::Else
                 | Token::Match
+                | Token::Switch
                 | Token::With
                 | Token::Using
                 | Token::Over
@@ -1933,6 +1958,7 @@ impl Parser {
                 | Token::As
                 | Token::Not
                 | Token::Repeat
+                | Token::For
                 | Token::Meta
                 | Token::Decl
                 | Token::Mod
@@ -2077,6 +2103,7 @@ impl Parser {
             }
             Token::LBrace => self.parse_block(),
             Token::If => self.parse_if_expression(),
+            Token::Switch => self.parse_switch_expression(),
             Token::Match => self.parse_match_expression(),
             Token::Let => {
                 self.advance();
@@ -2142,7 +2169,7 @@ impl Parser {
                 self.skip_newlines();
                 let count = self.parse_expression()?;
                 self.skip_newlines();
-                let binder = if self.is(Token::Using) {
+                let binder = if self.is(Token::Using) || self.is(Token::With) {
                     self.advance();
                     self.skip_newlines();
                     Some(self.expect_identifier()?)
@@ -2150,8 +2177,10 @@ impl Parser {
                     None
                 };
                 self.skip_newlines();
-                self.expect(Token::FatArrow)?;
-                self.skip_newlines();
+                if self.is(Token::FatArrow) {
+                    self.advance();
+                    self.skip_newlines();
+                }
                 let body = self.parse_expression()?;
                 Ok(Expression::Repeat {
                     count: Box::new(count),
@@ -2159,6 +2188,7 @@ impl Parser {
                     body: Box::new(body),
                 })
             }
+            Token::For => self.parse_for_expression(),
             token => Err(format!("unexpected token in expression: {:?}", token)),
         }
     }
@@ -2322,6 +2352,119 @@ impl Parser {
         }
 
         Ok(Expression::If { arms })
+    }
+
+    fn parse_switch_expression(&mut self) -> Result<Expression, String> {
+        self.expect(Token::Switch)?;
+        self.skip_newlines();
+
+        let target = self.parse_expression()?;
+        self.skip_newlines();
+
+        self.expect(Token::LBrace)?;
+        self.skip_newlines();
+
+        let (target_expr, let_binding) = match unspanned_expression(&target) {
+            Expression::Identifier(_) => (target, None),
+            _ => {
+                self.switch_counter += 1;
+                let var_name = format!("__switch_{}", self.switch_counter);
+                let let_expr = Expression::Let {
+                    name: var_name.clone(),
+                    value: Box::new(target),
+                };
+                (Expression::Identifier(var_name), Some(let_expr))
+            }
+        };
+
+        let mut arms = Vec::new();
+        let mut has_else = false;
+
+        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+            self.skip_newlines();
+            if self.is(Token::RBrace) {
+                break;
+            }
+
+            let condition = if self.is(Token::Else) {
+                self.advance();
+                has_else = true;
+                IfCondition::Else
+            } else {
+                let case_expr = self.parse_expression()?;
+                IfCondition::Expression(Expression::Comparison {
+                    left: Box::new(target_expr.clone()),
+                    operator: ComparisonOperator::Equal,
+                    right: Box::new(case_expr),
+                })
+            };
+
+            self.skip_newlines();
+            self.expect(Token::FatArrow)?;
+            self.skip_newlines();
+
+            let body = Box::new(self.parse_expression()?);
+            arms.push(IfArm { condition, body });
+            self.skip_newlines();
+
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
+
+            if has_else {
+                break;
+            }
+        }
+
+        self.expect(Token::RBrace)?;
+
+        if arms.is_empty() {
+            return Err("switch block must contain at least one arm".to_string());
+        }
+
+        if !has_else {
+            arms.push(IfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Expression::Atom("none".to_string())),
+            });
+        }
+
+        let if_expr = Expression::If { arms };
+        if let Some(let_expr) = let_binding {
+            Ok(Expression::Block(vec![let_expr, if_expr]))
+        } else {
+            Ok(if_expr)
+        }
+    }
+
+    fn parse_for_expression(&mut self) -> Result<Expression, String> {
+        self.expect(Token::For)?;
+        self.skip_newlines();
+
+        let iterable = self.parse_expression()?;
+        self.skip_newlines();
+
+        let binder = if self.is(Token::Using) || self.is(Token::With) {
+            self.advance();
+            self.skip_newlines();
+            Some(self.expect_identifier()?)
+        } else {
+            None
+        };
+        self.skip_newlines();
+
+        if self.is(Token::FatArrow) {
+            self.advance();
+            self.skip_newlines();
+        }
+
+        let body = self.parse_expression()?;
+        Ok(Expression::For {
+            iterable: Box::new(iterable),
+            binder,
+            body: Box::new(body),
+        })
     }
 
     pub fn parse_type(&mut self) -> Result<Type, String> {

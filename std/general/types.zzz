@@ -5,9 +5,9 @@ type String := []u8
 type Integer := u16 | u32 | u64 | s16 | s32 | s64
 
 type Record := *(
-        len: usize
-        key: *String
-        val: *Generic
+      len: usize
+      key: *String
+      val: *Generic
 )
 
 type Generic := Integer | String | bool | Record | []Generic

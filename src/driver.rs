@@ -357,6 +357,15 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             binder: binder.clone(),
             body: Box::new(canonicalize_expression(body, checker)?),
         }),
+        Expression::For {
+            iterable,
+            binder,
+            body,
+        } => Ok(Expression::For {
+            iterable: Box::new(canonicalize_expression(iterable, checker)?),
+            binder: binder.clone(),
+            body: Box::new(canonicalize_expression(body, checker)?),
+        }),
         Expression::If { arms } => {
             let mut resolved_arms = Vec::with_capacity(arms.len());
             for arm in arms {
