@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
 use crate::sema::ModuleScope;
-use crate::syntax::{
-    Definition, Expression, LogicalModule, Parameter, StructFieldType, Type,
-};
+use crate::syntax::{Definition, Expression, LogicalModule, Parameter, StructFieldType, Type};
 
 pub fn mangle_type(ty: &Type) -> String {
     match ty {
@@ -58,7 +56,13 @@ pub fn mangle_type(ty: &Type) -> String {
 
 fn sanitize_identifier(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -249,7 +253,9 @@ fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type,
             "expected explicit 'type' keyword before type argument, found '{}' (use 'type {}')",
             name, name
         )),
-        _ => Err("expected explicit 'type' keyword for type argument (e.g. 'type s32')".to_string()),
+        _ => {
+            Err("expected explicit 'type' keyword for type argument (e.g. 'type s32')".to_string())
+        }
     }
 }
 
@@ -484,7 +490,10 @@ pub fn monomorphize_modules(
         changed = false;
         iterations += 1;
         if iterations > 128 {
-            return Err("monomorphization depth limit exceeded (possible cyclic meta function recursion)".to_string());
+            return Err(
+                "monomorphization depth limit exceeded (possible cyclic meta function recursion)"
+                    .to_string(),
+            );
         }
 
         let mut all_generated = Vec::new();
@@ -637,14 +646,24 @@ mod tests {
             target: Box::new(Expression::Identifier("heap_new".to_string())),
             arguments: vec![Expression::Integer(5)],
         };
-        assert!(scan_and_rewrite_expression(&mut call_missing_type, &scope, &mut generated, &mut changed).is_err());
+        assert!(
+            scan_and_rewrite_expression(
+                &mut call_missing_type,
+                &scope,
+                &mut generated,
+                &mut changed
+            )
+            .is_err()
+        );
 
         // Calling heap_new(s32, 5) with both arguments succeeds
         let mut call_explicit = Expression::Call {
             target: Box::new(Expression::Identifier("heap_new".to_string())),
             arguments: vec![Expression::Type(Type::S32), Expression::Integer(5)],
         };
-        assert!(scan_and_rewrite_expression(&mut call_explicit, &scope, &mut generated, &mut changed).is_ok());
+        assert!(
+            scan_and_rewrite_expression(&mut call_explicit, &scope, &mut generated, &mut changed)
+                .is_ok()
+        );
     }
 }
-

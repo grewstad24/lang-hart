@@ -257,7 +257,8 @@ impl<'ctx> Codegen<'ctx> {
                 let fn_type = self.signature_to_function_type(Some(sig))?;
                 let f = self.module.add_function(&def.name, fn_type, None);
                 if *sig.return_type == Type::Never {
-                    let attr_id = inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
+                    let attr_id =
+                        inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
                     let attr = self.context.create_enum_attribute(attr_id, 0);
                     f.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
                 }
@@ -427,7 +428,9 @@ impl<'ctx> Codegen<'ctx> {
             self.exit_scope(stack_ptr)?;
 
             if ret_ty == Type::Never {
-                self.builder.build_unreachable().map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| e.to_string())?;
             } else {
                 let return_val = self.binding_basic_value(&body_binding)?;
                 self.builder
@@ -726,10 +729,13 @@ impl<'ctx> Codegen<'ctx> {
                         .build_store(alloca, val)
                         .map_err(|e| e.to_string())?;
 
-                    self.local_scopes
-                        .last_mut()
-                        .unwrap()
-                        .insert(name.clone(), LocalVar { ty: final_ty.clone(), alloca });
+                    self.local_scopes.last_mut().unwrap().insert(
+                        name.clone(),
+                        LocalVar {
+                            ty: final_ty.clone(),
+                            alloca,
+                        },
+                    );
                 } else if let Some(decl_ty) = ty {
                     let llvm_ty = self.llvm_type(decl_ty)?;
 
@@ -774,11 +780,16 @@ impl<'ctx> Codegen<'ctx> {
                             ));
                         };
                         if *element == Type::Opaque {
-                            return Err("cannot assign through untyped pointer '*opaque'".to_string());
+                            return Err(
+                                "cannot assign through untyped pointer '*opaque'".to_string()
+                            );
                         }
                         let dest_ptr = match ptr_binding {
                             Binding::Pointer { value, .. } => value,
-                            _ => return Err("expected pointer binding for dereference assignment".to_string()),
+                            _ => {
+                                return Err("expected pointer binding for dereference assignment"
+                                    .to_string());
+                            }
                         };
 
                         let coerced_binding = self.coerce_to_type(current_binding, &element)?;
@@ -792,7 +803,11 @@ impl<'ctx> Codegen<'ctx> {
                     _ => Err("unsupported assignment target".to_string()),
                 }
             }
-            Expression::Repeat { count, binder, body } => {
+            Expression::Repeat {
+                count,
+                binder,
+                body,
+            } => {
                 let count_binding = self.codegen_expression(count)?;
                 let count_val = self.binding_int_value(&count_binding)?;
                 let count_ty = self.binding_type(&count_binding)?;
@@ -836,10 +851,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let counter_alloca = self
                     .builder
-                    .build_alloca(
-                        self.ptr_sized_int_type(),
-                        &format!("repeat.counter.{}", id),
-                    )
+                    .build_alloca(self.ptr_sized_int_type(), &format!("repeat.counter.{}", id))
                     .map_err(|e| e.to_string())?;
 
                 self.builder
@@ -964,12 +976,7 @@ impl<'ctx> Codegen<'ctx> {
                         let zero = self.ptr_sized_int_type().const_zero();
                         let first_elem_ptr = unsafe {
                             self.builder
-                                .build_gep(
-                                    llvm_array_type,
-                                    storage,
-                                    &[zero, zero],
-                                    "for_arr_data",
-                                )
+                                .build_gep(llvm_array_type, storage, &[zero, zero], "for_arr_data")
                                 .map_err(|e| e.to_string())?
                         };
                         (elem_clone, len, first_elem_ptr)
@@ -1017,10 +1024,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let counter_alloca = self
                     .builder
-                    .build_alloca(
-                        self.ptr_sized_int_type(),
-                        &format!("for.counter.{}", id),
-                    )
+                    .build_alloca(self.ptr_sized_int_type(), &format!("for.counter.{}", id))
                     .map_err(|e| e.to_string())?;
 
                 self.builder
@@ -1052,12 +1056,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let has_next = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::ULT,
-                        current_idx,
-                        len_val,
-                        "for_cmp",
-                    )
+                    .build_int_compare(IntPredicate::ULT, current_idx, len_val, "for_cmp")
                     .map_err(|e| e.to_string())?;
 
                 self.builder
@@ -1467,7 +1466,9 @@ impl<'ctx> Codegen<'ctx> {
 
         let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
         if incoming.is_empty() {
-            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| e.to_string())?;
             Ok(self.atom_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
@@ -1759,7 +1760,9 @@ impl<'ctx> Codegen<'ctx> {
 
         let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
         if incoming.is_empty() {
-            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| e.to_string())?;
             Ok(self.atom_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
@@ -2122,7 +2125,10 @@ impl<'ctx> Codegen<'ctx> {
                 _ => return Err("invalid comparison operator for atoms".to_string()),
             };
             return Ok(Binding::Boolean {
-                value: self.context.bool_type().const_int(if result { 1 } else { 0 }, false),
+                value: self
+                    .context
+                    .bool_type()
+                    .const_int(if result { 1 } else { 0 }, false),
             });
         }
 
@@ -2934,7 +2940,9 @@ impl<'ctx> Codegen<'ctx> {
             .map_err(|error| error.to_string())?;
 
         if ret_ty == Type::Never {
-            self.builder.build_unreachable().map_err(|e| e.to_string())?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| e.to_string())?;
             Ok(self.atom_binding("none"))
         } else {
             let return_value = call
@@ -3603,4 +3611,3 @@ impl<'ctx> Codegen<'ctx> {
         matches!(ty, Type::S16 | Type::S32 | Type::S64 | Type::SSize)
     }
 }
-

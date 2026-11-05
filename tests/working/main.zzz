@@ -1,5 +1,6 @@
-import { .print, .alloc }
+import { .print }
 
+# example program
 fn main() -> :none {
       let my_array := ["hello", 1, true, :none]
 
@@ -9,4 +10,13 @@ fn main() -> :none {
                   else => println(z)
             }
       }
+
+      @record (
+            name := "bob"
+            age := 50
+            details := (
+                  friend := "alice"
+                  adult := true
+            )
+      ) ..print()
 }

@@ -1,8 +1,8 @@
 (function_definition
-  name: (identifier) @name) @item
+  name: (function_identifier) @name) @item
 
 (extern_function_declaration
-  name: (identifier) @name) @item
+  name: (function_identifier) @name) @item
 
 (type_definition
   name: (type_identifier) @name) @item

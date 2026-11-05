@@ -157,11 +157,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                 }
                 unnamed_modules.push(LogicalModule {
                     name: None,
-                    dir_path: path
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .display()
-                        .to_string(),
+                    dir_path: path.parent().unwrap_or(Path::new("")).display().to_string(),
                     source_files: vec![parsed_file.source_file],
                     exports: parsed_file.exports,
                     imports,
@@ -325,10 +321,12 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Block(resolved))
         }
-        Expression::Discard(e) => Ok(Expression::Discard(Box::new(canonicalize_expression(e, checker)?))),
-        Expression::Return(e) => {
-            Ok(Expression::Return(Box::new(canonicalize_expression(e, checker)?)))
-        }
+        Expression::Discard(e) => Ok(Expression::Discard(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
+        Expression::Return(e) => Ok(Expression::Return(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
         Expression::Let { name, value } => Ok(Expression::Let {
             name: name.clone(),
             value: Box::new(canonicalize_expression(value, checker)?),
@@ -352,7 +350,11 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             target: Box::new(canonicalize_expression(target, checker)?),
             value: Box::new(canonicalize_expression(value, checker)?),
         }),
-        Expression::Repeat { count, binder, body } => Ok(Expression::Repeat {
+        Expression::Repeat {
+            count,
+            binder,
+            body,
+        } => Ok(Expression::Repeat {
             count: Box::new(canonicalize_expression(count, checker)?),
             binder: binder.clone(),
             body: Box::new(canonicalize_expression(body, checker)?),
@@ -470,7 +472,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 if def.name == "main" {
                     if let Some(sig) = &resolved_sig {
                         let ret = &sig.return_type;
-                        if **ret != Type::S32 && !matches!(**ret, Type::Atom(ref name) if name == "none") {
+                        if **ret != Type::S32
+                            && !matches!(**ret, Type::Atom(ref name) if name == "none")
+                        {
                             return Err(format!(
                                 "in '{}': entry point 'main' must return 's32' or ':none', found {:?}",
                                 file.file_path, ret

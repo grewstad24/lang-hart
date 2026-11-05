@@ -1,38 +1,16 @@
-export { print, println } to .print
-export { printf } to .print.raw_printf
+decl mod print {
+      export {
+            { print, println } to .print,
+            { printf } to .print.raw_printf
+      }
+}
+
 
 extern fn printf( ptr: *u8, ...) -> s32
 
+
 type Printable := String | Integer | :nl | :t | bool | []Printable | Record
 
-fn print_string( s: []u8 ) -> :none {
-      printf("%s".ptr, s.ptr)
-}
-
-fn pr_nl() -> :none {
-      printf("\n".ptr)
-}
-
-fn pr_tab() -> :none {
-      printf("\t".ptr)
-}
-
-fn print_int( num: Integer ) -> :none {
-      match num using z {
-            s32 => printf("%d".ptr, z)
-            s16 => printf("%d".ptr, z as s32)
-            s64 => printf("%lld".ptr, z)
-            u16 => printf("%u".ptr, z as u32)
-            u32 => printf("%u".ptr, z)
-            u64 => printf("%llu".ptr, z)
-      }
-}
-
-fn printa( arr: []Printable ) -> :none {
-      repeat arr.len using i {
-            print(arr[i])
-      }
-}
 
 fn print( x: Printable ) -> :none {
       match x using z {
@@ -49,22 +27,8 @@ fn print( x: Printable ) -> :none {
       }
 }
 
+
 fn println( x: Printable ) -> :none {
       print(x)
       pr_nl()
-}
-
-fn printr( r: Record ) -> :none {
-      let header := r.*
-      let keys := header.key
-      let values := header.val
-
-      repeat header.len using i {
-            [ keys[i], " : " ] ..print()
-
-            match values[i] using z {
-                  Record => [:nl, "(", :nl, z, ")", :nl] ..print()
-                  else => [z, :nl] ..print()
-            }
-      }
 }

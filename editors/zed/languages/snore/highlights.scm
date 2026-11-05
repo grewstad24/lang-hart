@@ -1,4 +1,7 @@
+; ============================================================
 ; Keywords
+; ============================================================
+
 [
   "decl"
   "mod"
@@ -26,32 +29,29 @@
 
 "not" @keyword.operator
 
+
+; ============================================================
 ; Types
+; ============================================================
+
 (primitive_type) @type.builtin
 (type_identifier) @type
 
-; Functions
-(function_definition
-  name: (identifier) @function)
 
-(extern_function_declaration
-  name: (identifier) @function)
+; ============================================================
+; Variables & Identifiers (default fallback first)
+; ============================================================
 
-(call_expression
-  function: (identifier) @function.call)
-
-(method_call_expression
-  method: (identifier) @function.method.call)
-
-; Parameters & Variables
-(parameter
-  name: (identifier) @variable.parameter)
+(identifier) @variable
 
 (let_declaration
   name: (identifier) @variable)
 
 (var_declaration
   name: (identifier) @variable)
+
+(parameter
+  name: (identifier) @variable.parameter)
 
 (match_expression
   binder: (identifier) @variable.parameter)
@@ -62,7 +62,11 @@
 (for_expression
   binder: (identifier) @variable.parameter)
 
-; Fields
+
+; ============================================================
+; Struct Fields and Properties
+; ============================================================
+
 (struct_field_type
   name: (identifier) @property)
 
@@ -72,28 +76,53 @@
 (field_expression
   field: (identifier) @property)
 
+
+; ============================================================
+; Functions (declarations and calls)
+; ============================================================
+
+(function_identifier) @function
+
+
+; ============================================================
 ; Literals
+; ============================================================
+
 (integer_literal) @number
+
 (boolean_literal) @constant.builtin.boolean
-(atom_literal) @symbol
+
+(atom_literal) @attribute
+
 (string_literal) @string
+
 (escape_sequence) @string.escape
 
+
+; ============================================================
 ; Comments
+; ============================================================
+
 (comment) @comment
 
-; Builtins / Intrinsics
-"@record" @attribute
-"@sizeOf" @function.macro
 
-; Operators & Delimiters
+; ============================================================
+; Compile-time Intrinsics
+; ============================================================
+
+"@record" @attribute
+"@sizeOf" @attribute
+
+
+; ============================================================
+; Operators
+; ============================================================
+
 [
   ":="
-  ":"
   "->"
   "=>"
   ".."
-  "."
   "*"
   "&"
   "|"
@@ -108,6 +137,16 @@
   ">"
   ">="
 ] @operator
+
+
+; ============================================================
+; Punctuation
+; ============================================================
+
+[
+  ":"
+  "."
+] @punctuation.delimiter
 
 (variadic_parameter) @punctuation.delimiter
 
@@ -125,7 +164,15 @@
   ";"
 ] @punctuation.delimiter
 
-; Namespace paths
+
+; ============================================================
+; Modules and Namespaces
+; ============================================================
+
 (namespace_path) @module
-(decl_module name: (identifier) @module)
-(mod_declaration name: (identifier) @module)
+
+(decl_module
+  name: (identifier) @module)
+
+(mod_declaration
+  name: (identifier) @module)

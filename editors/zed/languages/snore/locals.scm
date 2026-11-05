@@ -9,29 +9,28 @@
 
 ; Definitions
 (function_definition
-  name: (identifier) @local.definition.function)
+  name: (function_identifier) @local.definition)
 
 (extern_function_declaration
-  name: (identifier) @local.definition.function)
+  name: (function_identifier) @local.definition)
 
 (parameter
-  name: (identifier) @local.definition.parameter)
+  name: (identifier) @local.definition)
 
 (let_declaration
-  name: (identifier) @local.definition.variable)
+  name: (identifier) @local.definition)
 
 (var_declaration
-  name: (identifier) @local.definition.variable)
+  name: (identifier) @local.definition)
 
 (match_expression
-  binder: (identifier) @local.definition.variable)
+  binder: (identifier) @local.definition)
 
 (repeat_expression
-  binder: (identifier) @local.definition.variable)
+  binder: (identifier) @local.definition)
 
 (for_expression
-  binder: (identifier) @local.definition.variable)
+  binder: (identifier) @local.definition)
 
 ; References
 (identifier) @local.reference
-

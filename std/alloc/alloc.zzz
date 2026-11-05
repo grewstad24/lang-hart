@@ -1,6 +1,8 @@
-export { alloc, heap_new } to .alloc
-export { alloc, heap_new } to .heap
-export { malloc } to .heap.raw_malloc
+export {
+      { alloc, heap_new } to .alloc,
+      { alloc, heap_new } to .heap,
+      { malloc } to .heap.raw_malloc
+}
 
 extern fn malloc( size: usize ) -> *opaque
 

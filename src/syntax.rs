@@ -1180,7 +1180,10 @@ impl Parser {
     pub fn parse_namespace_path(&mut self) -> Result<NamespacePath, String> {
         self.skip_newlines();
         if !self.is(Token::Dot) {
-            return Err(format!("expected namespace starting with '.', found {:?}", self.peek()));
+            return Err(format!(
+                "expected namespace starting with '.', found {:?}",
+                self.peek()
+            ));
         }
         self.advance(); // consume '.'
         let mut segments = Vec::new();
@@ -1194,24 +1197,100 @@ impl Parser {
         Ok(NamespacePath::from_segments(segments))
     }
 
-    pub fn parse_export_rule(&mut self) -> Result<ExportRule, String> {
+    pub fn parse_export_directive(&mut self) -> Result<Vec<ExportRule>, String> {
         let span = self.current_span().clone();
         self.expect(Token::Export)?;
         self.skip_newlines();
-        let mut symbols = Vec::new();
+
+        let mut rules = Vec::new();
+
         if self.is(Token::LBrace) {
             self.advance();
             self.skip_newlines();
-            while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                symbols.push(self.expect_field_name()?);
+
+            if self.is(Token::RBrace) {
+                // export { }
+                self.advance();
+                self.consume_optional_newline();
+                return Ok(rules);
+            }
+
+            if self.is(Token::LBrace) {
+                // Multi-group export:
+                // export {
+                //       { print, println } to .print,
+                //       { printf } to .print.raw_printf
+                // }
+                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                    self.skip_newlines();
+                    if self.is(Token::RBrace) {
+                        break;
+                    }
+                    let item_span = self.current_span().clone();
+                    self.expect(Token::LBrace)?;
+                    self.skip_newlines();
+                    let mut symbols = Vec::new();
+                    while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                        symbols.push(self.expect_field_name()?);
+                        self.skip_newlines();
+                        if self.is(Token::Comma) {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    self.skip_newlines();
+                    let target = if self.is(Token::To) {
+                        self.advance();
+                        self.skip_newlines();
+                        self.parse_namespace_path()?
+                    } else {
+                        NamespacePath::root()
+                    };
+                    rules.push(ExportRule {
+                        symbols,
+                        target,
+                        span: item_span,
+                    });
+                    self.skip_newlines();
+                    if self.is(Token::Comma) {
+                        self.advance();
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(Token::RBrace)?;
+            } else {
+                // Single-group export:
+                // export { add, sub, mul, div } to .math
+                // export { String, Integer, Record, Generic } to .
+                let mut symbols = Vec::new();
+                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                    symbols.push(self.expect_field_name()?);
+                    self.skip_newlines();
+                    if self.is(Token::Comma) {
+                        self.advance();
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(Token::RBrace)?;
                 self.skip_newlines();
-                if self.is(Token::Comma) {
+                let target = if self.is(Token::To) {
                     self.advance();
                     self.skip_newlines();
-                }
+                    self.parse_namespace_path()?
+                } else {
+                    NamespacePath::root()
+                };
+                rules.push(ExportRule {
+                    symbols,
+                    target,
+                    span,
+                });
             }
-            self.expect(Token::RBrace)?;
         } else {
+            // Unbraced export:
+            // export add, sub to .math
+            let mut symbols = Vec::new();
             while !self.is(Token::To) && !self.is(Token::Eof) {
                 symbols.push(self.expect_field_name()?);
                 self.skip_newlines();
@@ -1220,16 +1299,26 @@ impl Parser {
                     self.skip_newlines();
                 }
             }
+            self.skip_newlines();
+            self.expect(Token::To)?;
+            let target = self.parse_namespace_path()?;
+            rules.push(ExportRule {
+                symbols,
+                target,
+                span,
+            });
         }
-        self.skip_newlines();
-        self.expect(Token::To)?;
-        let target = self.parse_namespace_path()?;
+
         self.consume_optional_newline();
-        Ok(ExportRule {
-            symbols,
-            target,
-            span,
-        })
+        Ok(rules)
+    }
+
+    pub fn parse_export_rule(&mut self) -> Result<ExportRule, String> {
+        let rules = self.parse_export_directive()?;
+        rules
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty export directive".to_string())
     }
 
     pub fn parse_import_directive(&mut self) -> Result<Vec<NamespacePath>, String> {
@@ -1255,16 +1344,15 @@ impl Parser {
         Ok(imports)
     }
 
-    pub fn parse_file_declarations(
-        &mut self,
-        file_path: &str,
-    ) -> Result<ParsedFile, String> {
+    pub fn parse_file_declarations(&mut self, file_path: &str) -> Result<ParsedFile, String> {
         let mut module_decl: Option<ModuleDecl> = None;
         let mut exports = Vec::new();
         let mut imports = Vec::new();
         let mut extern_functions = Vec::new();
         let mut definitions = Vec::new();
         let mut type_aliases = Vec::new();
+        let mut has_top_level_export = false;
+        let mut has_top_level_import = false;
 
         self.skip_newlines();
 
@@ -1278,6 +1366,12 @@ impl Parser {
                             file_path
                         ));
                     }
+                    if !exports.is_empty() || !imports.is_empty() {
+                        return Err(format!(
+                            "in '{}': exports and imports must be declared inside the 'decl mod' block",
+                            file_path
+                        ));
+                    }
                     self.advance(); // consume 'decl'
                     self.skip_newlines();
                     self.expect(Token::Mod)?;
@@ -1288,6 +1382,8 @@ impl Parser {
                     self.skip_newlines();
                     let mut decl_exports = Vec::new();
                     let mut decl_imports = Vec::new();
+                    let mut has_export = false;
+                    let mut has_import = false;
                     while !self.is(Token::RBrace) && !self.is(Token::Eof) {
                         self.skip_newlines();
                         if self.is(Token::RBrace) {
@@ -1295,10 +1391,24 @@ impl Parser {
                         }
                         match self.peek() {
                             Token::Export => {
-                                let rule = self.parse_export_rule()?;
-                                decl_exports.push(rule);
+                                if has_export {
+                                    return Err(format!(
+                                        "in '{}': module '{}' cannot have more than one export statement",
+                                        file_path, name
+                                    ));
+                                }
+                                has_export = true;
+                                let mut rules = self.parse_export_directive()?;
+                                decl_exports.append(&mut rules);
                             }
                             Token::Import => {
+                                if has_import {
+                                    return Err(format!(
+                                        "in '{}': module '{}' cannot have more than one import statement",
+                                        file_path, name
+                                    ));
+                                }
+                                has_import = true;
                                 let mut imps = self.parse_import_directive()?;
                                 decl_imports.append(&mut imps);
                             }
@@ -1358,8 +1468,15 @@ impl Parser {
                             file_path, name, name
                         ));
                     }
-                    let rule = self.parse_export_rule()?;
-                    exports.push(rule);
+                    if has_top_level_export {
+                        return Err(format!(
+                            "in '{}': cannot have more than one export statement per module",
+                            file_path
+                        ));
+                    }
+                    has_top_level_export = true;
+                    let mut rules = self.parse_export_directive()?;
+                    exports.append(&mut rules);
                 }
                 Token::Import => {
                     if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
@@ -1374,6 +1491,13 @@ impl Parser {
                             file_path, name, name
                         ));
                     }
+                    if has_top_level_import {
+                        return Err(format!(
+                            "in '{}': cannot have more than one import statement per module",
+                            file_path
+                        ));
+                    }
+                    has_top_level_import = true;
                     let mut imps = self.parse_import_directive()?;
                     imports.append(&mut imps);
                 }
@@ -1385,7 +1509,10 @@ impl Parser {
                     self.advance(); // consume 'meta'
                     self.skip_newlines();
                     if !self.is(Token::FnKeyword) {
-                        return Err(format!("expected 'fn' after 'meta', found {:?}", self.peek()));
+                        return Err(format!(
+                            "expected 'fn' after 'meta', found {:?}",
+                            self.peek()
+                        ));
                     }
                     let mut def = self.parse_fn_definition()?;
                     def.is_meta = true;
@@ -1444,7 +1571,10 @@ impl Parser {
                         if self.is(Token::Colon) || self.is(Token::ColonColon) {
                             self.advance();
                         } else {
-                            return Err(format!("expected ':' after parameter name, found {:?}", self.peek()));
+                            return Err(format!(
+                                "expected ':' after parameter name, found {:?}",
+                                self.peek()
+                            ));
                         }
                         self.skip_newlines();
                         let ty = self.parse_type()?;
@@ -1496,7 +1626,12 @@ impl Parser {
             self.skip_newlines();
         }
 
-        if let Some(ModuleDecl::Declaration { exports: ref decl_exports, imports: ref mut decl_imports, .. }) = module_decl {
+        if let Some(ModuleDecl::Declaration {
+            exports: ref decl_exports,
+            imports: ref mut decl_imports,
+            ..
+        }) = module_decl
+        {
             if !decl_imports.contains(&NamespacePath::root()) {
                 decl_imports.insert(0, NamespacePath::root());
             }
@@ -1535,7 +1670,10 @@ impl Parser {
             if self.is(Token::Colon) || self.is(Token::ColonColon) {
                 self.advance();
             } else {
-                return Err(format!("expected ':' after parameter name, found {:?}", self.peek()));
+                return Err(format!(
+                    "expected ':' after parameter name, found {:?}",
+                    self.peek()
+                ));
             }
             self.skip_newlines();
             let ty = self.parse_type()?;
@@ -1928,7 +2066,8 @@ impl Parser {
                         idx += 1;
                     }
                     return idx < self.tokens.len()
-                        && (self.tokens[idx] == Token::Colon || self.tokens[idx] == Token::ColonColon);
+                        && (self.tokens[idx] == Token::Colon
+                            || self.tokens[idx] == Token::ColonColon);
                 }
                 _ => {}
             }
@@ -2048,7 +2187,10 @@ impl Parser {
                         if self.is(Token::Colon) || self.is(Token::ColonColon) {
                             self.advance();
                         } else {
-                            return Err(format!("expected ':' after field name, found {:?}", self.peek()));
+                            return Err(format!(
+                                "expected ':' after field name, found {:?}",
+                                self.peek()
+                            ));
                         }
                         self.skip_newlines();
                         let ty = self.parse_type()?;
@@ -2608,7 +2750,10 @@ impl Parser {
                     if self.is(Token::Colon) || self.is(Token::ColonColon) {
                         self.advance();
                     } else {
-                        return Err(format!("expected ':' after field name, found {:?}", self.peek()));
+                        return Err(format!(
+                            "expected ':' after field name, found {:?}",
+                            self.peek()
+                        ));
                     }
                     self.skip_newlines();
                     let ty = self.parse_type()?;
