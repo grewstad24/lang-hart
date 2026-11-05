@@ -237,32 +237,15 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
     }
 }
 
-fn extract_type_argument(arg: &Expression, scope: &ModuleScope) -> Result<Type, String> {
+fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type, String> {
     match arg {
-        Expression::Spanned { expression, .. } => extract_type_argument(expression, scope),
+        Expression::Spanned { expression, .. } => extract_type_argument(expression, _scope),
         Expression::Type(ty) => Ok(ty.clone()),
-        Expression::Identifier(name) => {
-            if scope.lookup_type_alias(name).is_some() {
-                Ok(Type::Alias(name.clone()))
-            } else {
-                match name.as_str() {
-                    "bool" => Ok(Type::Bool),
-                    "u8" => Ok(Type::U8),
-                    "u16" => Ok(Type::U16),
-                    "u32" => Ok(Type::U32),
-                    "u64" => Ok(Type::U64),
-                    "usize" => Ok(Type::USize),
-                    "s16" => Ok(Type::S16),
-                    "s32" => Ok(Type::S32),
-                    "s64" => Ok(Type::S64),
-                    "ssize" => Ok(Type::SSize),
-                    "never" => Ok(Type::Never),
-                    "opaque" => Ok(Type::Opaque),
-                    _ => Ok(Type::Alias(name.clone())),
-                }
-            }
-        }
-        _ => Err(format!("expected type argument, found {:?}", arg)),
+        Expression::Identifier(name) => Err(format!(
+            "expected explicit 'type' keyword before type argument, found '{}' (use 'type {}')",
+            name, name
+        )),
+        _ => Err("expected explicit 'type' keyword for type argument (e.g. 'type s32')".to_string()),
     }
 }
 

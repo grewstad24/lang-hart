@@ -628,17 +628,34 @@ impl Lexer {
                     } else if self.peek_char(1) == Some('=') {
                         self.position += 2;
                         tokens.push(Token::ColonEqual);
-                    } else if let Some(c) = self.peek_char(1) {
-                        if c.is_alphabetic() || c == '_' {
+                    } else {
+                        let is_atom = if let Some(c) = self.peek_char(1) {
+                            if c.is_alphabetic() || c == '_' {
+                                let prev_is_identifier = tokens.last().map_or(false, |tok| {
+                                    matches!(
+                                        tok,
+                                        Token::Identifier(_)
+                                            | Token::Val
+                                            | Token::Var
+                                            | Token::TypeKeyword
+                                            | Token::RParen
+                                            | Token::RBracket
+                                    )
+                                });
+                                !prev_is_identifier
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        if is_atom {
                             tokens.push(self.lex_atom()?);
                         } else {
-                            return Err(format!(
-                                "expected atom identifier after ':', found '{}'",
-                                c
-                            ));
+                            self.position += 1;
+                            tokens.push(Token::Colon);
                         }
-                    } else {
-                        return Err("unexpected ':' at end of file".to_string());
                     }
                 }
                 ',' => {
@@ -1404,7 +1421,11 @@ impl Parser {
                         }
 
                         let param_name = self.expect_field_name()?;
-                        self.expect(Token::ColonColon)?;
+                        if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                            self.advance();
+                        } else {
+                            return Err(format!("expected ':' after parameter name, found {:?}", self.peek()));
+                        }
                         self.skip_newlines();
                         let ty = self.parse_type()?;
                         parameters.push(Parameter {
@@ -1491,7 +1512,11 @@ impl Parser {
         let mut parameters = Vec::new();
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
             let param_name = self.expect_field_name()?;
-            self.expect(Token::ColonColon)?;
+            if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                self.advance();
+            } else {
+                return Err(format!("expected ':' after parameter name, found {:?}", self.peek()));
+            }
             self.skip_newlines();
             let ty = self.parse_type()?;
             parameters.push(Parameter {
@@ -1878,7 +1903,8 @@ impl Parser {
                     while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
                         idx += 1;
                     }
-                    return idx < self.tokens.len() && self.tokens[idx] == Token::ColonColon;
+                    return idx < self.tokens.len()
+                        && (self.tokens[idx] == Token::Colon || self.tokens[idx] == Token::ColonColon);
                 }
                 _ => {}
             }
@@ -1993,7 +2019,11 @@ impl Parser {
                     let mut fields = Vec::new();
                     while !self.is(Token::RParen) && !self.is(Token::Eof) {
                         let field_name = self.expect_field_name()?;
-                        self.expect(Token::ColonColon)?;
+                        if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                            self.advance();
+                        } else {
+                            return Err(format!("expected ':' after field name, found {:?}", self.peek()));
+                        }
                         self.skip_newlines();
                         let ty = self.parse_type()?;
                         fields.push(StructFieldType {
@@ -2018,33 +2048,15 @@ impl Parser {
                 }
             }
             Token::LBracket => {
-                let is_slice_type = self.cursor + 1 < self.tokens.len()
-                    && self.tokens[self.cursor + 1] == Token::RBracket
-                    && self.cursor + 2 < self.tokens.len()
-                    && matches!(
-                        &self.tokens[self.cursor + 2],
-                        Token::Identifier(_)
-                            | Token::TypeS16
-                            | Token::TypeS32
-                            | Token::TypeS64
-                            | Token::TypeU8
-                            | Token::TypeU16
-                            | Token::TypeU32
-                            | Token::TypeU64
-                            | Token::TypeUSize
-                            | Token::TypeSSize
-                            | Token::TypeBool
-                            | Token::TypeOpaque
-                            | Token::Star
-                    );
-                if is_slice_type {
-                    let ty = self.parse_single_type()?;
-                    Ok(Expression::Type(ty))
-                } else {
-                    self.advance();
-                    let elements = self.parse_argument_list(Token::RBracket)?;
-                    Ok(Expression::Array(elements))
-                }
+                self.advance();
+                let elements = self.parse_argument_list(Token::RBracket)?;
+                Ok(Expression::Array(elements))
+            }
+            Token::TypeKeyword => {
+                self.advance();
+                self.skip_newlines();
+                let ty = self.parse_type()?;
+                Ok(Expression::Type(ty))
             }
             Token::TypeS16
             | Token::TypeS32
@@ -2056,10 +2068,12 @@ impl Parser {
             | Token::TypeUSize
             | Token::TypeSSize
             | Token::TypeBool
-            | Token::TypeOpaque
-            | Token::Star => {
-                let ty = self.parse_single_type()?;
-                Ok(Expression::Type(ty))
+            | Token::TypeOpaque => {
+                let tok = self.peek().clone();
+                return Err(format!(
+                    "unexpected type token '{:?}' in expression position; pass types explicitly using 'type <Type>' (e.g. 'type s32')",
+                    tok
+                ));
             }
             Token::LBrace => self.parse_block(),
             Token::If => self.parse_if_expression(),
@@ -2067,9 +2081,9 @@ impl Parser {
             Token::Let => {
                 self.advance();
                 let name = self.expect_identifier()?;
-                if self.is(Token::ColonColon) {
+                if self.is(Token::Colon) || self.is(Token::ColonColon) {
                     return Err(format!(
-                        "constants cannot be declared without an initialiser: 'let {} :: ...' is prohibited, use 'let {} := <value>'",
+                        "constants cannot be declared without an initialiser: 'let {} : ...' is prohibited, use 'let {} := <value>'",
                         name, name
                     ));
                 }
@@ -2084,7 +2098,7 @@ impl Parser {
             Token::Var => {
                 self.advance();
                 let name = self.expect_identifier()?;
-                if self.is(Token::ColonColon) {
+                if self.is(Token::Colon) || self.is(Token::ColonColon) {
                     self.advance();
                     self.skip_newlines();
                     let ty = self.parse_type()?;
@@ -2111,7 +2125,7 @@ impl Parser {
                     })
                 } else {
                     Err(format!(
-                        "expected '::' or ':=' after 'var {}', found {:?}",
+                        "expected ':' or ':=' after 'var {}', found {:?}",
                         name,
                         self.peek()
                     ))
@@ -2312,15 +2326,26 @@ impl Parser {
 
     pub fn parse_type(&mut self) -> Result<Type, String> {
         let first = self.parse_single_type()?;
-        self.skip_newlines();
 
-        if self.is(Token::Pipe) {
+        let mut idx = self.cursor;
+        while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
+            idx += 1;
+        }
+
+        if idx < self.tokens.len() && self.tokens[idx] == Token::Pipe {
+            self.skip_newlines();
             let mut variants = vec![first];
             while self.is(Token::Pipe) {
                 self.advance();
                 self.skip_newlines();
                 variants.push(self.parse_single_type()?);
-                self.skip_newlines();
+                let mut next_idx = self.cursor;
+                while next_idx < self.tokens.len() && self.tokens[next_idx] == Token::Newline {
+                    next_idx += 1;
+                }
+                if next_idx < self.tokens.len() && self.tokens[next_idx] == Token::Pipe {
+                    self.skip_newlines();
+                }
             }
             Ok(Type::Union(variants))
         } else {
@@ -2437,7 +2462,11 @@ impl Parser {
                 let mut fields = Vec::new();
                 while !self.is(Token::RParen) && !self.is(Token::Eof) {
                     let field_name = self.expect_field_name()?;
-                    self.expect(Token::ColonColon)?;
+                    if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                        self.advance();
+                    } else {
+                        return Err(format!("expected ':' after field name, found {:?}", self.peek()));
+                    }
                     self.skip_newlines();
                     let ty = self.parse_type()?;
                     fields.push(StructFieldType {

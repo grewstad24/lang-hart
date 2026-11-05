@@ -1,7 +1,31 @@
+import { .print, .alloc }
+
 fn main() -> :none {
-        let num := heap_new(s32, 5)
+        var x: s32
+
+        let num := heap_new(type s32, 5)
         println(num.*)
 
         num.* := 42
         println(num.*)
+
+        # this is a struct
+        (
+                name := "bob"
+                age := 56
+                details := (
+                        friend := "alice"
+                        adult := true
+                )
+        )
+
+        # this is a record, notice how it can be instantly printed
+        @record (
+                name := "bob"
+                age := 56
+                details := (
+                        friend := "alice"
+                        adult := true
+                )
+        ) ..print()
 }

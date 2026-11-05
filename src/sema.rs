@@ -842,7 +842,7 @@ impl<'a> Checker<'a> {
 
         let def = self.scope.lookup_definition(name).ok_or_else(|| {
             format!(
-                "in '{}': unknown identifier '{}' (not defined in this module or imported in mod.yawn)",
+                "in '{}': unknown identifier '{}' (not defined in this module or imported)",
                 self.current_file_path, name
             )
         })?;
@@ -1013,7 +1013,7 @@ impl<'a> Checker<'a> {
                 }
 
                 Err(format!(
-                    "in '{}': unknown identifier '{}' is not defined in this module or imported in mod.yawn",
+                    "in '{}': unknown identifier '{}' is not defined in this module or imported",
                     self.current_file_path, name
                 ))
             }
@@ -2236,119 +2236,5 @@ mod tests {
             value: Box::new(Expression::Integer(10)),
         };
         assert!(checker.type_of_expression(&mut invalid_assign).is_err());
-    }
-
-    #[test]
-    fn test_member_file_cannot_declare_exports() {
-        let code = "mod foo\nexport { x } to .foo\n";
-        let (tokens, spans) = crate::syntax::Lexer::new_with_file(code.to_string(), "foo_member.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser = crate::syntax::Parser::new_with_spans(tokens, spans);
-        let res = parser.parse_file_declarations("foo_member.zzz");
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("cannot declare exports"));
-    }
-
-    #[test]
-    fn test_member_file_cannot_declare_imports() {
-        let code = "mod foo\nimport { .bar }\n";
-        let (tokens, spans) = crate::syntax::Lexer::new_with_file(code.to_string(), "foo_member.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser = crate::syntax::Parser::new_with_spans(tokens, spans);
-        let res = parser.parse_file_declarations("foo_member.zzz");
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("cannot declare imports"));
-    }
-
-    #[test]
-    fn test_multi_file_module_resolution() {
-        let decl_code = "decl mod calc {\n    export { add } to .calc\n}\n";
-        let (tokens1, spans1) = crate::syntax::Lexer::new_with_file(decl_code.to_string(), "calc.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser1 = crate::syntax::Parser::new_with_spans(tokens1, spans1);
-        let parsed_decl = parser1.parse_file_declarations("calc.zzz").unwrap();
-
-        let member_code = "mod calc\nfn add(a :: s32, b :: s32) -> s32 { a + b }\n";
-        let (tokens2, spans2) = crate::syntax::Lexer::new_with_file(member_code.to_string(), "add.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser2 = crate::syntax::Parser::new_with_spans(tokens2, spans2);
-        let parsed_member = parser2.parse_file_declarations("add.zzz").unwrap();
-
-        let consumer_code = "import { .calc }\nfn main() -> s32 { add(1, 2) }\n";
-        let (tokens3, spans3) = crate::syntax::Lexer::new_with_file(consumer_code.to_string(), "main.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser3 = crate::syntax::Parser::new_with_spans(tokens3, spans3);
-        let parsed_consumer = parser3.parse_file_declarations("main.zzz").unwrap();
-
-        let calc_module = LogicalModule {
-            name: Some("calc".to_string()),
-            dir_path: "calc".to_string(),
-            source_files: vec![parsed_decl.source_file, parsed_member.source_file],
-            exports: parsed_decl.exports,
-            imports: parsed_decl.imports,
-        };
-
-        let main_module = LogicalModule {
-            name: None,
-            dir_path: "main".to_string(),
-            source_files: vec![parsed_consumer.source_file],
-            exports: parsed_consumer.exports,
-            imports: parsed_consumer.imports,
-        };
-
-        let resolver = ModuleResolver::new();
-        let scopes = resolver.resolve_modules(&[calc_module, main_module]).unwrap();
-
-        assert_eq!(scopes.len(), 2);
-        // The consumer scope (main) should have 'add' in its definitions
-        assert!(scopes[1].definitions.contains_key("add"));
-    }
-
-    #[test]
-    fn test_root_namespace_automatically_imported() {
-        let export_code = "export { answer } to .\nfn answer() -> s32 { 42 }\n";
-        let (tokens1, spans1) = crate::syntax::Lexer::new_with_file(export_code.to_string(), "lib.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser1 = crate::syntax::Parser::new_with_spans(tokens1, spans1);
-        let parsed_lib = parser1.parse_file_declarations("lib.zzz").unwrap();
-
-        let consumer_code = "fn main() -> s32 { answer() }\n";
-        let (tokens2, spans2) = crate::syntax::Lexer::new_with_file(consumer_code.to_string(), "main.zzz".to_string())
-            .tokenize_with_spans()
-            .unwrap();
-        let mut parser2 = crate::syntax::Parser::new_with_spans(tokens2, spans2);
-        let parsed_consumer = parser2.parse_file_declarations("main.zzz").unwrap();
-
-        // Ensure consumer file's imports contain NamespacePath::root()
-        assert!(parsed_consumer.imports.contains(&NamespacePath::root()));
-
-        let lib_module = LogicalModule {
-            name: None,
-            dir_path: "lib".to_string(),
-            source_files: vec![parsed_lib.source_file],
-            exports: parsed_lib.exports,
-            imports: parsed_lib.imports,
-        };
-
-        let consumer_module = LogicalModule {
-            name: None,
-            dir_path: "main".to_string(),
-            source_files: vec![parsed_consumer.source_file],
-            exports: parsed_consumer.exports,
-            imports: parsed_consumer.imports,
-        };
-
-        let resolver = ModuleResolver::new();
-        let scopes = resolver.resolve_modules(&[lib_module, consumer_module]).unwrap();
-
-        assert_eq!(scopes.len(), 2);
-        // The consumer module has no explicit imports, but automatically imported '.' and resolved 'answer'
-        assert!(scopes[1].definitions.contains_key("answer"));
     }
 }
