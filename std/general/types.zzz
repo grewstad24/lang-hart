@@ -1,10 +1,16 @@
-export { String, Integer, Record, Generic } to .
+export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic } to .
 
 
 type String := []u8
 
 
 type Integer := u16 | u32 | u64 | s16 | s32 | s64
+
+
+type SignedInteger := s16 | s32 | s64
+
+
+type UnsignedInteger := u16 | u32 | u64
 
 
 type Record := *(

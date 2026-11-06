@@ -15,7 +15,8 @@ type Printable := String | Integer | :nl | :t | bool | []Printable | Record
 fn print( x: Printable ) -> :none {
       match x using z {
             String => print_string(z)
-            Integer => print_int(z)
+            SignedInteger => print_sint(z)
+            UnsignedInteger => print_uint(z)
             :nl => pr_nl()
             :t => pr_tab()
             []Printable => printa(z)

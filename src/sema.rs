@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit, StructFieldType, Type, TypeAlias,
-    UnaryOperator, format_error, unspanned_expression_mut,
+    MatchArm, NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit,
+    StructFieldType, Type, TypeAlias, UnaryOperator, format_error, unspanned_expression_mut,
 };
 
 fn expression_span(expression: &Expression) -> Option<&Span> {
@@ -384,6 +384,7 @@ pub struct Checker<'a> {
     local_scopes: Vec<HashMap<String, BindingInfo>>,
     atom_table: HashMap<String, u32>,
     current_function_return_type: Option<Type>,
+    counter: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -393,6 +394,34 @@ impl<'a> Checker<'a> {
 
     pub fn record_type() -> Type {
         Type::Alias("Record".to_string())
+    }
+
+    pub fn find_target_member_for_downcast(
+        source_variant: &Type,
+        target_members: &[Type],
+        aliases: &HashMap<String, Type>,
+    ) -> Option<Type> {
+        if let Some(target) = target_members.iter().find(|t| *t == source_variant) {
+            return Some(target.clone());
+        }
+
+        let compatible_matches: Vec<&Type> = target_members
+            .iter()
+            .filter(|target| Self::types_compatible_with_aliases(source_variant, target, aliases))
+            .collect();
+        if !compatible_matches.is_empty() {
+            return Some(compatible_matches[0].clone());
+        }
+
+        let cast_matches: Vec<&Type> = target_members
+            .iter()
+            .filter(|target| Self::is_supported_cast_with_aliases(source_variant, target, aliases))
+            .collect();
+        if !cast_matches.is_empty() {
+            return Some(cast_matches[0].clone());
+        }
+
+        None
     }
 
     pub fn new(scope: &'a ModuleScope) -> Self {
@@ -407,6 +436,7 @@ impl<'a> Checker<'a> {
             local_scopes: Vec::new(),
             atom_table: HashMap::new(),
             current_function_return_type: None,
+            counter: 0,
         };
 
         checker.predeclare_scope_signatures();
@@ -1642,11 +1672,95 @@ impl<'a> Checker<'a> {
                 Ok(Type::Bool)
             }
 
-            Expression::Cast { expression, ty } => {
-                let raw_source = self.type_of_expression(expression)?;
-                let source_type = self.resolve_type(&raw_source)?;
-                let resolved_target = self.resolve_type(ty)?;
-                *ty = resolved_target.clone();
+            Expression::Cast { .. } => {
+                let (source_type, resolved_target, desugar_info) = {
+                    let Expression::Cast {
+                        expression: inner_expr,
+                        ty,
+                    } = expression
+                    else {
+                        unreachable!()
+                    };
+                    let raw_source = self.type_of_expression(inner_expr)?;
+                    let source_type = self.resolve_type(&raw_source)?;
+                    let resolved_target = self.resolve_type(ty)?;
+                    *ty = resolved_target.clone();
+
+                    let desugar_info = if let Type::Union(source_variants) = &source_type {
+                        if &source_type != &resolved_target {
+                            let target_members: Vec<Type> = match &resolved_target {
+                                Type::Union(members) => members.clone(),
+                                scalar => vec![scalar.clone()],
+                            };
+                            let aliases = self.alias_targets();
+                            let mut arm_mappings = Vec::with_capacity(source_variants.len());
+                            for s_v in source_variants {
+                                if let Some(target_member) = Self::find_target_member_for_downcast(
+                                    s_v,
+                                    &target_members,
+                                    &aliases,
+                                ) {
+                                    arm_mappings.push((s_v.clone(), target_member));
+                                } else {
+                                    return Err(format!(
+                                        "in '{}': unsupported cast from {:?} to {:?}",
+                                        self.current_file_path, source_type, resolved_target
+                                    ));
+                                }
+                            }
+                            Some(arm_mappings)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    (source_type, resolved_target, desugar_info)
+                };
+
+                if let Some(arm_mappings) = desugar_info {
+                    self.counter += 1;
+                    let binding_name = format!("__z{}", self.counter);
+                    let mut arms = Vec::with_capacity(arm_mappings.len());
+                    for (s_v, t_m) in arm_mappings {
+                        let body = if t_m == resolved_target {
+                            Box::new(Expression::Cast {
+                                expression: Box::new(Expression::Identifier(binding_name.clone())),
+                                ty: resolved_target.clone(),
+                            })
+                        } else {
+                            Box::new(Expression::Cast {
+                                expression: Box::new(Expression::Cast {
+                                    expression: Box::new(Expression::Identifier(
+                                        binding_name.clone(),
+                                    )),
+                                    ty: t_m,
+                                }),
+                                ty: resolved_target.clone(),
+                            })
+                        };
+                        arms.push(MatchArm {
+                            variant_type: Some(s_v),
+                            body,
+                        });
+                    }
+
+                    let orig_inner = match std::mem::replace(expression, Expression::Boolean(false))
+                    {
+                        Expression::Cast { expression: inner, .. } => inner,
+                        _ => unreachable!(),
+                    };
+
+                    *expression = Expression::Match {
+                        target: orig_inner,
+                        binding_name,
+                        arms,
+                    };
+
+                    return self.type_of_expression(expression);
+                }
+
                 if !Self::is_supported_cast_with_aliases(
                     &source_type,
                     &resolved_target,
@@ -2082,15 +2196,16 @@ impl<'a> Checker<'a> {
                     source => std::slice::from_ref(source),
                 };
                 return source_variants.iter().all(|source| {
-                    Checker::castable_union_variant_with_aliases(source, target_variants, aliases)
-                        .is_some()
+                    target_variants.iter().any(|target| {
+                        supported(source, target, aliases, visited)
+                    })
                 });
             }
 
             if let Type::Union(variants) = source {
                 return variants
                     .iter()
-                    .any(|variant| supported(variant, target, aliases, visited));
+                    .all(|variant| supported(variant, target, aliases, visited));
             }
 
             match (source, target) {

@@ -2696,15 +2696,6 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
 
             self.builder.position_at_end(fail_bb);
-            let trap_fn = if let Some(f) = self.module.get_function("llvm.trap") {
-                f
-            } else {
-                let fn_ty = self.context.void_type().fn_type(&[], false);
-                self.module.add_function("llvm.trap", fn_ty, None)
-            };
-            self.builder
-                .build_call(trap_fn, &[], "")
-                .map_err(|e| e.to_string())?;
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;

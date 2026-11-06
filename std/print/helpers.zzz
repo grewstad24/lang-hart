@@ -16,15 +16,13 @@ fn pr_tab() -> :none {
 }
 
 
-fn print_int( num: Integer ) -> :none {
-      match num using z {
-            s32 => printf("%d".ptr, z)
-            s16 => printf("%d".ptr, z as s32)
-            s64 => printf("%lld".ptr, z)
-            u16 => printf("%u".ptr, z as u32)
-            u32 => printf("%u".ptr, z)
-            u64 => printf("%llu".ptr, z)
-      }
+fn print_sint( num: SignedInteger ) -> :none {
+      printf("%lld".ptr, num as s64)
+}
+
+
+fn print_uint( num: UnsignedInteger ) -> :none {
+      printf("%llu".ptr, num as u64)
 }
 
 

@@ -11,6 +11,8 @@ fn main() -> :none {
             }
       }
 
+      print(:nl)
+
       @record (
             name := "bob"
             age := 50
@@ -18,5 +20,5 @@ fn main() -> :none {
                   friend := "alice"
                   adult := true
             )
-      )
+      ) ..print()
 }
