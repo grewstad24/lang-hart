@@ -18,5 +18,5 @@ fn main() -> :none {
                   friend := "alice"
                   adult := true
             )
-      ) ..print()
+      )
 }

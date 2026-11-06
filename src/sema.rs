@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldType, Type, TypeAlias,
+    NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit, StructFieldType, Type, TypeAlias,
     UnaryOperator, format_error, unspanned_expression_mut,
 };
 
@@ -633,6 +633,30 @@ impl<'a> Checker<'a> {
         Ok(Type::Union(non_never))
     }
 
+    fn check_struct_fields(
+        &mut self,
+        fields: &mut [StructFieldInit],
+    ) -> Result<Vec<StructFieldType>, String> {
+        let mut struct_fields = Vec::with_capacity(fields.len());
+        let mut seen_fields = HashSet::new();
+
+        for field in fields {
+            if !seen_fields.insert(field.name.clone()) {
+                return Err(format!(
+                    "in '{}': duplicate field '@{}' in struct literal",
+                    self.current_file_path, field.name
+                ));
+            }
+            let field_ty = self.type_of_expression(&mut field.value)?;
+            struct_fields.push(StructFieldType {
+                name: field.name.clone(),
+                ty: field_ty,
+            });
+        }
+
+        Ok(struct_fields)
+    }
+
     fn coerce_expression_to_type(
         &mut self,
         expr: &mut Expression,
@@ -930,31 +954,15 @@ impl<'a> Checker<'a> {
             }),
 
             Expression::Struct(fields) => {
-                let mut struct_fields = Vec::with_capacity(fields.len());
-                let mut seen_fields = HashSet::new();
-
-                for field in fields {
-                    if !seen_fields.insert(field.name.clone()) {
-                        return Err(format!(
-                            "in '{}': duplicate field '@{}' in struct literal",
-                            self.current_file_path, field.name
-                        ));
-                    }
-                    let field_ty = self.type_of_expression(&mut field.value)?;
-                    struct_fields.push(StructFieldType {
-                        name: field.name.clone(),
-                        ty: field_ty,
-                    });
-                }
-
+                let struct_fields = self.check_struct_fields(fields)?;
                 Ok(Type::Struct(struct_fields))
             }
 
             Expression::Record(fields) => {
+                let struct_fields = self.check_struct_fields(fields)?;
                 let generic_type = self.resolve_type(&Self::generic_type())?;
-                for field in fields {
-                    let field_type = self.type_of_expression(&mut field.value)?;
-                    let resolved_field_type = self.resolve_type(&field_type)?;
+                for (field, struct_field) in fields.iter_mut().zip(struct_fields.iter()) {
+                    let resolved_field_type = self.resolve_type(&struct_field.ty)?;
                     let coerced_type = self.coerce_expression_to_type(
                         &mut field.value,
                         &resolved_field_type,

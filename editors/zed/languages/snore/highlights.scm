@@ -92,7 +92,7 @@
 
 (boolean_literal) @constant.builtin.boolean
 
-(atom_literal) @attribute
+(atom_literal) @constant
 
 (string_literal) @string
 
