@@ -1,0 +1,83 @@
+==================
+Loops and Matches
+==================
+
+fn main() -> :none {
+    let arr := [1, 2, 3]
+
+    for arr using elem {
+        print(elem)
+    }
+
+    repeat 10 using i {
+        print(i)
+    }
+
+    match x using z {
+        s32 => print("int")
+        else => print("other")
+    }
+
+    switch y {
+        1 => print("one")
+        else => print("other")
+    }
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list)
+    return_type: (atom_literal)
+    body: (block
+      (let_declaration
+        name: (identifier)
+        value: (array_literal
+          (integer_literal)
+          (integer_literal)
+          (integer_literal)))
+      (for_expression
+        iterable: (identifier)
+        binder: (identifier)
+        body: (block
+          (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (identifier)))))
+      (repeat_expression
+        count: (integer_literal)
+        binder: (identifier)
+        body: (block
+          (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (identifier)))))
+      (match_expression
+        value: (identifier)
+        binder: (identifier)
+        (match_arm
+          pattern: (primitive_type)
+          body: (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (string_literal))))
+        (match_arm
+          body: (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (string_literal)))))
+      (switch_expression
+        value: (identifier)
+        (switch_arm
+          value: (integer_literal)
+          body: (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (string_literal))))
+        (switch_arm
+          body: (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (string_literal))))))))

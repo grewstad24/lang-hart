@@ -26,4 +26,8 @@ fn main() -> :none {
       println(ptr.*)
       ptr.* := 7
       println(ptr.*)
+
+      match alloc_resizeable_array(type s32, 10 as usize) using z {
+            ResizeableArray<s32> => println(z.arr)
+      }
 }

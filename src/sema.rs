@@ -25,6 +25,7 @@ pub struct ModuleScope {
     pub definitions: HashMap<String, SymbolProvenance<Definition>>,
     pub extern_functions: HashMap<String, SymbolProvenance<ExternalFunction>>,
     pub type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
+    pub home_type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
     pub exported_symbols: HashSet<String>,
 }
 
@@ -35,6 +36,7 @@ impl ModuleScope {
             definitions: HashMap::new(),
             extern_functions: HashMap::new(),
             type_aliases: HashMap::new(),
+            home_type_aliases: HashMap::new(),
             exported_symbols: HashSet::new(),
         }
     }
@@ -61,6 +63,7 @@ struct ExportRegistry {
     definitions: HashMap<String, SymbolProvenance<Definition>>,
     extern_functions: HashMap<String, SymbolProvenance<ExternalFunction>>,
     type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
+    home_type_aliases: HashMap<String, SymbolProvenance<TypeAlias>>,
 }
 
 pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAlias>) -> Type {
@@ -142,6 +145,19 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
                     is_variadic: *is_variadic,
                 }
             }
+            Type::GenericInstance {
+                name,
+                type_arguments,
+            } => {
+                let new_args = type_arguments
+                    .iter()
+                    .map(|a| expand(a, aliases, visited))
+                    .collect();
+                Type::GenericInstance {
+                    name: name.clone(),
+                    type_arguments: new_args,
+                }
+            }
             other => other.clone(),
         }
     }
@@ -174,6 +190,18 @@ impl ModuleResolver {
                     .namespace_registry
                     .entry(target_ns.clone())
                     .or_default();
+
+                for file in &module.source_files {
+                    for alias in &file.type_aliases {
+                        registry.home_type_aliases.insert(
+                            alias.name.clone(),
+                            SymbolProvenance {
+                                item: alias.clone(),
+                                originating_file: file.file_path.clone(),
+                            },
+                        );
+                    }
+                }
 
                 for sym in &export_rule.symbols {
                     let mut found_def = None;
@@ -353,6 +381,11 @@ impl ModuleResolver {
                             scope.type_aliases.insert(name.clone(), prov.clone());
                         }
                     }
+                    for (name, prov) in &exported.home_type_aliases {
+                        if !scope.home_type_aliases.contains_key(name) {
+                            scope.home_type_aliases.insert(name.clone(), prov.clone());
+                        }
+                    }
                 }
             }
 
@@ -478,6 +511,17 @@ impl<'a> Checker<'a> {
             Type::SSize => "08a_ssize".to_string(),
             Type::Atom(name) => format!("09_atom_{}", name),
             Type::Alias(name) => format!("10_alias_{}", name),
+            Type::GenericInstance {
+                name,
+                type_arguments,
+            } => {
+                let inner = type_arguments
+                    .iter()
+                    .map(Self::canonical_type_key)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("10_generic_{}<{}>", name, inner)
+            }
             Type::Pointer { element } => format!("11_ptr_{}", Self::canonical_type_key(element)),
             Type::Slice { element } => format!("12_slice_{}", Self::canonical_type_key(element)),
             Type::Array { element, size } => {
@@ -524,6 +568,41 @@ impl<'a> Checker<'a> {
         self.resolve_type_inner(ty, &mut visited, false)
     }
 
+    fn validate_user_type(&self, ty: &Type) -> Result<(), String> {
+        match ty {
+            Type::Alias(name) => {
+                if self.scope.lookup_type_alias(name).is_none() {
+                    return Err(format!(
+                        "in '{}': unknown type '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+                Ok(())
+            }
+            Type::Pointer { element } | Type::Slice { element } => self.validate_user_type(element),
+            Type::Array { element, .. } => self.validate_user_type(element),
+            Type::Union(variants) => {
+                for v in variants {
+                    self.validate_user_type(v)?;
+                }
+                Ok(())
+            }
+            Type::Struct(fields) => {
+                for f in fields {
+                    self.validate_user_type(&f.ty)?;
+                }
+                Ok(())
+            }
+            Type::GenericInstance { type_arguments, .. } => {
+                for arg in type_arguments {
+                    self.validate_user_type(arg)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn resolve_type_inner(
         &self,
         ty: &Type,
@@ -541,12 +620,36 @@ impl<'a> Checker<'a> {
                         self.current_file_path, name
                     ));
                 }
-                let alias = self.scope.lookup_type_alias(name).ok_or_else(|| {
-                    format!("in '{}': unknown type '{}'", self.current_file_path, name)
-                })?;
-                let resolved = self.resolve_type_inner(&alias.target, visited, indirect)?;
+                let target = self
+                    .scope
+                    .lookup_type_alias(name)
+                    .map(|a| &a.target)
+                    .or_else(|| self.scope.home_type_aliases.get(name).map(|p| &p.item.target))
+                    .ok_or_else(|| {
+                        format!("in '{}': unknown type '{}'", self.current_file_path, name)
+                    })?;
+                let resolved = self.resolve_type_inner(target, visited, indirect)?;
                 visited.remove(name);
                 Ok(resolved)
+            }
+            Type::GenericInstance {
+                name,
+                type_arguments,
+            } => {
+                let resolved_args: Vec<Type> = type_arguments
+                    .iter()
+                    .map(|arg| self.resolve_type_inner(arg, visited, indirect))
+                    .collect::<Result<_, _>>()?;
+                let mangled_suffix = resolved_args
+                    .iter()
+                    .map(crate::monomorphize::mangle_type)
+                    .collect::<Vec<_>>()
+                    .join("__");
+                let concrete_name = crate::monomorphize::sanitize_identifier(&format!(
+                    "{}__{}",
+                    name, mangled_suffix
+                ));
+                self.resolve_type_inner(&Type::Alias(concrete_name), visited, indirect)
             }
             Type::Struct(fields) => {
                 let resolved_fields = fields
@@ -745,6 +848,9 @@ impl<'a> Checker<'a> {
         self.current_file_path = file.file_path.clone();
 
         for alias in &mut file.type_aliases {
+            if alias.is_meta {
+                continue;
+            }
             let mut visited = HashSet::from([alias.name.clone()]);
             alias.target = self
                 .resolve_type_inner(&alias.target, &mut visited, false)
@@ -784,6 +890,7 @@ impl<'a> Checker<'a> {
             let mut seen_params = HashSet::new();
             self.enter_scope();
             for p in &mut sig.parameters {
+                self.validate_user_type(&p.ty)?;
                 if !seen_params.insert(p.name.clone()) {
                     self.exit_scope();
                     return Err(format!(
@@ -809,6 +916,7 @@ impl<'a> Checker<'a> {
                     },
                 );
             }
+            self.validate_user_type(&sig.return_type)?;
             let expected_return = self.resolve_type(sig.return_type.as_ref())?;
             *sig.return_type = expected_return.clone();
 
@@ -1151,6 +1259,7 @@ impl<'a> Checker<'a> {
                         ));
                     }
                     let final_ty = if let Some(annotated_ty) = ty {
+                        self.validate_user_type(annotated_ty)?;
                         let res_annotated = self.resolve_type(annotated_ty)?;
                         *annotated_ty = res_annotated.clone();
                         let coerced =
@@ -1174,6 +1283,7 @@ impl<'a> Checker<'a> {
                         },
                     );
                 } else if let Some(annotated_ty) = ty {
+                    self.validate_user_type(annotated_ty)?;
                     let resolved_ty = self.resolve_type(annotated_ty)?;
                     if resolved_ty == Type::Never {
                         return Err(format!(
@@ -1695,6 +1805,7 @@ impl<'a> Checker<'a> {
                     };
                     let raw_source = self.type_of_expression(inner_expr)?;
                     let source_type = self.resolve_type(&raw_source)?;
+                    self.validate_user_type(ty)?;
                     let resolved_target = self.resolve_type(ty)?;
                     *ty = resolved_target.clone();
 
@@ -1973,11 +2084,51 @@ impl<'a> Checker<'a> {
             },
 
             Expression::SizeOf(ty) => {
+                self.validate_user_type(ty)?;
                 let _ = self.resolve_type(ty);
                 Ok(Type::USize)
             }
 
-            Expression::Type(_) => Ok(Type::MetaType),
+            Expression::Slice(expr) => {
+                let ty = self.type_of_expression(expr)?;
+                let resolved = self.resolve_type(&ty)?;
+                match resolved {
+                    Type::Struct(fields) => {
+                        if fields.len() != 2 {
+                            return Err(format!(
+                                "in '{}': '@slice' requires a struct with 2 fields (matching slice layout *T, usize), found {} fields",
+                                self.current_file_path, fields.len()
+                            ));
+                        }
+                        let elem_ty = match self.resolve_type(&fields[0].ty)? {
+                            Type::Pointer { element } => *element,
+                            other => return Err(format!(
+                                "in '{}': '@slice' field 0 must be a pointer '*T', found {:?}",
+                                self.current_file_path, other
+                            )),
+                        };
+                        let len_ty = self.resolve_type(&fields[1].ty)?;
+                        if !matches!(len_ty, Type::USize) {
+                            return Err(format!(
+                                "in '{}': '@slice' field 1 must be 'usize', found {:?}",
+                                self.current_file_path, len_ty
+                            ));
+                        }
+                        Ok(Type::Slice {
+                            element: Box::new(elem_ty),
+                        })
+                    }
+                    other => Err(format!(
+                        "in '{}': '@slice' requires a struct, found {:?}",
+                        self.current_file_path, other
+                    )),
+                }
+            }
+
+            Expression::Type(ty) => {
+                self.validate_user_type(ty)?;
+                Ok(Type::MetaType)
+            }
         }
     }
 
@@ -1996,11 +2147,15 @@ impl<'a> Checker<'a> {
     }
 
     fn alias_targets(&self) -> HashMap<String, Type> {
-        self.scope
+        let mut map: HashMap<String, Type> = self.scope
             .type_aliases
             .iter()
             .map(|(name, provenance)| (name.clone(), provenance.item.target.clone()))
-            .collect()
+            .collect();
+        for (name, provenance) in &self.scope.home_type_aliases {
+            map.entry(name.clone()).or_insert_with(|| provenance.item.target.clone());
+        }
+        map
     }
 
     pub fn types_compatible_with_aliases(
@@ -2084,7 +2239,7 @@ impl<'a> Checker<'a> {
                     true
                 }
                 (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
-                    if **e2 == Type::Opaque {
+                    if **e1 == Type::Opaque || **e2 == Type::Opaque {
                         return true;
                     }
                     compatible(e1, e2, aliases, visited)
@@ -2100,6 +2255,9 @@ impl<'a> Checker<'a> {
                     },
                 ) => s1 == s2 && compatible(e1, e2, aliases, visited),
                 (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
+                    if **e1 == Type::Opaque || **e2 == Type::Opaque {
+                        return true;
+                    }
                     compatible(e1, e2, aliases, visited)
                 }
                 (
@@ -2245,6 +2403,9 @@ impl<'a> Checker<'a> {
                         && supported(source_element, target_element, aliases, visited);
                 }
                 (Type::Slice { element: source }, Type::Slice { element: target }) => {
+                    if **source == Type::Opaque || **target == Type::Opaque {
+                        return true;
+                    }
                     return supported(source, target, aliases, visited);
                 }
                 (Type::Pointer { element: source }, Type::Pointer { element: target }) => {

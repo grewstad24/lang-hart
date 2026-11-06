@@ -1,0 +1,136 @@
+==================
+Functions and modules
+==================
+
+import { .print, .alloc }
+
+decl mod io {
+    export { read, write } to .io.raw
+}
+
+fn add(a: s32, b: s32) -> s32 {
+    a + b
+}
+
+extern fn write(fd: s32, buf: *u8, len: u64) -> s64
+
+---
+
+(source_file
+  (import_directive
+    (namespace_path)
+    (namespace_path))
+  (decl_module
+    name: (identifier)
+    (export_directive
+      (identifier)
+      (identifier)
+      target: (namespace_path)))
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type))
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)
+    body: (block
+      (binary_expression
+        left: (identifier)
+        right: (identifier))))
+  (extern_function_declaration
+    name: (function_identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type))
+      (parameter
+        name: (identifier)
+        type: (pointer_type
+          (primitive_type)))
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (primitive_type)))
+
+==================
+Types
+==================
+
+type String := []u8
+type Integer := s32 | s64 | u32 | u64
+type Node := *(
+    val: s32
+    next: *Node
+)
+meta type ResizeableArray<T> := (
+    arr: *T
+    len: usize
+)
+
+---
+
+(source_file
+  (type_definition
+    name: (type_identifier)
+    type: (slice_type
+      (primitive_type)))
+  (type_definition
+    name: (type_identifier)
+    type: (union_type
+      left: (union_type
+        left: (union_type
+          left: (primitive_type)
+          right: (primitive_type))
+        right: (primitive_type))
+      right: (primitive_type)))
+  (type_definition
+    name: (type_identifier)
+    type: (pointer_type
+      (struct_type
+        (struct_field_type
+          name: (identifier)
+          type: (primitive_type))
+        (struct_field_type
+          name: (identifier)
+          type: (pointer_type
+            (type_identifier))))))
+  (type_definition
+    name: (type_identifier)
+    type_parameters: (type_parameters
+      (type_identifier))
+    type: (struct_type
+      (struct_field_type
+        name: (identifier)
+        type: (pointer_type
+          (type_identifier)))
+      (struct_field_type
+        name: (identifier)
+        type: (primitive_type)))))
+
+==================
+Grouped exports
+==================
+
+decl mod print {
+    export {
+        { print, println } to .print,
+        { printf } to .print.raw_printf
+    }
+}
+
+---
+
+(source_file
+  (decl_module
+    name: (identifier)
+    (export_directive
+      (export_group
+        (identifier)
+        (identifier)
+        target: (namespace_path))
+      (export_group
+        (identifier)
+        target: (namespace_path)))))

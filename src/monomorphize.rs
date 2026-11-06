@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::sema::ModuleScope;
-use crate::syntax::{Definition, Expression, LogicalModule, Parameter, StructFieldType, Type};
+use crate::syntax::{
+    Definition, Expression, LogicalModule, Parameter, StructFieldType, Type, TypeAlias,
+};
 
 pub fn mangle_type(ty: &Type) -> String {
     match ty {
@@ -20,6 +22,17 @@ pub fn mangle_type(ty: &Type) -> String {
         Type::SSize => "ssize".to_string(),
         Type::Atom(name) => format!("atom_{}", name),
         Type::Alias(name) => name.clone(),
+        Type::GenericInstance {
+            name,
+            type_arguments,
+        } => {
+            let inner = type_arguments
+                .iter()
+                .map(mangle_type)
+                .collect::<Vec<_>>()
+                .join("__");
+            format!("{}__{}", name, inner)
+        }
         Type::Pointer { element } => format!("ptr_{}", mangle_type(element)),
         Type::Slice { element } => format!("slice_{}", mangle_type(element)),
         Type::Array { element, size } => format!("arr_{}_{}", size, mangle_type(element)),
@@ -54,7 +67,7 @@ pub fn mangle_type(ty: &Type) -> String {
     }
 }
 
-fn sanitize_identifier(s: &str) -> String {
+pub fn sanitize_identifier(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
@@ -73,6 +86,19 @@ pub fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type
                 concrete.clone()
             } else {
                 Type::Alias(name.clone())
+            }
+        }
+        Type::GenericInstance {
+            name,
+            type_arguments,
+        } => {
+            let new_args = type_arguments
+                .iter()
+                .map(|arg| substitute_type(arg, substitutions))
+                .collect();
+            Type::GenericInstance {
+                name: name.clone(),
+                type_arguments: new_args,
             }
         }
         Type::Pointer { element } => Type::Pointer {
@@ -134,6 +160,9 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         }
         Expression::SizeOf(ty) => {
             *ty = substitute_type(ty, substitutions);
+        }
+        Expression::Slice(expr) => {
+            substitute_expression(expr, substitutions);
         }
         Expression::Type(ty) => {
             *ty = substitute_type(ty, substitutions);
@@ -402,6 +431,9 @@ fn scan_and_rewrite_expression(
         Expression::Cast { expression, .. } => {
             scan_and_rewrite_expression(expression, scope, generated, changed)?;
         }
+        Expression::Slice(operand) => {
+            scan_and_rewrite_expression(operand, scope, generated, changed)?;
+        }
         Expression::AddressOf(operand) => {
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
@@ -544,6 +576,335 @@ pub fn monomorphize_modules(
                         crate::sema::SymbolProvenance {
                             item: item.specialized_def.clone(),
                             originating_file: item.originating_file.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn concretize_type(
+    ty: &mut Type,
+    templates: &HashMap<String, (String, TypeAlias)>,
+    generated: &mut Vec<(String, TypeAlias)>,
+    changed: &mut bool,
+) -> Result<(), String> {
+    match ty {
+        Type::Pointer { element } => concretize_type(element, templates, generated, changed)?,
+        Type::Slice { element } => concretize_type(element, templates, generated, changed)?,
+        Type::Array { element, .. } => concretize_type(element, templates, generated, changed)?,
+        Type::Struct(fields) => {
+            for f in fields {
+                concretize_type(&mut f.ty, templates, generated, changed)?;
+            }
+        }
+        Type::Union(variants) => {
+            for v in variants {
+                concretize_type(v, templates, generated, changed)?;
+            }
+        }
+        Type::Function {
+            parameters,
+            return_type,
+            ..
+        } => {
+            for p in parameters {
+                concretize_type(p, templates, generated, changed)?;
+            }
+            concretize_type(return_type, templates, generated, changed)?;
+        }
+        Type::GenericInstance {
+            name,
+            type_arguments,
+        } => {
+            for arg in type_arguments.iter_mut() {
+                concretize_type(arg, templates, generated, changed)?;
+            }
+
+            let (originating_file, template) = templates
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("unknown meta type '{}'", name))?;
+
+            if type_arguments.len() != template.type_parameters.len() {
+                return Err(format!(
+                    "meta type '{}' expects {} type arguments, found {}",
+                    name,
+                    template.type_parameters.len(),
+                    type_arguments.len()
+                ));
+            }
+
+            let mut substitutions = HashMap::new();
+            for (param_name, arg_ty) in template.type_parameters.iter().zip(type_arguments.iter()) {
+                substitutions.insert(param_name.clone(), arg_ty.clone());
+            }
+
+            let mut concrete_target = substitute_type(&template.target, &substitutions);
+            concretize_type(&mut concrete_target, templates, generated, changed)?;
+
+            let mangled_suffix = type_arguments
+                .iter()
+                .map(mangle_type)
+                .collect::<Vec<_>>()
+                .join("__");
+            let concrete_name = sanitize_identifier(&format!("{}__{}", name, mangled_suffix));
+
+            let concrete_alias = TypeAlias {
+                name: concrete_name.clone(),
+                target: concrete_target,
+                span: template.span.clone(),
+                is_meta: false,
+                type_parameters: Vec::new(),
+            };
+
+            generated.push((originating_file, concrete_alias));
+
+            *ty = Type::Alias(concrete_name);
+            *changed = true;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn concretize_expression(
+    expr: &mut Expression,
+    templates: &HashMap<String, (String, TypeAlias)>,
+    generated: &mut Vec<(String, TypeAlias)>,
+    changed: &mut bool,
+) -> Result<(), String> {
+    match expr {
+        Expression::Spanned { expression, .. } => {
+            concretize_expression(expression, templates, generated, changed)?;
+        }
+        Expression::SizeOf(ty) => {
+            concretize_type(ty, templates, generated, changed)?;
+        }
+        Expression::Slice(operand) => {
+            concretize_expression(operand, templates, generated, changed)?;
+        }
+        Expression::Type(ty) => {
+            concretize_type(ty, templates, generated, changed)?;
+        }
+        Expression::Cast { expression, ty } => {
+            concretize_expression(expression, templates, generated, changed)?;
+            concretize_type(ty, templates, generated, changed)?;
+        }
+        Expression::Var { ty, value, .. } => {
+            if let Some(t) = ty {
+                concretize_type(t, templates, generated, changed)?;
+            }
+            if let Some(v) = value {
+                concretize_expression(v, templates, generated, changed)?;
+            }
+        }
+        Expression::Let { value, .. } => {
+            concretize_expression(value, templates, generated, changed)?;
+        }
+        Expression::Assign { target, value } => {
+            concretize_expression(target, templates, generated, changed)?;
+            concretize_expression(value, templates, generated, changed)?;
+        }
+        Expression::Unary { operand, .. } => {
+            concretize_expression(operand, templates, generated, changed)?;
+        }
+        Expression::Binary { left, right, .. } => {
+            concretize_expression(left, templates, generated, changed)?;
+            concretize_expression(right, templates, generated, changed)?;
+        }
+        Expression::Comparison { left, right, .. } => {
+            concretize_expression(left, templates, generated, changed)?;
+            concretize_expression(right, templates, generated, changed)?;
+        }
+        Expression::Call { target, arguments } => {
+            concretize_expression(target, templates, generated, changed)?;
+            for arg in arguments {
+                concretize_expression(arg, templates, generated, changed)?;
+            }
+        }
+        Expression::Index { expression, index } => {
+            concretize_expression(expression, templates, generated, changed)?;
+            concretize_expression(index, templates, generated, changed)?;
+        }
+        Expression::Member { expression, .. } => {
+            concretize_expression(expression, templates, generated, changed)?;
+        }
+        Expression::AddressOf(e) => {
+            concretize_expression(e, templates, generated, changed)?;
+        }
+        Expression::Dereference(e) => {
+            concretize_expression(e, templates, generated, changed)?;
+        }
+        Expression::Block(exprs) => {
+            for e in exprs {
+                concretize_expression(e, templates, generated, changed)?;
+            }
+        }
+        Expression::Discard(e) => {
+            concretize_expression(e, templates, generated, changed)?;
+        }
+        Expression::Return(e) => {
+            concretize_expression(e, templates, generated, changed)?;
+        }
+        Expression::If { arms } => {
+            for arm in arms {
+                if let crate::syntax::IfCondition::Expression(e) = &mut arm.condition {
+                    concretize_expression(e, templates, generated, changed)?;
+                }
+                concretize_expression(&mut arm.body, templates, generated, changed)?;
+            }
+        }
+        Expression::Match { target, arms, .. } => {
+            concretize_expression(target, templates, generated, changed)?;
+            for arm in arms {
+                if let Some(vt) = &mut arm.variant_type {
+                    concretize_type(vt, templates, generated, changed)?;
+                }
+                concretize_expression(&mut arm.body, templates, generated, changed)?;
+            }
+        }
+        Expression::Repeat { count, body, .. } => {
+            concretize_expression(count, templates, generated, changed)?;
+            concretize_expression(body, templates, generated, changed)?;
+        }
+        Expression::For { iterable, body, .. } => {
+            concretize_expression(iterable, templates, generated, changed)?;
+            concretize_expression(body, templates, generated, changed)?;
+        }
+        Expression::Array(elements) => {
+            for el in elements {
+                concretize_expression(el, templates, generated, changed)?;
+            }
+        }
+        Expression::Struct(fields) => {
+            for f in fields {
+                concretize_expression(&mut f.value, templates, generated, changed)?;
+            }
+        }
+        Expression::Record(fields) => {
+            for f in fields {
+                concretize_expression(&mut f.value, templates, generated, changed)?;
+            }
+        }
+        Expression::Integer(_)
+        | Expression::String(_)
+        | Expression::Boolean(_)
+        | Expression::Atom(_)
+        | Expression::Identifier(_) => {}
+    }
+    Ok(())
+}
+
+pub fn concretize_meta_types(
+    modules: &mut [LogicalModule],
+    module_scopes: &mut [ModuleScope],
+) -> Result<(), String> {
+    let mut changed = true;
+    let mut iterations = 0;
+
+    while changed {
+        changed = false;
+        iterations += 1;
+        if iterations > 128 {
+            return Err(
+                "meta type concretization depth limit exceeded (possible cyclic meta type recursion)"
+                    .to_string(),
+            );
+        }
+
+        let mut templates: HashMap<String, (String, TypeAlias)> = HashMap::new();
+        for module in modules.iter() {
+            for file in &module.source_files {
+                for alias in &file.type_aliases {
+                    if alias.is_meta {
+                        templates.insert(alias.name.clone(), (file.file_path.clone(), alias.clone()));
+                    }
+                }
+            }
+        }
+        for scope in module_scopes.iter() {
+            for (name, prov) in &scope.type_aliases {
+                if prov.item.is_meta {
+                    templates.entry(name.clone()).or_insert_with(|| (prov.originating_file.clone(), prov.item.clone()));
+                }
+            }
+        }
+
+        let mut generated_aliases: Vec<(String, TypeAlias)> = Vec::new();
+
+        for module in modules.iter_mut() {
+            for file in &mut module.source_files {
+                for def in &mut file.definitions {
+                    if let Some(sig) = &mut def.signature {
+                        for p in &mut sig.parameters {
+                            concretize_type(&mut p.ty, &templates, &mut generated_aliases, &mut changed)?;
+                        }
+                        concretize_type(&mut sig.return_type, &templates, &mut generated_aliases, &mut changed)?;
+                    }
+                    concretize_expression(&mut def.value, &templates, &mut generated_aliases, &mut changed)?;
+                }
+                for ext in &mut file.extern_functions {
+                    for p in &mut ext.signature.parameters {
+                        concretize_type(&mut p.ty, &templates, &mut generated_aliases, &mut changed)?;
+                    }
+                    concretize_type(&mut ext.signature.return_type, &templates, &mut generated_aliases, &mut changed)?;
+                }
+                for alias in &mut file.type_aliases {
+                    if !alias.is_meta {
+                        concretize_type(&mut alias.target, &templates, &mut generated_aliases, &mut changed)?;
+                    }
+                }
+            }
+        }
+
+        for scope in module_scopes.iter_mut() {
+            for def_prov in scope.definitions.values_mut() {
+                if let Some(sig) = &mut def_prov.item.signature {
+                    for p in &mut sig.parameters {
+                        concretize_type(&mut p.ty, &templates, &mut generated_aliases, &mut changed)?;
+                    }
+                    concretize_type(&mut sig.return_type, &templates, &mut generated_aliases, &mut changed)?;
+                }
+                concretize_expression(&mut def_prov.item.value, &templates, &mut generated_aliases, &mut changed)?;
+            }
+            for ext_prov in scope.extern_functions.values_mut() {
+                for p in &mut ext_prov.item.signature.parameters {
+                    concretize_type(&mut p.ty, &templates, &mut generated_aliases, &mut changed)?;
+                }
+                concretize_type(&mut ext_prov.item.signature.return_type, &templates, &mut generated_aliases, &mut changed)?;
+            }
+            for alias_prov in scope.type_aliases.values_mut() {
+                if !alias_prov.item.is_meta {
+                    concretize_type(&mut alias_prov.item.target, &templates, &mut generated_aliases, &mut changed)?;
+                }
+            }
+        }
+
+        for (originating_file, concrete_alias) in generated_aliases {
+            let spec_name = concrete_alias.name.clone();
+
+            for module in modules.iter_mut() {
+                for file in &mut module.source_files {
+                    if file.file_path == originating_file {
+                        if !file.type_aliases.iter().any(|a| a.name == spec_name) {
+                            file.type_aliases.push(concrete_alias.clone());
+                        }
+                        break;
+                    }
+                }
+            }
+
+            for scope in module_scopes.iter_mut() {
+                if !scope.type_aliases.contains_key(&spec_name) {
+                    scope.type_aliases.insert(
+                        spec_name.clone(),
+                        crate::sema::SymbolProvenance {
+                            item: concrete_alias.clone(),
+                            originating_file: originating_file.clone(),
                         },
                     );
                 }

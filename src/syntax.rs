@@ -94,6 +94,10 @@ pub enum Type {
     Bool,
     Atom(String),
     Alias(String),
+    GenericInstance {
+        name: String,
+        type_arguments: Vec<Type>,
+    },
     Struct(Vec<StructFieldType>),
     Pointer {
         element: Box<Type>,
@@ -269,6 +273,7 @@ pub enum Expression {
         body: Box<Expression>,
     },
     SizeOf(Type),
+    Slice(Box<Expression>),
     Type(Type),
 }
 
@@ -312,6 +317,8 @@ pub struct TypeAlias {
     pub name: String,
     pub target: Type,
     pub span: Span,
+    pub is_meta: bool,
+    pub type_parameters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1508,29 +1515,79 @@ impl Parser {
                 Token::Meta => {
                     self.advance(); // consume 'meta'
                     self.skip_newlines();
-                    if !self.is(Token::FnKeyword) {
+                    if self.is(Token::FnKeyword) {
+                        let mut def = self.parse_fn_definition()?;
+                        def.is_meta = true;
+                        definitions.push(def);
+                    } else if self.is(Token::TypeKeyword) {
+                        self.advance(); // consume 'type'
+                        self.skip_newlines();
+                        let name = self.expect_identifier()?;
+                        self.skip_newlines();
+                        let mut type_parameters = Vec::new();
+                        if self.is(Token::Less) {
+                            self.advance();
+                            self.skip_newlines();
+                            while !self.is(Token::Greater) && !self.is(Token::Eof) {
+                                type_parameters.push(self.expect_identifier()?);
+                                self.skip_newlines();
+                                if self.is(Token::Comma) {
+                                    self.advance();
+                                    self.skip_newlines();
+                                }
+                            }
+                            self.expect(Token::Greater)?;
+                            self.skip_newlines();
+                        }
+                        self.expect(Token::ColonEqual)?;
+                        self.skip_newlines();
+                        let target = self.parse_type()?;
+                        self.consume_optional_newline();
+                        type_aliases.push(TypeAlias {
+                            name,
+                            target,
+                            span: declaration_span,
+                            is_meta: true,
+                            type_parameters,
+                        });
+                    } else {
                         return Err(format!(
-                            "expected 'fn' after 'meta', found {:?}",
+                            "expected 'fn' or 'type' after 'meta', found {:?}",
                             self.peek()
                         ));
                     }
-                    let mut def = self.parse_fn_definition()?;
-                    def.is_meta = true;
-                    definitions.push(def);
                 }
                 Token::TypeKeyword => {
                     self.advance(); // consume 'type'
                     self.skip_newlines();
                     let name = self.expect_identifier()?;
                     self.skip_newlines();
+                    let mut type_parameters = Vec::new();
+                    if self.is(Token::Less) {
+                        self.advance();
+                        self.skip_newlines();
+                        while !self.is(Token::Greater) && !self.is(Token::Eof) {
+                            type_parameters.push(self.expect_identifier()?);
+                            self.skip_newlines();
+                            if self.is(Token::Comma) {
+                                self.advance();
+                                self.skip_newlines();
+                            }
+                        }
+                        self.expect(Token::Greater)?;
+                        self.skip_newlines();
+                    }
                     self.expect(Token::ColonEqual)?;
                     self.skip_newlines();
                     let target = self.parse_type()?;
                     self.consume_optional_newline();
+                    let is_meta = !type_parameters.is_empty();
                     type_aliases.push(TypeAlias {
                         name,
                         target,
                         span: declaration_span,
+                        is_meta,
+                        type_parameters,
                     });
                 }
                 Token::ValKeyword => {
@@ -2161,10 +2218,14 @@ impl Parser {
                     let ty = self.parse_type()?;
                     return Ok(Expression::SizeOf(ty));
                 }
+                if tag == "slice" {
+                    let operand = self.parse_unary()?;
+                    return Ok(Expression::Slice(Box::new(operand)));
+                }
                 let is_record = tag == "record";
                 if tag != "record" && tag != "struct" {
                     return Err(format!(
-                        "unknown struct tag '@{}', expected '@record', '@struct', or '@sizeOf'",
+                        "unknown struct tag '@{}', expected '@record', '@struct', '@sizeOf', or '@slice'",
                         tag
                     ));
                 }
@@ -2647,7 +2708,26 @@ impl Parser {
             }
             Token::Identifier(name) => {
                 self.advance();
-                Ok(Type::Alias(name))
+                if self.is(Token::Less) {
+                    self.advance();
+                    self.skip_newlines();
+                    let mut type_args = Vec::new();
+                    while !self.is(Token::Greater) && !self.is(Token::Eof) {
+                        type_args.push(self.parse_type()?);
+                        self.skip_newlines();
+                        if self.is(Token::Comma) {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(Token::Greater)?;
+                    Ok(Type::GenericInstance {
+                        name,
+                        type_arguments: type_args,
+                    })
+                } else {
+                    Ok(Type::Alias(name))
+                }
             }
             Token::Val => {
                 self.advance();

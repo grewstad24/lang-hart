@@ -517,6 +517,15 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
+        if matches!((&source_type, target_type), (Type::Slice { .. }, Type::Slice { .. })) {
+            if let Binding::Slice { value, .. } = binding {
+                return Ok(Binding::Slice {
+                    ty: target_type.clone(),
+                    value,
+                });
+            }
+        }
+
         Ok(binding)
     }
 
@@ -1168,6 +1177,76 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(Binding::Integer {
                     ty: Type::USize,
                     value: self.ptr_sized_int_type().const_int(size, false),
+                })
+            }
+            Expression::Slice(expr) => {
+                let binding = self.codegen_expression(expr)?;
+                let ty = self.binding_type(&binding)?;
+                let resolved_ty = self.resolve_alias_root(&ty)?;
+                let (struct_val, elem_ty) = match resolved_ty {
+                    Type::Struct(fields) => {
+                        if fields.len() != 2 {
+                            return Err(format!(
+                                "'@slice' requires a struct with 2 fields, found {}",
+                                fields.len()
+                            ));
+                        }
+                        let elem_ty = match &fields[0].ty {
+                            Type::Pointer { element } => (**element).clone(),
+                            other => {
+                                return Err(format!(
+                                    "'@slice' field 0 must be a pointer, found {:?}",
+                                    other
+                                ))
+                            }
+                        };
+                        let struct_val = match binding {
+                            Binding::Struct { value, .. } => value,
+                            _ => self.binding_basic_value(&binding)?.into_struct_value(),
+                        };
+                        (struct_val, elem_ty)
+                    }
+                    other => return Err(format!("'@slice' requires a struct, found {:?}", other)),
+                };
+
+                let ptr_val = self
+                    .builder
+                    .build_extract_value(struct_val, 0, "slice_ptr")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+                let len_val = self
+                    .builder
+                    .build_extract_value(struct_val, 1, "slice_len")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+
+                let ptr_sized_type = self.ptr_sized_int_type();
+                let len_val = if len_val.get_type() != ptr_sized_type {
+                    self.builder
+                        .build_int_cast(len_val, ptr_sized_type, "len_cast")
+                        .map_err(|e| e.to_string())?
+                } else {
+                    len_val
+                };
+
+                let slice_llvm_ty = self.slice_type();
+                let mut slice_val = slice_llvm_ty.get_undef();
+                slice_val = self
+                    .builder
+                    .build_insert_value(slice_val, ptr_val, 0, "slice_ptr")
+                    .map_err(|e| e.to_string())?
+                    .into_struct_value();
+                slice_val = self
+                    .builder
+                    .build_insert_value(slice_val, len_val, 1, "slice_len")
+                    .map_err(|e| e.to_string())?
+                    .into_struct_value();
+
+                Ok(Binding::Slice {
+                    ty: Type::Slice {
+                        element: Box::new(elem_ty),
+                    },
+                    value: slice_val,
                 })
             }
             Expression::Type(_) => Ok(self.atom_binding("none")),
@@ -2346,6 +2425,12 @@ impl<'ctx> Codegen<'ctx> {
         ) = (&resolved_source, &resolved_target)
         {
             let source_value = self.binding_basic_value(&binding)?.into_struct_value();
+            if **source_element == Type::Opaque || **target_element == Type::Opaque {
+                return Ok(Binding::Slice {
+                    ty: target_type,
+                    value: source_value,
+                });
+            }
             let source_ptr = self
                 .builder
                 .build_extract_value(source_value, 0, "cast_slice_ptr")
@@ -3321,6 +3406,9 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         match ty {
             Type::Never => Err("never type has no basic value".to_string()),
+            Type::GenericInstance { name, .. } => {
+                Err(format!("unconcretized generic type '{}' reached codegen", name))
+            }
             Type::Alias(_) => self.binding_from_basic_value(self.resolve_alias_root(ty)?, value),
             Type::Atom(name) => Ok(Binding::Atom {
                 name: name.clone(),
@@ -3517,6 +3605,9 @@ impl<'ctx> Codegen<'ctx> {
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
             Type::Never => Err("never type is not a basic type in LLVM".to_string()),
+            Type::GenericInstance { name, .. } => {
+                Err(format!("unconcretized generic type '{}' reached codegen", name))
+            }
             Type::Alias(_) => self.llvm_type(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.struct_type(&[], false).into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
@@ -3556,6 +3647,9 @@ impl<'ctx> Codegen<'ctx> {
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
             Type::Never => Err("never has no zero value".to_string()),
+            Type::GenericInstance { name, .. } => {
+                Err(format!("unconcretized generic type '{}' reached codegen", name))
+            }
             Type::Alias(_) => self.zero_value(self.resolve_alias_root(ty)?),
             Type::Atom(_) => Ok(self.context.struct_type(&[], false).const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),

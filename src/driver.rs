@@ -411,6 +411,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             })
         }
         Expression::SizeOf(ty) => Ok(Expression::SizeOf(canonicalize_type(ty, checker)?)),
+        Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Type(ty) => Ok(Expression::Type(canonicalize_type(ty, checker)?)),
     }
 }
@@ -434,6 +435,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let mut module_scopes = resolver.resolve_modules(&modules)?;
 
     crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
+    crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
 
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
@@ -454,6 +456,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
         for file in &module.source_files {
             for alias in &file.type_aliases {
+                if alias.is_meta {
+                    continue;
+                }
                 compiled_aliases
                     .entry(alias.name.clone())
                     .or_insert_with(|| alias.clone());

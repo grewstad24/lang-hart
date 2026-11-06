@@ -1,0 +1,48 @@
+{
+  "name": "tree-sitter-snore",
+  "version": "0.1.0",
+  "description": "Snore grammar for tree-sitter",
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "keywords": [
+    "parsing",
+    "incremental",
+    "tree-sitter",
+    "snore"
+  ],
+  "author": "grewstad",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://codeberg.org/grewstad/snore.git",
+    "directory": "tree-sitter-snore"
+  },
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "dependencies": {
+    "node-addon-api": "^8.2.1"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.4"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.snore",
+      "file-types": [
+        "zzz"
+      ],
+      "injection-regex": "^snore$"
+    }
+  ],
+  "scripts": {
+    "build": "tree-sitter generate --no-bindings",
+    "test": "tree-sitter test"
+  }
+}
+

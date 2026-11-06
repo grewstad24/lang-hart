@@ -1,3 +1,5 @@
+# Rust
+
 /target
 **/*.rs.bk
 *.bc
@@ -5,5 +7,9 @@
 *.o
 main
 
-# test and experimentation directory
-tests/testing/*
+# JS for tree-sitter grammar
+node_modules/
+target/
+*.dylib
+*.so
+*.dll

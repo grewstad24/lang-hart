@@ -1,0 +1,97 @@
+==================
+Expressions and Literals
+==================
+
+fn test() {
+    let x := 1 + 2 * 3
+    let b := not false
+    let r := @record (
+        name := "alice"
+        age := 30
+    )
+    let s := (
+        key := "val"
+    )
+    let sz := @sizeOf s32
+    let p := alloc(type s32)
+    p.* := 42
+    let ptr := p.&
+    let el := arr[0]
+    let casted := el as s64
+    let sl := @slice s
+    obj ..process(1, 2)
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list)
+    body: (block
+      (let_declaration
+        name: (identifier)
+        value: (binary_expression
+          left: (integer_literal)
+          right: (binary_expression
+            left: (integer_literal)
+            right: (integer_literal))))
+      (let_declaration
+        name: (identifier)
+        value: (unary_expression
+          operand: (boolean_literal)))
+      (let_declaration
+        name: (identifier)
+        value: (record_literal
+          (struct_literal
+            (struct_field_init
+              name: (identifier)
+              value: (string_literal))
+            (struct_field_init
+              name: (identifier)
+              value: (integer_literal)))))
+      (let_declaration
+        name: (identifier)
+        value: (struct_literal
+          (struct_field_init
+            name: (identifier)
+            value: (string_literal))))
+      (let_declaration
+        name: (identifier)
+        value: (sizeof_expression
+          type: (primitive_type)))
+      (let_declaration
+        name: (identifier)
+        value: (call_expression
+          function: (function_identifier)
+          arguments: (argument_list
+            (type_literal
+              type: (primitive_type)))))
+      (assignment_expression
+        left: (dereference_expression
+          expression: (identifier))
+        right: (integer_literal))
+      (let_declaration
+        name: (identifier)
+        value: (address_of_expression
+          expression: (identifier)))
+      (let_declaration
+        name: (identifier)
+        value: (index_expression
+          expression: (identifier)
+          index: (integer_literal)))
+      (let_declaration
+        name: (identifier)
+        value: (cast_expression
+          expression: (identifier)
+          type: (primitive_type)))
+      (let_declaration
+        name: (identifier)
+        value: (slice_expression
+          value: (identifier)))
+      (method_call_expression
+        receiver: (identifier)
+        method: (function_identifier)
+        arguments: (argument_list
+          (integer_literal)
+          (integer_literal))))))
