@@ -1522,10 +1522,22 @@ impl<'a> Checker<'a> {
                 }
 
                 if !unhandled.is_empty() {
-                    return Err(format!(
-                        "in '{}': non-exhaustive match expression: missing cases for {:?}",
-                        self.current_file_path, unhandled
-                    ));
+                    let narrowed_ty = if unhandled.len() == 1 {
+                        unhandled[0].clone()
+                    } else {
+                        let mut sorted_remaining = unhandled.clone();
+                        sorted_remaining.sort_by_key(Self::canonical_type_key);
+                        Type::Union(sorted_remaining)
+                    };
+
+                    let mut else_body = Expression::Atom("none".to_string());
+                    let arm_ty = self.type_of_expression(&mut else_body)?;
+                    arms.push(MatchArm {
+                        variant_type: Some(narrowed_ty),
+                        body: Box::new(else_body),
+                    });
+                    arm_types.push(arm_ty);
+                    unhandled.clear();
                 }
 
                 let unified_return_ty = self.unify_to_sum_type(&arm_types)?;

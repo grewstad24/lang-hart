@@ -1,4 +1,4 @@
-import { .print }
+import { .print, .heap }
 
 # example program
 fn main() -> :none {
@@ -21,4 +21,9 @@ fn main() -> :none {
                   adult := true
             )
       ) ..print()
+
+      let ptr := heap_new(type s32, 5)
+      println(ptr.*)
+      ptr.* := 7
+      println(ptr.*)
 }

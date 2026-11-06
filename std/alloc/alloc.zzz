@@ -1,15 +1,41 @@
 export {
-      { alloc, heap_new } to .alloc,
       { alloc, heap_new } to .heap,
-      { malloc } to .heap.raw_malloc
+      { malloc, free, calloc } to .heap.raw_libc
 }
+
 
 extern fn malloc( size: usize ) -> *opaque
 
+
+extern fn calloc( num: usize, size: usize ) -> *opaque
+
+
+extern fn free( ptr: *opaque ) -> :none
+
+
 meta fn alloc( T: type ) -> *T { malloc( @sizeOf T ) as *T }
+
 
 meta fn heap_new( T: type, val: T ) -> *T {
       let ptr := alloc(type T)
       ptr.* := val
       return ptr
+}
+
+meta fn alloc_resizeable_array( T: type, len: usize ) -> (
+      arr: *T
+      len: usize
+      capacity: usize
+      element_size: usize
+) | :zeroLengthError
+{
+      if {
+            len = 0 => :zeroLengthError
+            else => (
+                  arr := calloc(len, @sizeOf T)
+                  len := len
+                  capacity := len
+                  element_size := @sizeOf T
+            )
+      }
 }

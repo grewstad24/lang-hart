@@ -1,0 +1,1 @@
+fn stringify_json( item: Generic, buffer: []u8 ) -> :none {}
