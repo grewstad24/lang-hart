@@ -33,5 +33,6 @@ fn main() -> :none {
                   resize_vector(type s32, &mut v, 30)
                   println(v.arr)
             }
+            :zeroLengthError => println("error: zero length")
       }
 }

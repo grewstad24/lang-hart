@@ -1,0 +1,6 @@
+decl mod pprint {
+      import { .print }
+}
+
+
+fn pprint( item: Generic ) -> :none {}

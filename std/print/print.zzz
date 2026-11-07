@@ -9,7 +9,7 @@ decl mod print {
 extern fn printf( ptr: *u8, ...) -> s32
 
 
-type Printable := String | Integer | :nl | :t | bool | []Printable | Record
+type Printable := String | Integer | :nl | :t | bool | []Printable
 
 
 fn print( x: Printable ) -> :none {
@@ -22,9 +22,8 @@ fn print( x: Printable ) -> :none {
             []Printable => printa(z)
             bool => switch z {
                   true => print("true")
-                  false => print("false")
+                  else => print("false")
             }
-            Record => printr(z)
       }
 }
 

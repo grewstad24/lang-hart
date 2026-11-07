@@ -1636,6 +1636,17 @@ impl<'a> Checker<'a> {
 
             Expression::If { arms } => {
                 let num_arms = arms.len();
+                let has_else = arms
+                    .last()
+                    .map(|arm| matches!(arm.condition, IfCondition::Else))
+                    .unwrap_or(false);
+                if !has_else {
+                    return Err(format!(
+                        "in '{}': if expression requires an explicit 'else' arm",
+                        self.current_file_path
+                    ));
+                }
+
                 let mut arm_types = Vec::new();
                 let scopes_before_if = self.local_scopes.clone();
                 let mut reachable_states = Vec::new();
@@ -1803,22 +1814,10 @@ impl<'a> Checker<'a> {
                 }
 
                 if !unhandled.is_empty() {
-                    let narrowed_ty = if unhandled.len() == 1 {
-                        unhandled[0].clone()
-                    } else {
-                        let mut sorted_remaining = unhandled.clone();
-                        sorted_remaining.sort_by_key(Self::canonical_type_key);
-                        Type::Union(sorted_remaining)
-                    };
-
-                    let mut else_body = Expression::Atom("none".to_string());
-                    let arm_ty = self.type_of_expression(&mut else_body)?;
-                    arms.push(MatchArm {
-                        variant_type: Some(narrowed_ty),
-                        body: Box::new(else_body),
-                    });
-                    arm_types.push(arm_ty);
-                    unhandled.clear();
+                    return Err(format!(
+                        "in '{}': non-exhaustive match expression: missing cases for {:?}",
+                        self.current_file_path, unhandled
+                    ));
                 }
 
                 let unified_return_ty = self.unify_to_sum_type(&arm_types)?;

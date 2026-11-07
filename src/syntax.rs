@@ -2577,12 +2577,8 @@ impl Parser {
             return Err("if block must contain at least one arm".to_string());
         }
 
-        // Synthesize fallback: else => :none
         if !has_else {
-            arms.push(IfArm {
-                condition: IfCondition::Else,
-                body: Box::new(Expression::Atom("none".to_string())),
-            });
+            return Err("if block must contain an explicit 'else' arm".to_string());
         }
 
         Ok(Expression::If { arms })
@@ -2658,10 +2654,7 @@ impl Parser {
         }
 
         if !has_else {
-            arms.push(IfArm {
-                condition: IfCondition::Else,
-                body: Box::new(Expression::Atom("none".to_string())),
-            });
+            return Err("switch block must contain an explicit 'else' arm".to_string());
         }
 
         let if_expr = Expression::If { arms };

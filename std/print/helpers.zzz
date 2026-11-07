@@ -31,19 +31,3 @@ fn printa( arr: []Printable ) -> :none {
             print(arr[i])
       }
 }
-
-
-fn printr( r: Record ) -> :none {
-      let header := r.*
-      let keys := header.key
-      let values := header.val
-
-      repeat header.len using i {
-            [ keys[i], " : " ] ..print()
-
-            match values[i] using z {
-                  Record => [:nl, "(", :nl, z, ")", :nl] ..print()
-                  else => [z, :nl] ..print()
-            }
-      }
-}
