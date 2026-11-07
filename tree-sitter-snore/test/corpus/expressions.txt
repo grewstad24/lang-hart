@@ -15,7 +15,10 @@ fn test() {
     let sz := @sizeOf s32
     let p := alloc(type s32)
     p.* := 42
+    vec.*.arr.ptr := 42
     let ptr := p.&
+    let mut_ptr := &mut p
+    let postfix_mut := p.&mut
     let el := arr[0]
     let casted := el as s64
     let sl := @slice s
@@ -71,6 +74,22 @@ fn test() {
         left: (dereference_expression
           expression: (identifier))
         right: (integer_literal))
+      (assignment_expression
+        left: (field_expression
+          expression: (field_expression
+            expression: (dereference_expression
+              expression: (identifier))
+            field: (identifier))
+          field: (identifier))
+        right: (integer_literal))
+      (let_declaration
+        name: (identifier)
+        value: (address_of_expression
+          expression: (identifier)))
+      (let_declaration
+        name: (identifier)
+        value: (address_of_expression
+          expression: (identifier)))
       (let_declaration
         name: (identifier)
         value: (address_of_expression

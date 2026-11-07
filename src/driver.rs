@@ -308,9 +308,10 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             expression: Box::new(canonicalize_expression(expression, checker)?),
             field: field.clone(),
         }),
-        Expression::AddressOf(e) => Ok(Expression::AddressOf(Box::new(canonicalize_expression(
-            e, checker,
-        )?))),
+        Expression::AddressOf { expression, is_mut } => Ok(Expression::AddressOf {
+            expression: Box::new(canonicalize_expression(expression, checker)?),
+            is_mut: *is_mut,
+        }),
         Expression::Dereference(e) => Ok(Expression::Dereference(Box::new(
             canonicalize_expression(e, checker)?,
         ))),

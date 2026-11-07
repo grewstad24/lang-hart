@@ -1,4 +1,4 @@
-import { .print, .heap }
+import { .print, .heap, .math, .io.raw }
 
 # example program
 fn main() -> :none {
@@ -27,7 +27,11 @@ fn main() -> :none {
       ptr.* := 7
       println(ptr.*)
 
-      match alloc_resizeable_array(type s32, 10 as usize) using z {
-            ResizeableArray<s32> => println(z.arr)
+      match alloc_vector(type s32, 10) using z {
+            Vector<s32> => {
+                  var v := z
+                  resize_vector(type s32, &mut v, 30)
+                  println(v.arr)
+            }
       }
 }

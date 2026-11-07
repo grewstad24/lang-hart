@@ -10,3 +10,9 @@
 (decl_module
   name: (identifier) @name) @item
 
+(mod_declaration
+  name: (identifier) @name) @item
+
+(val_declaration
+  name: (identifier) @name) @item
+

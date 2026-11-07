@@ -1,17 +1,16 @@
-export {
-      { alloc, heap_new, alloc_resizeable_array, ResizeableArray } to .heap,
-      { malloc, free, calloc } to .heap.raw_libc
+decl mod alloc {
+      export {
+            { alloc, heap_new, resize_alloc, alloc_vector, Vector, resize_vector } to .heap,
+            { malloc, free, realloc } to .heap.raw_libc
+      }
 }
 
 
-extern fn malloc( size: usize ) -> *opaque
-
-
-extern fn calloc( num: usize, size: usize ) -> *opaque
+extern fn malloc( size: usize ) -> *mut opaque
 
 
 meta fn contiguous_alloc( num: usize, T: type ) -> []T { @slice (
-      ptr := calloc(num, @sizeOf T)
+      ptr := malloc(num * @sizeOf T) as *T
       len := num
 )}
 
@@ -19,31 +18,19 @@ meta fn contiguous_alloc( num: usize, T: type ) -> []T { @slice (
 extern fn free( ptr: *opaque ) -> :none
 
 
-meta fn alloc( T: type ) -> *T
-{ malloc( @sizeOf T ) as *T }
+extern fn realloc( ptr: *opaque, new_size: usize ) -> *mut opaque
 
 
-meta fn heap_new( T: type, val: T ) -> *T {
+meta fn resize_alloc( T: type, ptr: *T, new_size: usize ) -> *T
+{ realloc(ptr, new_size) as *T }
+
+
+meta fn alloc( T: type ) -> *mut T
+{ malloc( @sizeOf T ) as *mut T }
+
+
+meta fn heap_new( T: type, val: T ) -> *mut T {
       let ptr := alloc(type T)
       ptr.* := val
       return ptr
-}
-
-
-meta type ResizeableArray<T> := (
-      arr: []T
-      capacity: usize
-)
-
-
-meta fn alloc_resizeable_array( T: type, len: usize ) ->
-ResizeableArray<T> | :zeroLengthError
-{
-      return if {
-            len = 0 as usize => :zeroLengthError
-            else => (
-                  arr := contiguous_alloc(len * 2 as usize, type T)
-                  capacity := len * 2 as usize
-            )
-      }
 }

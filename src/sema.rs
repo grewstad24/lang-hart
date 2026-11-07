@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
     MatchArm, NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit,
-    StructFieldType, Type, TypeAlias, UnaryOperator, format_error, unspanned_expression_mut,
+    StructFieldType, Type, TypeAlias, UnaryOperator, format_error, unspanned_expression,
+    unspanned_expression_mut,
 };
 
 fn expression_span(expression: &Expression) -> Option<&Span> {
@@ -120,8 +121,9 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
                     .collect();
                 Type::Struct(flds)
             }
-            Type::Pointer { element } => Type::Pointer {
+            Type::Pointer { element, is_mut } => Type::Pointer {
                 element: Box::new(expand(element, aliases, visited)),
+                is_mut: *is_mut,
             },
             Type::Slice { element } => Type::Slice {
                 element: Box::new(expand(element, aliases, visited)),
@@ -522,7 +524,11 @@ impl<'a> Checker<'a> {
                     .join(",");
                 format!("10_generic_{}<{}>", name, inner)
             }
-            Type::Pointer { element } => format!("11_ptr_{}", Self::canonical_type_key(element)),
+            Type::Pointer { element, is_mut } => format!(
+                "11_ptr_{}_{}",
+                if *is_mut { "mut" } else { "const" },
+                Self::canonical_type_key(element)
+            ),
             Type::Slice { element } => format!("12_slice_{}", Self::canonical_type_key(element)),
             Type::Array { element, size } => {
                 format!("13_arr_{}_{}", size, Self::canonical_type_key(element))
@@ -579,7 +585,7 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
-            Type::Pointer { element } | Type::Slice { element } => self.validate_user_type(element),
+            Type::Pointer { element, .. } | Type::Slice { element } => self.validate_user_type(element),
             Type::Array { element, .. } => self.validate_user_type(element),
             Type::Union(variants) => {
                 for v in variants {
@@ -663,8 +669,9 @@ impl<'a> Checker<'a> {
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(Type::Struct(resolved_fields))
             }
-            Type::Pointer { element } => Ok(Type::Pointer {
+            Type::Pointer { element, is_mut } => Ok(Type::Pointer {
                 element: Box::new(self.resolve_type_inner(element, visited, true)?),
+                is_mut: *is_mut,
             }),
             Type::Array { element, size } => Ok(Type::Array {
                 element: Box::new(self.resolve_type_inner(element, visited, indirect)?),
@@ -801,6 +808,18 @@ impl<'a> Checker<'a> {
 
         if res_actual == res_expected {
             return Ok(res_actual);
+        }
+
+        if matches!(unspanned_expression(expr), Expression::Integer(_))
+            && Self::is_integer_type(&res_actual)
+            && Self::is_integer_type(&res_expected)
+        {
+            let orig = std::mem::replace(expr, Expression::Boolean(false));
+            *expr = Expression::Cast {
+                expression: Box::new(orig),
+                ty: res_expected.clone(),
+            };
+            return Ok(res_expected);
         }
 
         if Self::types_compatible_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
@@ -1073,6 +1092,94 @@ impl<'a> Checker<'a> {
                         .unwrap_or(false)
                 });
             }
+        }
+    }
+
+    fn check_lvalue_mutability(&mut self, expr: &Expression) -> Result<(), String> {
+        match unspanned_expression(expr) {
+            Expression::Identifier(name) => {
+                if self.scope.lookup_definition(name.as_str()).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot reassign to module-level constant '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+                if self.scope.lookup_extern(name.as_str()).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to external function '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+                if self.scope.lookup_type_alias(name.as_str()).is_some() {
+                    return Err(format!(
+                        "in '{}': cannot assign to type alias '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+
+                if let Some(info) = self.lookup_binding(name.as_str()) {
+                    if !info.is_mutable {
+                        return Err(format!(
+                            "in '{}': cannot reassign to immutable constant '{}'",
+                            self.current_file_path, name
+                        ));
+                    }
+                } else {
+                    return Err(format!(
+                        "in '{}': unknown variable '{}'",
+                        self.current_file_path, name
+                    ));
+                }
+                Ok(())
+            }
+            Expression::Dereference(ptr_expr) => {
+                let mut ptr_clone = ptr_expr.as_ref().clone();
+                let raw_ptr_ty = self.type_of_expression(&mut ptr_clone)?;
+                let ptr_ty = self.resolve_type(&raw_ptr_ty)?;
+                let Type::Pointer { element, is_mut } = ptr_ty else {
+                    return Err(format!(
+                        "in '{}': cannot dereference non-pointer type {:?} in assignment target",
+                        self.current_file_path, ptr_ty
+                    ));
+                };
+                if !is_mut {
+                    return Err(format!(
+                        "in '{}': cannot mutate through immutable pointer '*{}'",
+                        self.current_file_path, Self::canonical_type_key(&element)
+                    ));
+                }
+                if *element == Type::Opaque {
+                    return Err(format!(
+                        "in '{}': cannot assign through untyped pointer '*opaque'",
+                        self.current_file_path
+                    ));
+                }
+                Ok(())
+            }
+            Expression::Member { expression: base, .. } => {
+                self.check_lvalue_mutability(base.as_ref())
+            }
+            Expression::Index { expression: base, .. } => {
+                let mut base_clone = base.as_ref().clone();
+                let raw_base_ty = self.type_of_expression(&mut base_clone)?;
+                let base_ty = self.resolve_type(&raw_base_ty)?;
+                match base_ty {
+                    Type::Array { .. } => self.check_lvalue_mutability(base.as_ref()),
+                    Type::Slice { .. } | Type::Pointer { is_mut: true, .. } => Ok(()),
+                    Type::Pointer { is_mut: false, .. } => Err(format!(
+                        "in '{}': cannot mutate through immutable pointer in assignment target",
+                        self.current_file_path
+                    )),
+                    other => Err(format!(
+                        "in '{}': cannot index type {:?} in assignment target",
+                        self.current_file_path, other
+                    )),
+                }
+            }
+            _ => Err(format!(
+                "in '{}': invalid assignment target: expression is not an lvalue",
+                self.current_file_path
+            )),
         }
     }
 
@@ -1362,12 +1469,18 @@ impl<'a> Checker<'a> {
                 Expression::Dereference(ptr_expr) => {
                     let raw_ptr_ty = self.type_of_expression(ptr_expr.as_mut())?;
                     let ptr_ty = self.resolve_type(&raw_ptr_ty)?;
-                    let Type::Pointer { element } = ptr_ty else {
+                    let Type::Pointer { element, is_mut } = ptr_ty else {
                         return Err(format!(
                             "in '{}': cannot dereference non-pointer type {:?} in assignment target",
                             self.current_file_path, ptr_ty
                         ));
                     };
+                    if !is_mut {
+                        return Err(format!(
+                            "in '{}': cannot mutate through immutable pointer '*{}'",
+                            self.current_file_path, Self::canonical_type_key(&element)
+                        ));
+                    }
                     if *element == Type::Opaque {
                         return Err(format!(
                             "in '{}': cannot assign through untyped pointer '*opaque'",
@@ -1385,8 +1498,66 @@ impl<'a> Checker<'a> {
                     }
                     Ok(Type::Atom("none".to_string()))
                 }
+                Expression::Member { expression: base, field } => {
+                    let field = field.clone();
+                    let raw_base_ty = self.type_of_expression(base.as_mut())?;
+                    let base_ty = self.resolve_type(&raw_base_ty)?;
+                    let target_ty = match &base_ty {
+                        Type::Struct(flds) => {
+                            let target_field = flds
+                                .iter()
+                                .find(|f| f.name == field)
+                                .ok_or_else(|| {
+                                    format!(
+                                        "in '{}': struct has no field named '{}'",
+                                        self.current_file_path, field
+                                    )
+                                })?;
+                            self.resolve_type(&target_field.ty)?
+                        }
+                        Type::Slice { element } => match field.as_str() {
+                            "ptr" => Type::Pointer {
+                                element: element.clone(),
+                                is_mut: false,
+                            },
+                            "len" => Type::USize,
+                            _ => {
+                                return Err(format!(
+                                    "in '{}': unknown slice member '.{}'",
+                                    self.current_file_path, field
+                                ));
+                            }
+                        },
+                        other => {
+                            return Err(format!(
+                                "in '{}': cannot assign to field '{}' of non-struct type {:?}",
+                                self.current_file_path, field, other
+                            ));
+                        }
+                    };
+
+                    self.check_lvalue_mutability(base.as_ref())?;
+
+                    let mut val_ty = self.type_of_expression(value)?;
+                    val_ty = self.coerce_expression_to_type(value, &val_ty, &target_ty)?;
+                    if !self.are_types_compatible(&val_ty, &target_ty)? {
+                        if Self::is_supported_cast_with_aliases(&val_ty, &target_ty, &self.alias_targets()) {
+                            let orig = std::mem::replace(value.as_mut(), Expression::Boolean(false));
+                            *value = Box::new(Expression::Cast {
+                                expression: Box::new(orig),
+                                ty: target_ty.clone(),
+                            });
+                        } else {
+                            return Err(format!(
+                                "in '{}': type mismatch assigning to field '{}': expected {:?}, found {:?}",
+                                self.current_file_path, field, target_ty, val_ty
+                            ));
+                        }
+                    }
+                    Ok(Type::Atom("none".to_string()))
+                }
                 _ => Err(format!(
-                    "in '{}': invalid assignment target: only variables and pointer dereferences ('ptr.*') are supported as assignment targets",
+                    "in '{}': invalid assignment target: only variables, pointer dereferences ('ptr.*'), and struct fields are supported as assignment targets",
                     self.current_file_path
                 )),
             },
@@ -1735,14 +1906,32 @@ impl<'a> Checker<'a> {
             } => {
                 let raw_left = self.type_of_expression(left)?;
                 let raw_right = self.type_of_expression(right)?;
-                let left_type = self.resolve_type(&raw_left)?;
-                let right_type = self.resolve_type(&raw_right)?;
+                let mut left_type = self.resolve_type(&raw_left)?;
+                let mut right_type = self.resolve_type(&raw_right)?;
 
                 if !Self::is_integer_type(&left_type) || !Self::is_integer_type(&right_type) {
                     return Err(format!(
                         "in '{}': binary operator {:?} requires integer operands",
                         self.current_file_path, operator
                     ));
+                }
+
+                if left_type != right_type {
+                    if matches!(unspanned_expression(right), Expression::Integer(_)) {
+                        let orig = std::mem::replace(right.as_mut(), Expression::Boolean(false));
+                        *right = Box::new(Expression::Cast {
+                            expression: Box::new(orig),
+                            ty: left_type.clone(),
+                        });
+                        right_type = left_type.clone();
+                    } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
+                        let orig = std::mem::replace(left.as_mut(), Expression::Boolean(false));
+                        *left = Box::new(Expression::Cast {
+                            expression: Box::new(orig),
+                            ty: right_type.clone(),
+                        });
+                        left_type = right_type.clone();
+                    }
                 }
 
                 if left_type != right_type {
@@ -1762,8 +1951,8 @@ impl<'a> Checker<'a> {
             } => {
                 let raw_left = self.type_of_expression(left)?;
                 let raw_right = self.type_of_expression(right)?;
-                let left_type = self.resolve_type(&raw_left)?;
-                let right_type = self.resolve_type(&raw_right)?;
+                let mut left_type = self.resolve_type(&raw_left)?;
+                let mut right_type = self.resolve_type(&raw_right)?;
 
                 if matches!(left_type, Type::Atom(_)) || matches!(right_type, Type::Atom(_)) {
                     if !matches!(
@@ -1782,6 +1971,26 @@ impl<'a> Checker<'a> {
                         ));
                     }
                     return Ok(Type::Bool);
+                }
+
+                if left_type != right_type {
+                    if Self::is_integer_type(&left_type) && Self::is_integer_type(&right_type) {
+                        if matches!(unspanned_expression(right), Expression::Integer(_)) {
+                            let orig = std::mem::replace(right.as_mut(), Expression::Boolean(false));
+                            *right = Box::new(Expression::Cast {
+                                expression: Box::new(orig),
+                                ty: left_type.clone(),
+                            });
+                            right_type = left_type.clone();
+                        } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
+                            let orig = std::mem::replace(left.as_mut(), Expression::Boolean(false));
+                            *left = Box::new(Expression::Cast {
+                                expression: Box::new(orig),
+                                ty: right_type.clone(),
+                            });
+                            left_type = right_type.clone();
+                        }
+                    }
                 }
 
                 if left_type != right_type {
@@ -1969,7 +2178,7 @@ impl<'a> Checker<'a> {
                 match expression_type {
                     Type::Array { element, .. } => Ok(*element),
                     Type::Slice { element } => Ok(*element),
-                    Type::Pointer { element } => Ok(*element),
+                    Type::Pointer { element, .. } => Ok(*element),
                     other => Err(format!(
                         "in '{}': cannot index value of type {:?}",
                         self.current_file_path, other
@@ -1980,7 +2189,7 @@ impl<'a> Checker<'a> {
             Expression::Dereference(expression) => {
                 let raw_pointer_type = self.type_of_expression(expression)?;
                 match self.resolve_type(&raw_pointer_type)? {
-                    Type::Pointer { element } => {
+                    Type::Pointer { element, .. } => {
                         if *element == Type::Opaque {
                             return Err(format!(
                                 "in '{}': cannot dereference untyped pointer '*opaque'",
@@ -2012,7 +2221,10 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Type::Slice { element } => match field.as_str() {
-                        "ptr" => Ok(Type::Pointer { element }),
+                        "ptr" => Ok(Type::Pointer {
+                            element,
+                            is_mut: false,
+                        }),
                         "len" => Ok(Type::USize),
                         _ => Err(format!(
                             "in '{}': unknown slice member '.{}'",
@@ -2020,7 +2232,10 @@ impl<'a> Checker<'a> {
                         )),
                     },
                     Type::Array { element, .. } => match field.as_str() {
-                        "ptr" => Ok(Type::Pointer { element }),
+                        "ptr" => Ok(Type::Pointer {
+                            element,
+                            is_mut: false,
+                        }),
                         "len" => Ok(Type::USize),
                         _ => Err(format!(
                             "in '{}': unknown array member '.{}'",
@@ -2034,54 +2249,59 @@ impl<'a> Checker<'a> {
                 }
             }
 
-            Expression::AddressOf(expression) => match expression.as_mut() {
-                Expression::Index { .. } => {
-                    let element_type = self.type_of_expression(expression)?;
-                    Ok(Type::Pointer {
-                        element: Box::new(element_type),
-                    })
+            Expression::AddressOf { expression, is_mut } => {
+                if *is_mut {
+                    self.check_lvalue_mutability(expression.as_ref())?;
                 }
-                Expression::Dereference(pointer_expression) => {
-                    let pointer_type = self.type_of_expression(pointer_expression)?;
-                    match self.resolve_type(&pointer_type)? {
-                        Type::Pointer { element } if *element == Type::Opaque => Err(format!(
-                            "in '{}': cannot dereference untyped pointer '*opaque'",
+                let target_ty = match expression.as_mut() {
+                    Expression::Index { .. } => {
+                        self.type_of_expression(expression)?
+                    }
+                    Expression::Dereference(pointer_expression) => {
+                        let pointer_type = self.type_of_expression(pointer_expression)?;
+                        match self.resolve_type(&pointer_type)? {
+                            Type::Pointer { element, .. } if *element == Type::Opaque => {
+                                return Err(format!(
+                                    "in '{}': cannot dereference untyped pointer '*opaque'",
+                                    self.current_file_path
+                                ));
+                            }
+                            Type::Pointer { element, .. } => *element,
+                            other => {
+                                return Err(format!(
+                                    "in '{}': cannot take address of dereference of {:?}",
+                                    self.current_file_path, other
+                                ));
+                            }
+                        }
+                    }
+                    Expression::Identifier(name) => {
+                        if let Some(info) = self.lookup_binding(name) {
+                            info.ty
+                        } else if let Some(ty) = self.resolved_definitions.get(name) {
+                            ty.clone()
+                        } else {
+                            return Err(format!(
+                                "in '{}': cannot take address of unknown variable '{}'",
+                                self.current_file_path, name
+                            ));
+                        }
+                    }
+                    Expression::Member { .. } => {
+                        self.type_of_expression(expression)?
+                    }
+                    _ => {
+                        return Err(format!(
+                            "in '{}': address-of requires an lvalue (variable, struct member, array index, or dereference)",
                             self.current_file_path
-                        )),
-                        Type::Pointer { .. } => Ok(pointer_type),
-                        other => Err(format!(
-                            "in '{}': cannot take address of dereference of {:?}",
-                            self.current_file_path, other
-                        )),
+                        ));
                     }
-                }
-                Expression::Identifier(name) => {
-                    if let Some(info) = self.lookup_binding(name) {
-                        Ok(Type::Pointer {
-                            element: Box::new(info.ty),
-                        })
-                    } else if let Some(ty) = self.resolved_definitions.get(name) {
-                        Ok(Type::Pointer {
-                            element: Box::new(ty.clone()),
-                        })
-                    } else {
-                        Err(format!(
-                            "in '{}': cannot take address of unknown variable '{}'",
-                            self.current_file_path, name
-                        ))
-                    }
-                }
-                Expression::Member { .. } => {
-                    let field_type = self.type_of_expression(expression)?;
-                    Ok(Type::Pointer {
-                        element: Box::new(field_type),
-                    })
-                }
-                _ => Err(format!(
-                    "in '{}': address-of requires an lvalue (variable, struct member, array index, or dereference)",
-                    self.current_file_path
-                )),
-            },
+                };
+                Ok(Type::Pointer {
+                    element: Box::new(target_ty),
+                    is_mut: *is_mut,
+                })
+            }
 
             Expression::SizeOf(ty) => {
                 self.validate_user_type(ty)?;
@@ -2101,7 +2321,7 @@ impl<'a> Checker<'a> {
                             ));
                         }
                         let elem_ty = match self.resolve_type(&fields[0].ty)? {
-                            Type::Pointer { element } => *element,
+                            Type::Pointer { element, .. } => *element,
                             other => return Err(format!(
                                 "in '{}': '@slice' field 0 must be a pointer '*T', found {:?}",
                                 self.current_file_path, other
@@ -2238,7 +2458,19 @@ impl<'a> Checker<'a> {
                     }
                     true
                 }
-                (Type::Pointer { element: e1 }, Type::Pointer { element: e2 }) => {
+                (
+                    Type::Pointer {
+                        element: e1,
+                        is_mut: m1,
+                    },
+                    Type::Pointer {
+                        element: e2,
+                        is_mut: m2,
+                    },
+                ) => {
+                    if m1 != m2 {
+                        return false;
+                    }
                     if **e1 == Type::Opaque || **e2 == Type::Opaque {
                         return true;
                     }
@@ -2408,7 +2640,20 @@ impl<'a> Checker<'a> {
                     }
                     return supported(source, target, aliases, visited);
                 }
-                (Type::Pointer { element: source }, Type::Pointer { element: target }) => {
+                (
+                    Type::Pointer {
+                        element: source,
+                        is_mut: source_mut,
+                    },
+                    Type::Pointer {
+                        element: target,
+                        is_mut: target_mut,
+                    },
+                ) => {
+                    // a *mut T can be casted into a *T but not vice versa
+                    if *target_mut && !*source_mut {
+                        return false;
+                    }
                     if **source == Type::Opaque || **target == Type::Opaque {
                         return true;
                     }
@@ -2511,13 +2756,25 @@ mod tests {
     fn test_pointer_cast_invariants() {
         let ptr_opaque = Type::Pointer {
             element: Box::new(Type::Opaque),
+            is_mut: false,
         };
         let ptr_s32 = Type::Pointer {
             element: Box::new(Type::S32),
+            is_mut: false,
         };
         let ptr_u8 = Type::Pointer {
             element: Box::new(Type::U8),
+            is_mut: false,
         };
+        let ptr_mut_s32 = Type::Pointer {
+            element: Box::new(Type::S32),
+            is_mut: true,
+        };
+
+        // *mut T can be cast to *T
+        assert!(Checker::is_supported_cast(&ptr_mut_s32, &ptr_s32));
+        // *T cannot be cast to *mut T
+        assert!(!Checker::is_supported_cast(&ptr_s32, &ptr_mut_s32));
 
         // *opaque as *T -> allowed
         assert!(Checker::is_supported_cast(&ptr_opaque, &ptr_s32));
@@ -2547,6 +2804,7 @@ mod tests {
             BindingInfo {
                 ty: Type::Pointer {
                     element: Box::new(Type::S32),
+                    is_mut: true,
                 },
                 is_mutable: false,
                 is_initialized: true,

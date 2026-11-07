@@ -134,3 +134,43 @@ decl mod print {
       (export_group
         (identifier)
         target: (namespace_path)))))
+
+==================
+Val declarations and mutable pointers
+==================
+
+val MAX_SIZE := 1024
+meta fn resize(T: type, vec: *mut Vector<T>, len: usize) -> *T {
+    realloc(vec, len)
+}
+
+---
+
+(source_file
+  (val_declaration
+    name: (identifier)
+    value: (integer_literal))
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (primitive_type))
+      (parameter
+        name: (identifier)
+        type: (pointer_type
+          (generic_type
+            name: (type_identifier)
+            type_arguments: (type_arguments
+              (type_identifier)))))
+      (parameter
+        name: (identifier)
+        type: (primitive_type)))
+    return_type: (pointer_type
+      (type_identifier))
+    body: (block
+      (call_expression
+        function: (function_identifier)
+        arguments: (argument_list
+          (identifier)
+          (identifier))))))

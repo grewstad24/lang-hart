@@ -13,3 +13,5 @@ target/
 *.dylib
 *.so
 *.dll
+editors/zed/grammars/snore/
+parser.c

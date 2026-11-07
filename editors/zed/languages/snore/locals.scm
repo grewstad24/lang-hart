@@ -23,6 +23,9 @@
 (var_declaration
   name: (identifier) @local.definition)
 
+(val_declaration
+  name: (identifier) @local.definition)
+
 (match_expression
   binder: (identifier) @local.definition)
 

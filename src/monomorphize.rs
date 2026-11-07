@@ -33,7 +33,13 @@ pub fn mangle_type(ty: &Type) -> String {
                 .join("__");
             format!("{}__{}", name, inner)
         }
-        Type::Pointer { element } => format!("ptr_{}", mangle_type(element)),
+        Type::Pointer { element, is_mut } => {
+            if *is_mut {
+                format!("ptr_mut_{}", mangle_type(element))
+            } else {
+                format!("ptr_{}", mangle_type(element))
+            }
+        }
         Type::Slice { element } => format!("slice_{}", mangle_type(element)),
         Type::Array { element, size } => format!("arr_{}_{}", size, mangle_type(element)),
         Type::Struct(fields) => {
@@ -101,8 +107,9 @@ pub fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type
                 type_arguments: new_args,
             }
         }
-        Type::Pointer { element } => Type::Pointer {
+        Type::Pointer { element, is_mut } => Type::Pointer {
             element: Box::new(substitute_type(element, substitutions)),
+            is_mut: *is_mut,
         },
         Type::Slice { element } => Type::Slice {
             element: Box::new(substitute_type(element, substitutions)),
@@ -210,8 +217,8 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::Member { expression, .. } => {
             substitute_expression(expression, substitutions);
         }
-        Expression::AddressOf(operand) => {
-            substitute_expression(operand, substitutions);
+        Expression::AddressOf { expression, .. } => {
+            substitute_expression(expression, substitutions);
         }
         Expression::Dereference(operand) => {
             substitute_expression(operand, substitutions);
@@ -434,8 +441,8 @@ fn scan_and_rewrite_expression(
         Expression::Slice(operand) => {
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
-        Expression::AddressOf(operand) => {
-            scan_and_rewrite_expression(operand, scope, generated, changed)?;
+        Expression::AddressOf { expression, .. } => {
+            scan_and_rewrite_expression(expression, scope, generated, changed)?;
         }
         Expression::Dereference(operand) => {
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
@@ -593,7 +600,7 @@ fn concretize_type(
     changed: &mut bool,
 ) -> Result<(), String> {
     match ty {
-        Type::Pointer { element } => concretize_type(element, templates, generated, changed)?,
+        Type::Pointer { element, .. } => concretize_type(element, templates, generated, changed)?,
         Type::Slice { element } => concretize_type(element, templates, generated, changed)?,
         Type::Array { element, .. } => concretize_type(element, templates, generated, changed)?,
         Type::Struct(fields) => {
@@ -733,8 +740,8 @@ fn concretize_expression(
         Expression::Member { expression, .. } => {
             concretize_expression(expression, templates, generated, changed)?;
         }
-        Expression::AddressOf(e) => {
-            concretize_expression(e, templates, generated, changed)?;
+        Expression::AddressOf { expression, .. } => {
+            concretize_expression(expression, templates, generated, changed)?;
         }
         Expression::Dereference(e) => {
             concretize_expression(e, templates, generated, changed)?;
@@ -927,7 +934,8 @@ mod tests {
         assert_eq!(mangle_type(&Type::Bool), "bool");
         assert_eq!(
             mangle_type(&Type::Pointer {
-                element: Box::new(Type::U8)
+                element: Box::new(Type::U8),
+                is_mut: false,
             }),
             "ptr_u8"
         );
@@ -958,12 +966,14 @@ mod tests {
 
         let generic_ptr = Type::Pointer {
             element: Box::new(Type::Alias("T".to_string())),
+            is_mut: false,
         };
         let concrete = substitute_type(&generic_ptr, &substitutions);
         assert_eq!(
             concrete,
             Type::Pointer {
-                element: Box::new(Type::S32)
+                element: Box::new(Type::S32),
+                is_mut: false,
             }
         );
     }
@@ -990,6 +1000,7 @@ mod tests {
                         ],
                         return_type: Box::new(Type::Pointer {
                             element: Box::new(Type::Alias("T".to_string())),
+                            is_mut: false,
                         }),
                         is_variadic: false,
                     }),

@@ -101,6 +101,7 @@ pub enum Type {
     Struct(Vec<StructFieldType>),
     Pointer {
         element: Box<Type>,
+        is_mut: bool,
     },
     Array {
         element: Box<Type>,
@@ -208,7 +209,10 @@ pub enum Expression {
         expression: Box<Expression>,
         index: Box<Expression>,
     },
-    AddressOf(Box<Expression>),
+    AddressOf {
+        expression: Box<Expression>,
+        is_mut: bool,
+    },
     Dereference(Box<Expression>),
     Cast {
         expression: Box<Expression>,
@@ -440,6 +444,7 @@ pub enum Token {
     Repeat,
     For,
     Meta,
+    Mut,
     Decl,
     Mod,
     Export,
@@ -828,6 +833,7 @@ impl Lexer {
             "repeat" => Token::Repeat,
             "for" => Token::For,
             "meta" => Token::Meta,
+            "mut" => Token::Mut,
             "decl" => Token::Decl,
             "mod" => Token::Mod,
             "export" => Token::Export,
@@ -1928,6 +1934,22 @@ impl Parser {
                     operand: Box::new(self.parse_unary()?),
                 })
             }
+            Token::Ampersand => {
+                self.advance();
+                self.skip_newlines();
+                let is_mut = if self.is(Token::Mut) {
+                    self.advance();
+                    self.skip_newlines();
+                    true
+                } else {
+                    false
+                };
+                let operand = self.parse_unary()?;
+                Ok(Expression::AddressOf {
+                    expression: Box::new(operand),
+                    is_mut,
+                })
+            }
             _ => {
                 let expr = self.parse_primary()?;
                 self.parse_postfix(expr)
@@ -1973,7 +1995,16 @@ impl Parser {
                         expression = Expression::Dereference(Box::new(expression));
                     } else if self.is(Token::Ampersand) {
                         self.advance();
-                        expression = Expression::AddressOf(Box::new(expression));
+                        let is_mut = if self.is(Token::Mut) {
+                            self.advance();
+                            true
+                        } else {
+                            false
+                        };
+                        expression = Expression::AddressOf {
+                            expression: Box::new(expression),
+                            is_mut,
+                        };
                     } else {
                         let field = self.expect_field_name()?;
                         expression = Expression::Member {
@@ -2788,9 +2819,17 @@ impl Parser {
             Token::Star => {
                 self.advance();
                 self.skip_newlines();
+                let is_mut = if self.is(Token::Mut) {
+                    self.advance();
+                    self.skip_newlines();
+                    true
+                } else {
+                    false
+                };
                 let inner = self.parse_single_type()?;
                 Ok(Type::Pointer {
                     element: Box::new(inner),
+                    is_mut,
                 })
             }
             Token::LBracket => {

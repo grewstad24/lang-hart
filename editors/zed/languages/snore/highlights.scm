@@ -10,6 +10,7 @@
   "meta"
   "extern"
   "type"
+  "val"
   "let"
   "var"
   "if"
@@ -22,6 +23,7 @@
   "for"
   "return"
   "as"
+  "mut"
 ] @keyword
 
 "not" @keyword.operator
@@ -37,6 +39,9 @@
   name: (identifier) @variable)
 
 (var_declaration
+  name: (identifier) @variable)
+
+(val_declaration
   name: (identifier) @variable)
 
 ; Parameters
@@ -77,6 +82,7 @@
 
 ; Builtins / Intrinsics
 "@record" @attribute
+"@struct" @attribute
 "@sizeOf" @function.macro
 "@slice" @function.macro
 

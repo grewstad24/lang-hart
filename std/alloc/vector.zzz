@@ -1,0 +1,29 @@
+mod alloc
+
+meta type Vector<T> := (
+      arr: []T
+      capacity: usize
+)
+
+meta fn alloc_vector( T: type, len: usize ) ->
+Vector<T> | :zeroLengthError
+{
+      return if {
+            len = 0 => :zeroLengthError
+            else => (
+                  arr := contiguous_alloc(len * 2, type T)
+                  capacity := len * 2
+            )
+      }
+}
+
+meta fn resize_vector( T: type, vec: *mut Vector<T>, new_len: usize ) -> :none {
+      if {
+            vec.*.capacity < new_len => {
+                  vec.*.capacity := new_len * 2 as usize
+                  vec.*.arr.ptr :=
+                        resize_alloc(type T, vec.*.arr.ptr, vec.*.capacity * @sizeOf T)
+            }
+      }
+      vec.*.arr.len := new_len
+}
