@@ -22,6 +22,7 @@ fn test() {
     let el := arr[0]
     let casted := el as s64
     let sl := @slice s
+    let u := "\u{2714}"
     obj ..process(1, 2)
 }
 
@@ -108,6 +109,10 @@ fn test() {
         name: (identifier)
         value: (slice_expression
           value: (identifier)))
+      (let_declaration
+        name: (identifier)
+        value: (string_literal
+          (escape_sequence)))
       (method_call_expression
         receiver: (identifier)
         method: (function_identifier)

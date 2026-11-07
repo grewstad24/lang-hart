@@ -20,7 +20,7 @@ fn main() -> :none {
                   friend := "alice"
                   adult := true
             )
-      ) ..print()
+      )
 
       let ptr := heap_new(type s32, 5)
       println(ptr.*)
@@ -35,4 +35,6 @@ fn main() -> :none {
             }
             :zeroLengthError => println("error: zero length")
       }
+
+      println("Checkmark: \u{2714}, Box: \u{250C}\u{2500}\u{2510}")
 }

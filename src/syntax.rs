@@ -868,28 +868,82 @@ impl Lexer {
                     let escaped = self.chars[self.position];
 
                     match escaped {
-                        '0' => bytes.push(0),
-                        'n' => bytes.push(b'\n'),
-                        'r' => bytes.push(b'\r'),
-                        't' => bytes.push(b'\t'),
-                        '\\' => bytes.push(b'\\'),
-                        '"' => bytes.push(b'"'),
+                        '0' => {
+                            bytes.push(0);
+                            self.position += 1;
+                        }
+                        'n' => {
+                            bytes.push(b'\n');
+                            self.position += 1;
+                        }
+                        'r' => {
+                            bytes.push(b'\r');
+                            self.position += 1;
+                        }
+                        't' => {
+                            bytes.push(b'\t');
+                            self.position += 1;
+                        }
+                        '\\' => {
+                            bytes.push(b'\\');
+                            self.position += 1;
+                        }
+                        '"' => {
+                            bytes.push(b'"');
+                            self.position += 1;
+                        }
+                        'u' => {
+                            self.position += 1;
+                            if self.position >= self.chars.len() || self.chars[self.position] != '{' {
+                                return Err("expected '{' after '\\u'".to_string());
+                            }
+                            self.position += 1;
+
+                            let start = self.position;
+                            while self.position < self.chars.len()
+                                && self.chars[self.position] != '}'
+                                && self.chars[self.position] != '"'
+                                && self.chars[self.position] != '\n'
+                            {
+                                self.position += 1;
+                            }
+
+                            if self.position >= self.chars.len() || self.chars[self.position] != '}' {
+                                return Err("unterminated unicode escape sequence, expected '}'".to_string());
+                            }
+
+                            let hex_str: String = self.chars[start..self.position].iter().collect();
+                            self.position += 1; // consume '}'
+
+                            if hex_str.is_empty() {
+                                return Err("empty unicode escape sequence '\\u{}'".to_string());
+                            }
+                            if hex_str.len() > 6 {
+                                return Err(format!("unicode escape sequence too long: '\\u{{{}}}'", hex_str));
+                            }
+
+                            let code_point = u32::from_str_radix(&hex_str, 16)
+                                .map_err(|_| format!("invalid hex in unicode escape sequence: '\\u{{{}}}'", hex_str))?;
+
+                            let ch = char::from_u32(code_point)
+                                .ok_or_else(|| format!("invalid unicode code point: '\\u{{{}}}'", hex_str))?;
+
+                            let mut buf = [0u8; 4];
+                            let encoded = ch.encode_utf8(&mut buf);
+                            bytes.extend_from_slice(encoded.as_bytes());
+                        }
                         other => {
                             return Err(format!("unknown string escape '\\{}'", other));
                         }
                     }
-
-                    self.position += 1;
                 }
                 '\n' => {
                     return Err("unterminated string literal".to_string());
                 }
                 other => {
-                    if other as u32 > 0x7f {
-                        return Err(format!("non-ASCII character '{}' in string literal", other));
-                    }
-
-                    bytes.push(other as u8);
+                    let mut buf = [0u8; 4];
+                    let encoded = other.encode_utf8(&mut buf);
+                    bytes.extend_from_slice(encoded.as_bytes());
                     self.position += 1;
                 }
             }
