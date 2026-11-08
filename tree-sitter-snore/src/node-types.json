@@ -3497,7 +3497,7 @@
     "fields": {
       "binder": {
         "multiple": false,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "identifier",
@@ -6549,10 +6549,6 @@
   {
     "type": "variadic_parameter",
     "named": true
-  },
-  {
-    "type": "with",
-    "named": false
   },
   {
     "type": "{",

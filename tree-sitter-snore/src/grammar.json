@@ -2298,22 +2298,26 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "STRING",
-              "value": "using"
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "using"
+                },
+                {
+                  "type": "FIELD",
+                  "name": "binder",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  }
+                }
+              ]
             },
             {
-              "type": "STRING",
-              "value": "with"
+              "type": "BLANK"
             }
           ]
-        },
-        {
-          "type": "FIELD",
-          "name": "binder",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
         },
         {
           "type": "STRING",
@@ -2412,17 +2416,8 @@
                 "type": "SEQ",
                 "members": [
                   {
-                    "type": "CHOICE",
-                    "members": [
-                      {
-                        "type": "STRING",
-                        "value": "using"
-                      },
-                      {
-                        "type": "STRING",
-                        "value": "with"
-                      }
-                    ]
+                    "type": "STRING",
+                    "value": "using"
                   },
                   {
                     "type": "FIELD",
@@ -2487,17 +2482,8 @@
                 "type": "SEQ",
                 "members": [
                   {
-                    "type": "CHOICE",
-                    "members": [
-                      {
-                        "type": "STRING",
-                        "value": "using"
-                      },
-                      {
-                        "type": "STRING",
-                        "value": "with"
-                      }
-                    ]
+                    "type": "STRING",
+                    "value": "using"
                   },
                   {
                     "type": "FIELD",

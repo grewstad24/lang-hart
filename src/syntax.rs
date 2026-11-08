@@ -429,7 +429,6 @@ pub enum Token {
     Else,
     Match,
     Switch,
-    With,
     Using,
     Over,
     Return,
@@ -808,7 +807,6 @@ impl Lexer {
             "else" => Token::Else,
             "match" => Token::Match,
             "switch" => Token::Switch,
-            "with" => Token::With,
             "using" => Token::Using,
             "over" => Token::Over,
             "return" => Token::Return,
@@ -1082,10 +1080,6 @@ impl Parser {
             Token::Switch => {
                 self.advance();
                 Ok("switch".to_string())
-            }
-            Token::With => {
-                self.advance();
-                Ok("with".to_string())
             }
             Token::Using => {
                 self.advance();
@@ -2119,7 +2113,6 @@ impl Parser {
                 | Token::Else
                 | Token::Match
                 | Token::Switch
-                | Token::With
                 | Token::Using
                 | Token::Over
                 | Token::Return
@@ -2166,7 +2159,6 @@ impl Parser {
                 | Token::Else
                 | Token::Match
                 | Token::Switch
-                | Token::With
                 | Token::Using
                 | Token::Over
                 | Token::Return
@@ -2219,7 +2211,6 @@ impl Parser {
                 | Token::Else
                 | Token::Match
                 | Token::Switch
-                | Token::With
                 | Token::Using
                 | Token::Over
                 | Token::Return
@@ -2460,7 +2451,7 @@ impl Parser {
                 self.skip_newlines();
                 let count = self.parse_expression()?;
                 self.skip_newlines();
-                let binder = if self.is(Token::Using) || self.is(Token::With) {
+                let binder = if self.is(Token::Using) {
                     self.advance();
                     self.skip_newlines();
                     Some(self.expect_identifier()?)
@@ -2589,15 +2580,15 @@ impl Parser {
         let target = self.parse_expression()?;
         self.skip_newlines();
 
-        if self.is(Token::Using) || self.is(Token::With) {
+        let binding_name = if self.is(Token::Using) {
             self.advance();
+            self.skip_newlines();
+            let name = self.expect_identifier()?;
+            self.skip_newlines();
+            name
         } else {
-            return Err(format!("expected 'using', found {:?}", self.peek()));
-        }
-        self.skip_newlines();
-
-        let binding_name = self.expect_identifier()?;
-        self.skip_newlines();
+            "_".to_string()
+        };
 
         let has_brace = self.is(Token::LBrace);
         if has_brace {
@@ -2784,7 +2775,7 @@ impl Parser {
         let iterable = self.parse_expression()?;
         self.skip_newlines();
 
-        let binder = if self.is(Token::Using) || self.is(Token::With) {
+        let binder = if self.is(Token::Using) {
             self.advance();
             self.skip_newlines();
             Some(self.expect_identifier()?)

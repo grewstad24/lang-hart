@@ -405,8 +405,10 @@ module.exports = grammar({
     match_expression: $ => seq(
       'match',
       field('value', $._expression),
-      choice('using', 'with'),
-      field('binder', $.identifier),
+      optional(seq(
+        'using',
+        field('binder', $.identifier)
+      )),
       '{',
       repeat($.match_arm),
       '}'
@@ -422,7 +424,7 @@ module.exports = grammar({
     repeat_expression: $ => prec.right(seq(
       'repeat',
       field('count', $._expression),
-      optional(seq(choice('using', 'with'), field('binder', $.identifier))),
+      optional(seq('using', field('binder', $.identifier))),
       optional('=>'),
       field('body', $._expression)
     )),
@@ -430,7 +432,7 @@ module.exports = grammar({
     for_expression: $ => prec.right(seq(
       'for',
       field('iterable', $._expression),
-      optional(seq(choice('using', 'with'), field('binder', $.identifier))),
+      optional(seq('using', field('binder', $.identifier))),
       optional('=>'),
       field('body', $._expression)
     )),

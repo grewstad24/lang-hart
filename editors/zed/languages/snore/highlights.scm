@@ -18,7 +18,6 @@
   "switch"
   "match"
   "using"
-  "with"
   "repeat"
   "for"
   "return"
@@ -72,8 +71,7 @@
 
 ; Literals
 (integer_literal) @number
-(boolean_literal) @constant.builtin.boolean
-(atom_literal) @constant
+(symbol_literal) @constant
 (string_literal) @string
 (escape_sequence) @string.escape
 
@@ -85,6 +83,8 @@
 "@struct" @attribute
 "@sizeOf" @function.macro
 "@slice" @function.macro
+"@atom" @function.macro
+"@generalise" @function.macro
 
 ; Operators & Delimiters
 [

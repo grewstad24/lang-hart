@@ -18,7 +18,6 @@
   "switch"
   "match"
   "using"
-  "with"
   "repeat"
   "for"
   "return"

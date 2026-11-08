@@ -13,15 +13,14 @@ val styleReset   := "\u{1B}[0m"
 
 
 fn pprint_bool(z: Bool) -> :none {
-      switch z {
+      match z {
             :true => @slice [ styleGreen, heavyCheck, styleReset ] ..print()
             :false => @slice [ styleRed, heavyCross, styleReset ] ..print()
-            else => :none
       }
 }
 
 fn pprint_string(z: String) -> :none {
-      @slice [ styleYellow, styleItalic, "'", z, "'", styleReset ] ..print()
+      @slice [ styleYellow, "'", z, "'", styleReset ] ..print()
 }
 
 fn pprint_integer(z: Integer) -> :none {
