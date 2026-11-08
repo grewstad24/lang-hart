@@ -9,7 +9,12 @@ decl mod print {
 extern fn printf( ptr: *u8, ...) -> s32
 
 
-type Printable := String | Integer | :nl | :t | bool | []Printable
+type Printable :=
+      String
+      | Integer
+      | :nl
+      | :t
+      | ( soft_tab: :softTab, spaces: u32 )  | bool | []Printable
 
 
 fn print( x: Printable ) -> :none {
@@ -19,6 +24,7 @@ fn print( x: Printable ) -> :none {
             UnsignedInteger => print_uint(z)
             :nl => pr_nl()
             :t => pr_tab()
+            ( soft_tab: :softTab, spaces: u32 ) => repeat z.spaces print(" ")
             []Printable => printa(z)
             bool => switch z {
                   true => print("true")

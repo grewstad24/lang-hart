@@ -19,5 +19,7 @@ type Record := *(
       val: *Generic
 )
 
+type Atom := ( str: String )
+
 
 type Generic := Integer | String | bool | Record | []Generic

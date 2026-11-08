@@ -1,0 +1,54 @@
+mod pprint
+
+val heavyCheck  := "\u{2714}"
+val heavyCross  := "\u{2718}"
+val bulletPoint := "\u{2022}"
+val downwardsArrowWithCornerRightwards := "\u{21B1}"
+
+val styleRed     := "\u{1B}[31m"
+val styleGreen   := "\u{1B}[32m"
+val styleYellow  := "\u{1B}[33m"
+val styleCyan    := "\u{1B}[36m"
+val styleItalic  := "\u{1B}[3m"
+val styleReset   := "\u{1B}[0m"
+
+
+fn pprint_bool(z: bool) -> :none {
+      switch z {
+            true => [ styleGreen, heavyCheck, styleReset ] ..print()
+            false => [ styleRed, heavyCross, styleReset ] ..print()
+            else => :none
+      }
+}
+
+fn pprint_string(z: String) -> :none {
+      [ styleYellow, "'", z, "'", styleReset ] ..print()
+}
+
+fn pprint_integer(z: Integer) -> :none {
+      [ styleCyan, z, styleReset ] ..print()
+}
+
+fn pprint_array( z: []Generic, indent_level: u16 ) -> :none {
+      switch indent_level {
+            0 as u16 => :none
+            else => print(:nl)
+      }
+      for z using elem {
+            repeat indent_level print((
+                  soft_tab := :softTab
+                  spaces := 6 as u32
+            ))
+            match elem using inner {
+                  []Generic => {
+                        print([bulletPoint, downwardsArrowWithCornerRightwards])
+                        pprint_array(inner, indent_level + 1 as u16)
+                  }
+                  else => {
+                        print([bulletPoint, " "])
+                        internal_pprint(elem, indent_level)
+                        print(:nl)
+                  }
+            }
+      }
+}

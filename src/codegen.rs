@@ -1658,13 +1658,14 @@ impl<'ctx> Codegen<'ctx> {
 
         let target_binding = self.codegen_expression(target)?;
         let target_type = self.binding_type(&target_binding)?;
+        let resolved_target_type = self.resolve_alias_root(&target_type)?;
 
-        let target_variants = match &target_type {
+        let target_variants = match resolved_target_type {
             Type::Union(vars) => vars.clone(),
             _ => return Err("match target must be a union type".to_string()),
         };
 
-        let union_llvm_type = self.llvm_type(&target_type)?.into_struct_type();
+        let union_llvm_type = self.llvm_type(resolved_target_type)?.into_struct_type();
 
         let union_storage = match target_binding {
             Binding::Union {

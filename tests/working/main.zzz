@@ -1,40 +1,15 @@
-import { .print, .heap, .math, .io.raw }
+import { .print.pretty, .print }
 
-# example program
 fn main() -> :none {
-      let my_array := ["hello", 1, true, :none]
-
-      for my_array using elem {
-            match elem using z {
-                  :none => println("none")
-                  else => println(z)
-            }
-      }
-
+      @record (
+            age := 56
+            name := "bob"
+            details := (
+                  adult := true
+                  friend := "alice"
+            )
+      ) ..pprint()
       print(:nl)
 
-      @record (
-            name := "bob"
-            age := 50
-            details := (
-                  friend := "alice"
-                  adult := true
-            )
-      )
-
-      let ptr := heap_new(type s32, 5)
-      println(ptr.*)
-      ptr.* := 7
-      println(ptr.*)
-
-      match alloc_vector(type s32, 10) using z {
-            Vector<s32> => {
-                  var v := z
-                  resize_vector(type s32, &mut v, 30)
-                  println(v.arr)
-            }
-            :zeroLengthError => println("error: zero length")
-      }
-
-      println("Checkmark: \u{2714}, Box: \u{250C}\u{2500}\u{2510}")
+      ["apple", 42, true, [3, [4, 5], 6], false] ..pprint()
 }
