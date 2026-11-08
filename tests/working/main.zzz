@@ -1,15 +1,6 @@
 import { .print.pretty, .print }
 
 fn main() -> :none {
-      @record (
-            age := 56
-            name := "bob"
-            details := (
-                  adult := true
-                  friend := "alice"
-            )
-      ) ..pprint()
+      @generalise ["apple", 42, :true, [3, [4, 5], 6], :false] ..pprint()
       print(:nl)
-
-      ["apple", 42, true, [3, [4, 5], 6], false] ..pprint()
 }

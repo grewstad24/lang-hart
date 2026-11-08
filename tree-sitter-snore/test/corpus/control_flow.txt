@@ -30,7 +30,7 @@ fn main() -> :none {
   (function_definition
     name: (function_identifier)
     parameters: (parameter_list)
-    return_type: (atom_literal)
+    return_type: (symbol_literal)
     body: (block
       (let_declaration
         name: (identifier)

@@ -3,7 +3,6 @@ mod pprint
 val heavyCheck  := "\u{2714}"
 val heavyCross  := "\u{2718}"
 val bulletPoint := "\u{2022}"
-val downwardsArrowWithCornerRightwards := "\u{21B1}"
 
 val styleRed     := "\u{1B}[31m"
 val styleGreen   := "\u{1B}[32m"
@@ -13,23 +12,23 @@ val styleItalic  := "\u{1B}[3m"
 val styleReset   := "\u{1B}[0m"
 
 
-fn pprint_bool(z: bool) -> :none {
+fn pprint_bool(z: Bool) -> :none {
       switch z {
-            true => [ styleGreen, heavyCheck, styleReset ] ..print()
-            false => [ styleRed, heavyCross, styleReset ] ..print()
+            :true => @slice [ styleGreen, heavyCheck, styleReset ] ..print()
+            :false => @slice [ styleRed, heavyCross, styleReset ] ..print()
             else => :none
       }
 }
 
 fn pprint_string(z: String) -> :none {
-      [ styleYellow, "'", z, "'", styleReset ] ..print()
+      @slice [ styleYellow, styleItalic, "'", z, "'", styleReset ] ..print()
 }
 
 fn pprint_integer(z: Integer) -> :none {
-      [ styleCyan, z, styleReset ] ..print()
+      @slice [ styleCyan, z, styleReset ] ..print()
 }
 
-fn pprint_array( z: []Generic, indent_level: u16 ) -> :none {
+fn pprint_array( z: Slice <Generic>, indent_level: u16 ) -> :none {
       switch indent_level {
             0 as u16 => :none
             else => print(:nl)
@@ -40,12 +39,12 @@ fn pprint_array( z: []Generic, indent_level: u16 ) -> :none {
                   spaces := 6 as u32
             ))
             match elem using inner {
-                  []Generic => {
-                        print([bulletPoint, downwardsArrowWithCornerRightwards])
+                  Slice <Generic> => {
+                        print(bulletPoint)
                         pprint_array(inner, indent_level + 1 as u16)
                   }
                   else => {
-                        print([bulletPoint, " "])
+                        print(@slice [bulletPoint, " "])
                         internal_pprint(elem, indent_level)
                         print(:nl)
                   }

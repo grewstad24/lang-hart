@@ -125,9 +125,6 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
                 element: Box::new(expand(element, aliases, visited)),
                 is_mut: *is_mut,
             },
-            Type::Slice { element } => Type::Slice {
-                element: Box::new(expand(element, aliases, visited)),
-            },
             Type::Array { element, size } => Type::Array {
                 element: Box::new(expand(element, aliases, visited)),
                 size: *size,
@@ -417,7 +414,7 @@ pub struct Checker<'a> {
     checked_bodies: HashSet<String>,
 
     local_scopes: Vec<HashMap<String, BindingInfo>>,
-    atom_table: HashMap<String, u32>,
+    symbol_table: HashMap<String, u32>,
     current_function_return_type: Option<Type>,
     counter: usize,
 }
@@ -469,7 +466,7 @@ impl<'a> Checker<'a> {
             resolving_definitions: HashSet::new(),
             checked_bodies: HashSet::new(),
             local_scopes: Vec::new(),
-            atom_table: HashMap::new(),
+            symbol_table: HashMap::new(),
             current_function_return_type: None,
             counter: 0,
         };
@@ -486,14 +483,74 @@ impl<'a> Checker<'a> {
         self.local_scopes.pop();
     }
 
-    pub fn intern_atom(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.atom_table.get(name) {
+    pub fn intern_symbol(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.symbol_table.get(name) {
             id
         } else {
-            let id = self.atom_table.len() as u32;
-            self.atom_table.insert(name.to_string(), id);
+            let id = self.symbol_table.len() as u32;
+            self.symbol_table.insert(name.to_string(), id);
             id
         }
+    }
+
+    pub fn is_slice_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Struct(fields) = &resolved {
+            if fields.len() == 2 && fields[0].name == "ptr" && fields[1].name == "len" {
+                let f0 = self.resolve_type(&fields[0].ty)?;
+                let f1 = self.resolve_type(&fields[1].ty)?;
+                if matches!(f0, Type::Pointer { .. }) && matches!(f1, Type::USize) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn slice_element_type(&self, ty: &Type) -> Result<Type, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Struct(fields) = &resolved {
+            if fields.len() == 2 && fields[0].name == "ptr" {
+                let f0 = self.resolve_type(&fields[0].ty)?;
+                if let Type::Pointer { element, .. } = f0 {
+                    return Ok(*element);
+                }
+            }
+        }
+        Err(format!("expected slice type, found {:?}", ty))
+    }
+
+    pub fn slice_pointer_type(&self, ty: &Type) -> Result<Type, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Struct(fields) = &resolved {
+            if fields.len() == 2 && fields[0].name == "ptr" {
+                return self.resolve_type(&fields[0].ty);
+            }
+        }
+        Err(format!("expected slice type, found {:?}", ty))
+    }
+
+    pub fn bool_type() -> Type {
+        Type::Union(vec![
+            Type::Symbol("false".to_string()),
+            Type::Symbol("true".to_string()),
+        ])
+    }
+
+    pub fn is_bool_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Union(variants) = &resolved {
+            if variants.len() == 2
+                && variants.contains(&Type::Symbol("false".to_string()))
+                && variants.contains(&Type::Symbol("true".to_string()))
+            {
+                return Ok(true);
+            }
+        }
+        if matches!(&resolved, Type::Symbol(s) if s == "true" || s == "false") {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub fn canonical_type_key(ty: &Type) -> String {
@@ -501,7 +558,6 @@ impl<'a> Checker<'a> {
             Type::Opaque => "00_opaque".to_string(),
             Type::MetaType => "00_metatype".to_string(),
             Type::Never => "00_never".to_string(),
-            Type::Bool => "01_bool".to_string(),
             Type::U8 => "02_u8".to_string(),
             Type::U16 => "03_u16".to_string(),
             Type::U32 => "04_u32".to_string(),
@@ -511,7 +567,7 @@ impl<'a> Checker<'a> {
             Type::S32 => "07_s32".to_string(),
             Type::S64 => "08_s64".to_string(),
             Type::SSize => "08a_ssize".to_string(),
-            Type::Atom(name) => format!("09_atom_{}", name),
+            Type::Symbol(name) => format!("09_symbol_{}", name),
             Type::Alias(name) => format!("10_alias_{}", name),
             Type::GenericInstance {
                 name,
@@ -529,7 +585,6 @@ impl<'a> Checker<'a> {
                 if *is_mut { "mut" } else { "const" },
                 Self::canonical_type_key(element)
             ),
-            Type::Slice { element } => format!("12_slice_{}", Self::canonical_type_key(element)),
             Type::Array { element, size } => {
                 format!("13_arr_{}_{}", size, Self::canonical_type_key(element))
             }
@@ -585,7 +640,7 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
-            Type::Pointer { element, .. } | Type::Slice { element } => self.validate_user_type(element),
+            Type::Pointer { element, .. } => self.validate_user_type(element),
             Type::Array { element, .. } => self.validate_user_type(element),
             Type::Union(variants) => {
                 for v in variants {
@@ -655,6 +710,19 @@ impl<'a> Checker<'a> {
                     "{}__{}",
                     name, mangled_suffix
                 ));
+                if self.scope.lookup_type_alias(&concrete_name).is_some() {
+                    return self.resolve_type_inner(&Type::Alias(concrete_name), visited, indirect);
+                }
+                if let Some(template) = self.scope.lookup_type_alias(name) {
+                    if template.is_meta {
+                        let mut substitutions = HashMap::new();
+                        for (param, arg) in template.type_parameters.iter().zip(resolved_args.iter()) {
+                            substitutions.insert(param.clone(), arg.clone());
+                        }
+                        let substituted = crate::monomorphize::substitute_type(&template.target, &substitutions);
+                        return self.resolve_type_inner(&substituted, visited, indirect);
+                    }
+                }
                 self.resolve_type_inner(&Type::Alias(concrete_name), visited, indirect)
             }
             Type::Struct(fields) => {
@@ -677,9 +745,6 @@ impl<'a> Checker<'a> {
                 element: Box::new(self.resolve_type_inner(element, visited, indirect)?),
                 size: *size,
             }),
-            Type::Slice { element } => Ok(Type::Slice {
-                element: Box::new(self.resolve_type_inner(element, visited, true)?),
-            }),
             Type::Function {
                 parameters,
                 return_type,
@@ -699,7 +764,7 @@ impl<'a> Checker<'a> {
             Type::Union(variants) => {
                 let mut flat = Vec::new();
                 for v in variants {
-                    let resolved = self.resolve_type_inner(v, visited, indirect)?;
+                    let resolved = self.resolve_type_inner(v, visited, false)?;
                     if let Type::Union(inner) = resolved {
                         flat.extend(inner);
                     } else {
@@ -737,7 +802,7 @@ impl<'a> Checker<'a> {
 
     pub fn unify_to_sum_type(&self, types: &[Type]) -> Result<Type, String> {
         if types.is_empty() {
-            return Ok(Type::Atom("none".to_string()));
+            return Ok(Type::Symbol("none".to_string()));
         }
 
         let mut flattened = Vec::new();
@@ -814,7 +879,7 @@ impl<'a> Checker<'a> {
             && Self::is_integer_type(&res_actual)
             && Self::is_integer_type(&res_expected)
         {
-            let orig = std::mem::replace(expr, Expression::Boolean(false));
+            let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
                 ty: res_expected.clone(),
@@ -823,7 +888,7 @@ impl<'a> Checker<'a> {
         }
 
         if Self::types_compatible_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
-            let orig = std::mem::replace(expr, Expression::Boolean(false));
+            let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
                 ty: res_expected.clone(),
@@ -1165,11 +1230,22 @@ impl<'a> Checker<'a> {
                 let base_ty = self.resolve_type(&raw_base_ty)?;
                 match base_ty {
                     Type::Array { .. } => self.check_lvalue_mutability(base.as_ref()),
-                    Type::Slice { .. } | Type::Pointer { is_mut: true, .. } => Ok(()),
+                    Type::Pointer { is_mut: true, .. } => Ok(()),
                     Type::Pointer { is_mut: false, .. } => Err(format!(
                         "in '{}': cannot mutate through immutable pointer in assignment target",
                         self.current_file_path
                     )),
+                    other if self.is_slice_type(&other)? => {
+                        let ptr_ty = self.slice_pointer_type(&other)?;
+                        if let Type::Pointer { is_mut: true, .. } = ptr_ty {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "in '{}': cannot mutate through immutable slice in assignment target",
+                                self.current_file_path
+                            ))
+                        }
+                    }
                     other => Err(format!(
                         "in '{}': cannot index type {:?} in assignment target",
                         self.current_file_path, other
@@ -1189,14 +1265,11 @@ impl<'a> Checker<'a> {
                 .type_of_expression(expression)
                 .map_err(|error| format_error(span, &error)),
             Expression::Integer(_) => Ok(Type::S32),
-            Expression::Boolean(_) => Ok(Type::Bool),
-            Expression::Atom(name) => {
-                self.intern_atom(name);
-                Ok(Type::Atom(name.clone()))
+            Expression::Symbol(name) => {
+                self.intern_symbol(name);
+                Ok(Type::Symbol(name.clone()))
             }
-            Expression::String(_) => Ok(Type::Slice {
-                element: Box::new(Type::U8),
-            }),
+            Expression::String(_) => Ok(Type::Alias("String".to_string())),
 
             Expression::Struct(fields) => {
                 let struct_fields = self.check_struct_fields(fields)?;
@@ -1275,7 +1348,7 @@ impl<'a> Checker<'a> {
                 let enclosing_scopes = self.local_scopes.clone();
                 self.enter_scope();
 
-                let mut block_ty = Type::Atom("none".to_string());
+                let mut block_ty = Type::Symbol("none".to_string());
                 let mut diverged = false;
                 let len = exprs.len();
                 for (i, expr) in exprs.iter_mut().enumerate() {
@@ -1301,7 +1374,7 @@ impl<'a> Checker<'a> {
                 if ty == Type::Never {
                     Ok(Type::Never)
                 } else {
-                    Ok(Type::Atom("none".to_string()))
+                    Ok(Type::Symbol("none".to_string()))
                 }
             }
 
@@ -1346,7 +1419,7 @@ impl<'a> Checker<'a> {
                         is_initialized: true,
                     },
                 );
-                Ok(Type::Atom("none".to_string()))
+                Ok(Type::Symbol("none".to_string()))
             }
 
             Expression::Var { name, ty, value } => {
@@ -1413,7 +1486,7 @@ impl<'a> Checker<'a> {
                         self.current_file_path, name
                     ));
                 }
-                Ok(Type::Atom("none".to_string()))
+                Ok(Type::Symbol("none".to_string()))
             }
 
             Expression::Assign { target, value } => match unspanned_expression_mut(target) {
@@ -1464,7 +1537,7 @@ impl<'a> Checker<'a> {
                             self.current_file_path, name
                         ));
                     }
-                    Ok(Type::Atom("none".to_string()))
+                    Ok(Type::Symbol("none".to_string()))
                 }
                 Expression::Dereference(ptr_expr) => {
                     let raw_ptr_ty = self.type_of_expression(ptr_expr.as_mut())?;
@@ -1496,7 +1569,7 @@ impl<'a> Checker<'a> {
                             self.current_file_path, target_ty, val_ty
                         ));
                     }
-                    Ok(Type::Atom("none".to_string()))
+                    Ok(Type::Symbol("none".to_string()))
                 }
                 Expression::Member { expression: base, field } => {
                     let field = field.clone();
@@ -1515,19 +1588,6 @@ impl<'a> Checker<'a> {
                                 })?;
                             self.resolve_type(&target_field.ty)?
                         }
-                        Type::Slice { element } => match field.as_str() {
-                            "ptr" => Type::Pointer {
-                                element: element.clone(),
-                                is_mut: false,
-                            },
-                            "len" => Type::USize,
-                            _ => {
-                                return Err(format!(
-                                    "in '{}': unknown slice member '.{}'",
-                                    self.current_file_path, field
-                                ));
-                            }
-                        },
                         other => {
                             return Err(format!(
                                 "in '{}': cannot assign to field '{}' of non-struct type {:?}",
@@ -1542,7 +1602,7 @@ impl<'a> Checker<'a> {
                     val_ty = self.coerce_expression_to_type(value, &val_ty, &target_ty)?;
                     if !self.are_types_compatible(&val_ty, &target_ty)? {
                         if Self::is_supported_cast_with_aliases(&val_ty, &target_ty, &self.alias_targets()) {
-                            let orig = std::mem::replace(value.as_mut(), Expression::Boolean(false));
+                            let orig = std::mem::replace(value.as_mut(), Expression::Symbol("false".to_string()));
                             *value = Box::new(Expression::Cast {
                                 expression: Box::new(orig),
                                 ty: target_ty.clone(),
@@ -1554,7 +1614,7 @@ impl<'a> Checker<'a> {
                             ));
                         }
                     }
-                    Ok(Type::Atom("none".to_string()))
+                    Ok(Type::Symbol("none".to_string()))
                 }
                 _ => Err(format!(
                     "in '{}': invalid assignment target: only variables, pointer dereferences ('ptr.*'), and struct fields are supported as assignment targets",
@@ -1593,7 +1653,7 @@ impl<'a> Checker<'a> {
                 let body_result = self.type_of_expression(body);
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
-                Ok(Type::Atom("none".to_string()))
+                Ok(Type::Symbol("none".to_string()))
             }
 
             Expression::For {
@@ -1606,7 +1666,10 @@ impl<'a> Checker<'a> {
 
                 let element_ty = match &iter_ty {
                     Type::Array { element, .. } => self.resolve_type(element)?,
-                    Type::Slice { element } => self.resolve_type(element)?,
+                    other if self.is_slice_type(other)? => {
+                        let elem = self.slice_element_type(other)?;
+                        self.resolve_type(&elem)?
+                    }
                     other => {
                         return Err(format!(
                             "in '{}': for loop expects slice or array iterable, found {:?}",
@@ -1631,7 +1694,7 @@ impl<'a> Checker<'a> {
                 let body_result = self.type_of_expression(body);
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
-                Ok(Type::Atom("none".to_string()))
+                Ok(Type::Symbol("none".to_string()))
             }
 
             Expression::If { arms } => {
@@ -1656,9 +1719,9 @@ impl<'a> Checker<'a> {
                     match &mut arm.condition {
                         IfCondition::Expression(cond) => {
                             let cond_ty = self.type_of_expression(cond)?;
-                            if cond_ty != Type::Bool {
+                            if !self.is_bool_type(&cond_ty)? {
                                 return Err(format!(
-                                    "in '{}': if condition must evaluate to bool, found {:?}",
+                                    "in '{}': if condition must evaluate to Bool (:true | :false), found {:?}",
                                     self.current_file_path, cond_ty
                                 ));
                             }
@@ -1695,7 +1758,7 @@ impl<'a> Checker<'a> {
                         if arm_ty != &Type::Never && arm_ty != &unified_return_ty {
                             let orig = std::mem::replace(
                                 &mut arm.body,
-                                Box::new(Expression::Boolean(false)),
+                                Box::new(Expression::Symbol("false".to_string())),
                             );
                             arm.body = Box::new(Expression::Cast {
                                 expression: orig,
@@ -1828,7 +1891,7 @@ impl<'a> Checker<'a> {
                         if arm_ty != &Type::Never && arm_ty != &unified_return_ty {
                             let orig = std::mem::replace(
                                 &mut arm.body,
-                                Box::new(Expression::Boolean(false)),
+                                Box::new(Expression::Symbol("false".to_string())),
                             );
                             arm.body = Box::new(Expression::Cast {
                                 expression: orig,
@@ -1861,7 +1924,7 @@ impl<'a> Checker<'a> {
                     for (i, element) in elements.iter_mut().enumerate() {
                         let el_ty = &elem_types[i];
                         if el_ty != &unified_elem_ty {
-                            let orig = std::mem::replace(element, Expression::Boolean(false));
+                            let orig = std::mem::replace(element, Expression::Symbol("false".to_string()));
                             *element = Expression::Cast {
                                 expression: Box::new(orig),
                                 ty: unified_elem_ty.clone(),
@@ -1870,8 +1933,9 @@ impl<'a> Checker<'a> {
                     }
                 }
 
-                Ok(Type::Slice {
+                Ok(Type::Array {
                     element: Box::new(unified_elem_ty),
+                    size: elements.len(),
                 })
             }
 
@@ -1880,13 +1944,13 @@ impl<'a> Checker<'a> {
                 let ty = self.resolve_type(&raw_ty)?;
 
                 if *operator == UnaryOperator::Not {
-                    if ty != Type::Bool {
+                    if !self.is_bool_type(&ty)? {
                         return Err(format!(
-                            "in '{}': unary operator 'not' requires a boolean operand, found {:?}",
+                            "in '{}': unary operator 'not' requires a boolean operand (:true | :false), found {:?}",
                             self.current_file_path, ty
                         ));
                     }
-                    return Ok(Type::Bool);
+                    return Ok(Self::bool_type());
                 }
 
                 if !Self::is_integer_type(&ty) {
@@ -1917,14 +1981,14 @@ impl<'a> Checker<'a> {
 
                 if left_type != right_type {
                     if matches!(unspanned_expression(right), Expression::Integer(_)) {
-                        let orig = std::mem::replace(right.as_mut(), Expression::Boolean(false));
+                        let orig = std::mem::replace(right.as_mut(), Expression::Symbol("false".to_string()));
                         *right = Box::new(Expression::Cast {
                             expression: Box::new(orig),
                             ty: left_type.clone(),
                         });
                         right_type = left_type.clone();
                     } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
-                        let orig = std::mem::replace(left.as_mut(), Expression::Boolean(false));
+                        let orig = std::mem::replace(left.as_mut(), Expression::Symbol("false".to_string()));
                         *left = Box::new(Expression::Cast {
                             expression: Box::new(orig),
                             ty: right_type.clone(),
@@ -1952,37 +2016,74 @@ impl<'a> Checker<'a> {
                 let raw_right = self.type_of_expression(right)?;
                 let mut left_type = self.resolve_type(&raw_left)?;
                 let mut right_type = self.resolve_type(&raw_right)?;
+                let bool_type = Self::bool_type();
 
-                if matches!(left_type, Type::Atom(_)) || matches!(right_type, Type::Atom(_)) {
+                if (self.is_bool_type(&left_type)? || self.is_bool_type(&right_type)?)
+                    && (matches!(left_type, Type::Symbol(_))
+                        || matches!(right_type, Type::Symbol(_))
+                        || self.is_bool_type(&left_type)?
+                        || self.is_bool_type(&right_type)?)
+                {
                     if !matches!(
                         operator,
                         ComparisonOperator::Equal | ComparisonOperator::NotEqual
                     ) {
                         return Err(format!(
-                            "in '{}': atoms only support equality comparisons ('=' and '!=')",
+                            "in '{}': booleans and symbols only support equality comparisons ('=' and '!=')",
+                            self.current_file_path
+                        ));
+                    }
+                    if left_type != bool_type && self.is_bool_type(&left_type)? {
+                        let orig = std::mem::replace(left.as_mut(), Expression::Symbol("false".to_string()));
+                        *left = Box::new(Expression::Cast {
+                            expression: Box::new(orig),
+                            ty: bool_type.clone(),
+                        });
+                        left_type = bool_type.clone();
+                    }
+                    if right_type != bool_type && self.is_bool_type(&right_type)? {
+                        let orig = std::mem::replace(right.as_mut(), Expression::Symbol("false".to_string()));
+                        *right = Box::new(Expression::Cast {
+                            expression: Box::new(orig),
+                            ty: bool_type.clone(),
+                        });
+                        right_type = bool_type.clone();
+                    }
+                    if left_type == right_type {
+                        return Ok(bool_type);
+                    }
+                }
+
+                if matches!(left_type, Type::Symbol(_)) || matches!(right_type, Type::Symbol(_)) {
+                    if !matches!(
+                        operator,
+                        ComparisonOperator::Equal | ComparisonOperator::NotEqual
+                    ) {
+                        return Err(format!(
+                            "in '{}': symbols only support equality comparisons ('=' and '!=')",
                             self.current_file_path
                         ));
                     }
                     if left_type != right_type {
                         return Err(format!(
-                            "in '{}': cannot compare distinct atom types: {:?} and {:?}",
+                            "in '{}': cannot compare distinct symbol types: {:?} and {:?}",
                             self.current_file_path, left_type, right_type
                         ));
                     }
-                    return Ok(Type::Bool);
+                    return Ok(bool_type);
                 }
 
                 if left_type != right_type {
                     if Self::is_integer_type(&left_type) && Self::is_integer_type(&right_type) {
                         if matches!(unspanned_expression(right), Expression::Integer(_)) {
-                            let orig = std::mem::replace(right.as_mut(), Expression::Boolean(false));
+                            let orig = std::mem::replace(right.as_mut(), Expression::Symbol("false".to_string()));
                             *right = Box::new(Expression::Cast {
                                 expression: Box::new(orig),
                                 ty: left_type.clone(),
                             });
                             right_type = left_type.clone();
                         } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
-                            let orig = std::mem::replace(left.as_mut(), Expression::Boolean(false));
+                            let orig = std::mem::replace(left.as_mut(), Expression::Symbol("false".to_string()));
                             *left = Box::new(Expression::Cast {
                                 expression: Box::new(orig),
                                 ty: right_type.clone(),
@@ -1999,7 +2100,7 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                Ok(Type::Bool)
+                Ok(bool_type)
             }
 
             Expression::Cast { .. } => {
@@ -2077,7 +2178,7 @@ impl<'a> Checker<'a> {
                         });
                     }
 
-                    let orig_inner = match std::mem::replace(expression, Expression::Boolean(false))
+                    let orig_inner = match std::mem::replace(expression, Expression::Symbol("false".to_string()))
                     {
                         Expression::Cast { expression: inner, .. } => inner,
                         _ => unreachable!(),
@@ -2176,8 +2277,11 @@ impl<'a> Checker<'a> {
 
                 match expression_type {
                     Type::Array { element, .. } => Ok(*element),
-                    Type::Slice { element } => Ok(*element),
                     Type::Pointer { element, .. } => Ok(*element),
+                    ref other if self.is_slice_type(other)? => {
+                        let elem = self.slice_element_type(other)?;
+                        Ok(elem)
+                    }
                     other => Err(format!(
                         "in '{}': cannot index value of type {:?}",
                         self.current_file_path, other
@@ -2219,17 +2323,6 @@ impl<'a> Checker<'a> {
                             ))
                         }
                     }
-                    Type::Slice { element } => match field.as_str() {
-                        "ptr" => Ok(Type::Pointer {
-                            element,
-                            is_mut: false,
-                        }),
-                        "len" => Ok(Type::USize),
-                        _ => Err(format!(
-                            "in '{}': unknown slice member '.{}'",
-                            self.current_file_path, field
-                        )),
-                    },
                     Type::Array { element, .. } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer {
                             element,
@@ -2312,33 +2405,23 @@ impl<'a> Checker<'a> {
                 let ty = self.type_of_expression(expr)?;
                 let resolved = self.resolve_type(&ty)?;
                 match resolved {
-                    Type::Struct(fields) => {
-                        if fields.len() != 2 {
-                            return Err(format!(
-                                "in '{}': '@slice' requires a struct with 2 fields (matching slice layout *T, usize), found {} fields",
-                                self.current_file_path, fields.len()
-                            ));
-                        }
-                        let elem_ty = match self.resolve_type(&fields[0].ty)? {
-                            Type::Pointer { element, .. } => *element,
-                            other => return Err(format!(
-                                "in '{}': '@slice' field 0 must be a pointer '*T', found {:?}",
-                                self.current_file_path, other
-                            )),
-                        };
-                        let len_ty = self.resolve_type(&fields[1].ty)?;
-                        if !matches!(len_ty, Type::USize) {
-                            return Err(format!(
-                                "in '{}': '@slice' field 1 must be 'usize', found {:?}",
-                                self.current_file_path, len_ty
-                            ));
-                        }
-                        Ok(Type::Slice {
-                            element: Box::new(elem_ty),
-                        })
+                    Type::Array { element, .. } => {
+                        Ok(Type::Struct(vec![
+                            StructFieldType {
+                                name: "ptr".to_string(),
+                                ty: Type::Pointer {
+                                    element,
+                                    is_mut: false,
+                                },
+                            },
+                            StructFieldType {
+                                name: "len".to_string(),
+                                ty: Type::USize,
+                            },
+                        ]))
                     }
                     other => Err(format!(
-                        "in '{}': '@slice' requires a struct, found {:?}",
+                        "in '{}': '@slice' requires an array literal or array value, found {:?}",
                         self.current_file_path, other
                     )),
                 }
@@ -2485,12 +2568,6 @@ impl<'a> Checker<'a> {
                         size: s2,
                     },
                 ) => s1 == s2 && compatible(e1, e2, aliases, visited),
-                (Type::Slice { element: e1 }, Type::Slice { element: e2 }) => {
-                    if **e1 == Type::Opaque || **e2 == Type::Opaque {
-                        return true;
-                    }
-                    compatible(e1, e2, aliases, visited)
-                }
                 (
                     Type::Function {
                         parameters: p1,
@@ -2633,12 +2710,6 @@ impl<'a> Checker<'a> {
                     return source_size == target_size
                         && supported(source_element, target_element, aliases, visited);
                 }
-                (Type::Slice { element: source }, Type::Slice { element: target }) => {
-                    if **source == Type::Opaque || **target == Type::Opaque {
-                        return true;
-                    }
-                    return supported(source, target, aliases, visited);
-                }
                 (
                     Type::Pointer {
                         element: source,
@@ -2681,14 +2752,8 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
 
-            if matches!(source, Type::Atom(_)) || matches!(target, Type::Atom(_)) {
+            if matches!(source, Type::Symbol(_)) || matches!(target, Type::Symbol(_)) {
                 return false;
-            }
-
-            if (*source == Type::Bool && Checker::is_integer_type(target))
-                || (Checker::is_integer_type(source) && *target == Type::Bool)
-            {
-                return true;
             }
 
             if matches!(source, Type::Pointer { .. } | Type::Function { .. })

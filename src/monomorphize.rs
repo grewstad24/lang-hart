@@ -10,7 +10,6 @@ pub fn mangle_type(ty: &Type) -> String {
         Type::Never => "never".to_string(),
         Type::Opaque => "opaque".to_string(),
         Type::MetaType => "metatype".to_string(),
-        Type::Bool => "bool".to_string(),
         Type::U8 => "u8".to_string(),
         Type::U16 => "u16".to_string(),
         Type::U32 => "u32".to_string(),
@@ -20,7 +19,7 @@ pub fn mangle_type(ty: &Type) -> String {
         Type::S32 => "s32".to_string(),
         Type::S64 => "s64".to_string(),
         Type::SSize => "ssize".to_string(),
-        Type::Atom(name) => format!("atom_{}", name),
+        Type::Symbol(name) => format!("symbol_{}", name),
         Type::Alias(name) => name.clone(),
         Type::GenericInstance {
             name,
@@ -40,7 +39,6 @@ pub fn mangle_type(ty: &Type) -> String {
                 format!("ptr_{}", mangle_type(element))
             }
         }
-        Type::Slice { element } => format!("slice_{}", mangle_type(element)),
         Type::Array { element, size } => format!("arr_{}_{}", size, mangle_type(element)),
         Type::Struct(fields) => {
             let inner = fields
@@ -110,9 +108,6 @@ pub fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type
         Type::Pointer { element, is_mut } => Type::Pointer {
             element: Box::new(substitute_type(element, substitutions)),
             is_mut: *is_mut,
-        },
-        Type::Slice { element } => Type::Slice {
-            element: Box::new(substitute_type(element, substitutions)),
         },
         Type::Array { element, size } => Type::Array {
             element: Box::new(substitute_type(element, substitutions)),
@@ -276,8 +271,7 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         }
         Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Boolean(_)
-        | Expression::Atom(_) => {}
+        | Expression::Symbol(_) => {}
     }
 }
 
@@ -512,8 +506,7 @@ fn scan_and_rewrite_expression(
         | Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Boolean(_)
-        | Expression::Atom(_) => {}
+        | Expression::Symbol(_) => {}
     }
     Ok(())
 }
@@ -601,7 +594,6 @@ fn concretize_type(
 ) -> Result<(), String> {
     match ty {
         Type::Pointer { element, .. } => concretize_type(element, templates, generated, changed)?,
-        Type::Slice { element } => concretize_type(element, templates, generated, changed)?,
         Type::Array { element, .. } => concretize_type(element, templates, generated, changed)?,
         Type::Struct(fields) => {
             for f in fields {
@@ -799,8 +791,7 @@ fn concretize_expression(
         }
         Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Boolean(_)
-        | Expression::Atom(_)
+        | Expression::Symbol(_)
         | Expression::Identifier(_) => {}
     }
     Ok(())
@@ -931,7 +922,6 @@ mod tests {
     fn test_mangle_types() {
         assert_eq!(mangle_type(&Type::S32), "s32");
         assert_eq!(mangle_type(&Type::USize), "usize");
-        assert_eq!(mangle_type(&Type::Bool), "bool");
         assert_eq!(
             mangle_type(&Type::Pointer {
                 element: Box::new(Type::U8),
@@ -940,10 +930,11 @@ mod tests {
             "ptr_u8"
         );
         assert_eq!(
-            mangle_type(&Type::Slice {
-                element: Box::new(Type::U8)
+            mangle_type(&Type::GenericInstance {
+                name: "Slice".to_string(),
+                type_arguments: vec![Type::U8],
             }),
-            "slice_u8"
+            "Slice__u8"
         );
 
         let struct_type = Type::Struct(vec![
@@ -1004,7 +995,7 @@ mod tests {
                         }),
                         is_variadic: false,
                     }),
-                    value: Expression::Atom("none".to_string()),
+                    value: Expression::Symbol("none".to_string()),
                     is_meta: true,
                 },
             },

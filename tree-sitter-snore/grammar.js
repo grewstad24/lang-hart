@@ -171,11 +171,10 @@ module.exports = grammar({
       $.generic_type,
       $.type_identifier,
       $.pointer_type,
-      $.slice_type,
       $.array_type,
       $.struct_type,
       $.union_type,
-      $.atom_literal,
+      $.symbol_literal,
       $.parenthesized_type,
     ),
 
@@ -195,15 +194,13 @@ module.exports = grammar({
       's16', 's32', 's64',
       'u8', 'u16', 'u32', 'u64',
       'usize', 'ssize',
-      'bool', 'opaque', 'never',
+      'opaque', 'never',
       'type'
     ),
 
     type_identifier: $ => token(/[a-zA-Z_][a-zA-Z0-9_]*/),
 
     pointer_type: $ => prec(PREC.UNARY, seq('*', optional('mut'), $._type)),
-
-    slice_type: $ => prec(PREC.UNARY, seq('[]', $._type)),
 
     array_type: $ => prec(PREC.UNARY, seq(
       '[',
@@ -265,6 +262,8 @@ module.exports = grammar({
       $.return_expression,
       $.record_literal,
       $.slice_expression,
+      $.atom_expression,
+      $.generalise_expression,
       $.sizeof_expression,
       $.type_literal,
       $.parenthesized_expression,
@@ -461,6 +460,16 @@ module.exports = grammar({
       field('value', $._expression)
     )),
 
+    atom_expression: $ => prec(PREC.PRIMARY, seq(
+      '@atom',
+      field('value', choice($.symbol_literal, $._expression))
+    )),
+
+    generalise_expression: $ => prec(PREC.PRIMARY, seq(
+      '@generalise',
+      field('value', $._expression)
+    )),
+
     parenthesized_expression: $ => prec(PREC.PRIMARY, seq(
       '(',
       $._non_assignment_expression,
@@ -498,16 +507,13 @@ module.exports = grammar({
     _literal: $ => choice(
       $.integer_literal,
       $.string_literal,
-      $.boolean_literal,
-      $.atom_literal,
+      $.symbol_literal,
     ),
 
     integer_literal: $ => token(choice(
       /0x[0-9a-fA-F]+/,
       /[0-9]+/
     )),
-
-    boolean_literal: $ => choice('true', 'false'),
 
     string_literal: $ => seq(
       '"',
@@ -527,7 +533,7 @@ module.exports = grammar({
       /U[0-9a-fA-F]{8}/
     )))),
 
-    atom_literal: $ => token(seq(':', /[a-zA-Z_][a-zA-Z0-9_]*/)),
+    symbol_literal: $ => token(seq(':', /[a-zA-Z_][a-zA-Z0-9_]*/)),
 
     identifier: $ => token(/[a-zA-Z_][a-zA-Z0-9_]*/),
   }

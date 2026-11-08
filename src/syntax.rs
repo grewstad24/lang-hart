@@ -91,8 +91,7 @@ pub enum Type {
     U64,
     USize,
     SSize,
-    Bool,
-    Atom(String),
+    Symbol(String),
     Alias(String),
     GenericInstance {
         name: String,
@@ -106,9 +105,6 @@ pub enum Type {
     Array {
         element: Box<Type>,
         size: usize,
-    },
-    Slice {
-        element: Box<Type>,
     },
     Function {
         parameters: Vec<Type>,
@@ -195,8 +191,7 @@ pub enum Expression {
     // Primary Literals & Access
     Integer(i64),
     String(Vec<u8>),
-    Boolean(bool),
-    Atom(String),
+    Symbol(String),
     Identifier(String),
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
@@ -392,8 +387,7 @@ pub enum Token {
     Integer(i64),
     Float(f64),
     String(Vec<u8>),
-    Boolean(bool),
-    Atom(String),
+    Symbol(String),
     LParen,
     RParen,
     LBracket,
@@ -462,7 +456,6 @@ pub enum Token {
     TypeU64,
     TypeUSize,
     TypeSSize,
-    TypeBool,
     Newline,
     Eof,
 }
@@ -651,6 +644,9 @@ impl Lexer {
                         let is_atom = if let Some(c) = self.peek_char(1) {
                             if c.is_alphabetic() || c == '_' {
                                 let prev_is_identifier = tokens.last().map_or(false, |tok| {
+                                    if tokens.len() >= 2 && matches!(tokens[tokens.len() - 2], Token::At) {
+                                        return false;
+                                    }
                                     matches!(
                                         tok,
                                         Token::Identifier(_)
@@ -777,10 +773,10 @@ impl Lexer {
 
         let name: String = self.chars[start..self.position].iter().collect();
         if name.is_empty() {
-            return Err("atom identifier cannot be empty".to_string());
+            return Err("symbol identifier cannot be empty".to_string());
         }
 
-        Ok(Token::Atom(name))
+        Ok(Token::Symbol(name))
     }
 
     fn lex_identifier(&mut self) -> Token {
@@ -826,9 +822,6 @@ impl Lexer {
             "u64" => Token::TypeU64,
             "usize" => Token::TypeUSize,
             "ssize" => Token::TypeSSize,
-            "bool" => Token::TypeBool,
-            "true" => Token::Boolean(true),
-            "false" => Token::Boolean(false),
             "not" => Token::Not,
             "repeat" => Token::Repeat,
             "for" => Token::For,
@@ -1185,10 +1178,6 @@ impl Parser {
             Token::TypeOpaque => {
                 self.advance();
                 Ok("opaque".to_string())
-            }
-            Token::TypeBool => {
-                self.advance();
-                Ok("bool".to_string())
             }
             Token::TypeKeyword => {
                 self.advance();
@@ -2145,7 +2134,6 @@ impl Parser {
                 | Token::Import
                 | Token::To
                 | Token::TypeOpaque
-                | Token::TypeBool
                 | Token::TypeKeyword
                 | Token::TypeS16
                 | Token::TypeS32
@@ -2201,8 +2189,7 @@ impl Parser {
                 | Token::TypeU32
                 | Token::TypeU64
                 | Token::TypeUSize
-                | Token::TypeSSize
-                | Token::TypeBool => {
+                | Token::TypeSSize => {
                     idx += 1;
                     while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
                         idx += 1;
@@ -2255,8 +2242,7 @@ impl Parser {
                 | Token::TypeU32
                 | Token::TypeU64
                 | Token::TypeUSize
-                | Token::TypeSSize
-                | Token::TypeBool => {
+                | Token::TypeSSize => {
                     idx += 1;
                     while idx < self.tokens.len() && self.tokens[idx] == Token::Newline {
                         idx += 1;
@@ -2275,17 +2261,13 @@ impl Parser {
                 self.advance();
                 Ok(Expression::Integer(value))
             }
-            Token::Boolean(value) => {
-                self.advance();
-                Ok(Expression::Boolean(value))
-            }
             Token::String(value) => {
                 self.advance();
                 Ok(Expression::String(value))
             }
-            Token::Atom(name) => {
+            Token::Symbol(name) => {
                 self.advance();
-                Ok(Expression::Atom(name))
+                Ok(Expression::Symbol(name))
             }
             Token::Identifier(name) => {
                 self.advance();
@@ -2304,18 +2286,40 @@ impl Parser {
                     return Ok(Expression::SizeOf(ty));
                 }
                 if tag == "slice" {
-                    let operand = self.parse_unary()?;
+                    let operand = self.parse_primary()?;
                     return Ok(Expression::Slice(Box::new(operand)));
+                }
+                if tag == "atom" {
+                    let operand = self.parse_primary()?;
+                    let symbol_name = match unspanned_expression(&operand) {
+                        Expression::Symbol(name) => name.clone(),
+                        _ => return Err(format!("'@atom' expects a symbol, found {:?}", operand)),
+                    };
+                    return Ok(Expression::Struct(vec![
+                        StructFieldInit {
+                            name: "str".to_string(),
+                            value: Expression::String(symbol_name.into_bytes()),
+                        }
+                    ]));
+                }
+                if tag == "generalise" {
+                    let operand = self.parse_primary()?;
+                    match unspanned_expression(&operand) {
+                        Expression::Struct(_) | Expression::Array(_) | Expression::Record(_) | Expression::Slice(_) => {
+                            return Ok(Self::generalise_expression(operand)?);
+                        }
+                        _ => return Err(format!("'@generalise' expects a struct or array literal, found {:?}", operand)),
+                    }
                 }
                 let is_record = tag == "record";
                 if tag != "record" && tag != "struct" {
                     return Err(format!(
-                        "unknown struct tag '@{}', expected '@record', '@struct', '@sizeOf', or '@slice'",
+                        "unknown struct tag '@{}', expected '@record', '@struct', '@sizeOf', '@slice', '@atom', or '@generalise'",
                         tag
                     ));
                 }
                 self.expect(Token::LParen)?;
-                let fields = self.parse_struct_fields(Token::RParen, is_record)?;
+                let fields = self.parse_struct_fields(Token::RParen)?;
                 if is_record {
                     Ok(Expression::Record(fields))
                 } else {
@@ -2353,7 +2357,7 @@ impl Parser {
                     self.expect(Token::RParen)?;
                     Ok(Expression::Type(Type::Struct(fields)))
                 } else if self.is_struct_literal_start() {
-                    let fields = self.parse_struct_fields(Token::RParen, false)?;
+                    let fields = self.parse_struct_fields(Token::RParen)?;
                     Ok(Expression::Struct(fields))
                 } else {
                     let expr = self.parse_expression()?;
@@ -2381,7 +2385,6 @@ impl Parser {
             | Token::TypeU64
             | Token::TypeUSize
             | Token::TypeSSize
-            | Token::TypeBool
             | Token::TypeOpaque => {
                 let tok = self.peek().clone();
                 return Err(format!(
@@ -2484,7 +2487,6 @@ impl Parser {
     pub fn parse_struct_fields(
         &mut self,
         closing_token: Token,
-        is_record: bool,
     ) -> Result<Vec<StructFieldInit>, String> {
         let mut fields = Vec::new();
         self.skip_newlines();
@@ -2503,12 +2505,8 @@ impl Parser {
             let value = if self.is(Token::LParen) {
                 self.advance();
                 self.skip_newlines();
-                let inner_fields = self.parse_struct_fields(Token::RParen, is_record)?;
-                if is_record {
-                    Expression::Record(inner_fields)
-                } else {
-                    Expression::Struct(inner_fields)
-                }
+                let inner_fields = self.parse_struct_fields(Token::RParen)?;
+                Expression::Struct(inner_fields)
             } else {
                 self.parse_expression()?
             };
@@ -2522,6 +2520,66 @@ impl Parser {
             self.expect(closing_token)?;
         }
         Ok(fields)
+    }
+
+    pub fn generalise_expression(expr: Expression) -> Result<Expression, String> {
+        match expr {
+            Expression::Spanned { expression, span } => Ok(Expression::Spanned {
+                expression: Box::new(Self::generalise_expression(*expression)?),
+                span,
+            }),
+            Expression::Symbol(name) => {
+                if name == "true" || name == "false" {
+                    Ok(Expression::Symbol(name))
+                } else {
+                    Ok(Expression::Struct(vec![StructFieldInit {
+                        name: "str".to_string(),
+                        value: Expression::String(name.into_bytes()),
+                    }]))
+                }
+            }
+            Expression::Struct(fields) => {
+                let gen_fields = fields
+                    .into_iter()
+                    .map(|f| {
+                        Ok(StructFieldInit {
+                            name: f.name,
+                            value: Self::generalise_expression(f.value)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Expression::Record(gen_fields))
+            }
+            Expression::Record(fields) => {
+                let gen_fields = fields
+                    .into_iter()
+                    .map(|f| {
+                        Ok(StructFieldInit {
+                            name: f.name,
+                            value: Self::generalise_expression(f.value)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Expression::Record(gen_fields))
+            }
+            Expression::Array(elements) => {
+                let gen_elems = elements
+                    .into_iter()
+                    .map(|e| {
+                        let gen_val = Self::generalise_expression(e)?;
+                        Ok(Expression::Cast {
+                            expression: Box::new(gen_val),
+                            ty: Type::Alias("Generic".to_string()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Expression::Slice(Box::new(Expression::Array(gen_elems))))
+            }
+            Expression::Slice(inner) => {
+                Ok(Expression::Slice(Box::new(Self::generalise_expression(*inner)?)))
+            }
+            other => Ok(other),
+        }
     }
 
     fn parse_match_expression(&mut self) -> Result<Expression, String> {
@@ -2811,9 +2869,9 @@ impl Parser {
                 self.advance();
                 Ok(Type::Alias("val".to_string()))
             }
-            Token::Atom(name) => {
+            Token::Symbol(name) => {
                 self.advance();
-                Ok(Type::Atom(name))
+                Ok(Type::Symbol(name))
             }
             Token::TypeS16 => {
                 self.advance();
@@ -2851,10 +2909,6 @@ impl Parser {
                 self.advance();
                 Ok(Type::SSize)
             }
-            Token::TypeBool => {
-                self.advance();
-                Ok(Type::Bool)
-            }
             Token::TypeOpaque => {
                 self.advance();
                 Ok(Type::Opaque)
@@ -2882,29 +2936,20 @@ impl Parser {
             Token::LBracket => {
                 self.advance();
                 self.skip_newlines();
-                if self.is(Token::RBracket) {
-                    self.advance();
-                    self.skip_newlines();
-                    let inner = self.parse_single_type()?;
-                    Ok(Type::Slice {
-                        element: Box::new(inner),
-                    })
-                } else {
-                    let size = match self.peek().clone() {
-                        Token::Integer(value) if value >= 0 => {
-                            self.advance();
-                            value as usize
-                        }
-                        token => return Err(format!("expected array size, found {:?}", token)),
-                    };
-                    self.expect(Token::RBracket)?;
-                    self.skip_newlines();
-                    let inner = self.parse_single_type()?;
-                    Ok(Type::Array {
-                        element: Box::new(inner),
-                        size,
-                    })
-                }
+                let size = match self.peek().clone() {
+                    Token::Integer(value) if value >= 0 => {
+                        self.advance();
+                        value as usize
+                    }
+                    token => return Err(format!("expected array size, found {:?}", token)),
+                };
+                self.expect(Token::RBracket)?;
+                self.skip_newlines();
+                let inner = self.parse_single_type()?;
+                Ok(Type::Array {
+                    element: Box::new(inner),
+                    size,
+                })
             }
             Token::LParen => {
                 self.advance();

@@ -9,10 +9,10 @@ fn pprint( item: Generic ) -> :none {
 
 fn internal_pprint( item: Generic, indent_level: u16 ) -> :none {
       match item using z {
-            bool => pprint_bool(z)
+            Bool => pprint_bool(z)
             Integer => pprint_integer(z)
             String => pprint_string(z)
-            []Generic => pprint_array(z, indent_level)
+            Slice<Generic> => pprint_array(z, indent_level)
             else => :none
       }
 }

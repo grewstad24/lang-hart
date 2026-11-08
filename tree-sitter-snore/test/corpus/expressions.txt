@@ -4,7 +4,7 @@ Expressions and Literals
 
 fn test() {
     let x := 1 + 2 * 3
-    let b := not false
+    let b := not :false
     let r := @record (
         name := "alice"
         age := 30
@@ -43,7 +43,7 @@ fn test() {
       (let_declaration
         name: (identifier)
         value: (unary_expression
-          operand: (boolean_literal)))
+          operand: (symbol_literal)))
       (let_declaration
         name: (identifier)
         value: (record_literal

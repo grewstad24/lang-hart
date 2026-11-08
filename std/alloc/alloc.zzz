@@ -9,7 +9,7 @@ decl mod alloc {
 extern fn malloc( size: usize ) -> *mut opaque
 
 
-meta fn contiguous_alloc( num: usize, T: type ) -> []T { @slice (
+meta fn contiguous_alloc( num: usize, T: type ) -> Slice <T> {(
       ptr := malloc(num * @sizeOf T) as *T
       len := num
 )}

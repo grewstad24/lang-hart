@@ -25,10 +25,7 @@ enum Binding<'ctx> {
         ty: Type,
         value: IntValue<'ctx>,
     },
-    Boolean {
-        value: IntValue<'ctx>,
-    },
-    Atom {
+    Symbol {
         name: String,
         value: StructValue<'ctx>,
     },
@@ -50,11 +47,6 @@ enum Binding<'ctx> {
     Pointer {
         ty: Type,
         value: PointerValue<'ctx>,
-    },
-    Slice {
-        ty: Type,
-        value: StructValue<'ctx>,
-        storage: Option<PointerValue<'ctx>>,
     },
     Function {
         signature: Signature,
@@ -126,11 +118,78 @@ impl<'ctx> Codegen<'ctx> {
             .get_pointer_byte_size(Some(AddressSpace::default())) as u64
     }
 
-    fn atom_binding(&self, name: &str) -> Binding<'ctx> {
-        Binding::Atom {
+    fn symbol_binding(&self, name: &str) -> Binding<'ctx> {
+        Binding::Symbol {
             name: name.to_string(),
             value: self.context.struct_type(&[], false).const_zero(),
         }
+    }
+
+    fn bool_type(&self) -> Type {
+        Type::Union(vec![
+            Type::Symbol("false".to_string()),
+            Type::Symbol("true".to_string()),
+        ])
+    }
+
+    fn bool_binding(&mut self, cond: IntValue<'ctx>) -> Result<Binding<'ctx>, String> {
+        let bool_ty = self.bool_type();
+        let llvm_bool_ty = self.llvm_type(&bool_ty)?.into_struct_type();
+        let tag_i8 = self
+            .builder
+            .build_int_z_extend(cond, self.context.i8_type(), "bool_tag")
+            .map_err(|e| e.to_string())?;
+        let alloca = self
+            .builder
+            .build_alloca(llvm_bool_ty, "bool_union")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(alloca, llvm_bool_ty.const_zero())
+            .map_err(|e| e.to_string())?;
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(llvm_bool_ty, alloca, 0, "tag_ptr")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(tag_ptr, tag_i8)
+            .map_err(|e| e.to_string())?;
+        let loaded = self
+            .builder
+            .build_load(llvm_bool_ty, alloca, "boxed_bool")
+            .map_err(|e| e.to_string())?
+            .into_struct_value();
+        Ok(Binding::Union {
+            ty: bool_ty,
+            value: loaded,
+            storage: Some(alloca),
+        })
+    }
+
+    fn is_slice_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_alias_root(ty)?;
+        if let Type::Struct(fields) = resolved {
+            if fields.len() == 2 && fields[0].name == "ptr" && fields[1].name == "len" {
+                let f0 = self.resolve_alias_root(&fields[0].ty)?;
+                let f1 = self.resolve_alias_root(&fields[1].ty)?;
+                if matches!(f0, Type::Pointer { .. }) && matches!(f1, Type::USize) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn slice_element_type(&self, ty: &Type) -> Result<Type, String> {
+        let resolved = self.resolve_alias_root(ty)?;
+        if let Type::Struct(fields) = resolved {
+            if fields.len() == 2 && fields[0].name == "ptr" {
+                let f0 = self.resolve_alias_root(&fields[0].ty)?;
+                if let Type::Pointer { element, .. } = f0 {
+                    return Ok((**element).clone());
+                }
+            }
+        }
+        Err(format!("expected slice type, found {:?}", ty))
     }
 
     fn resolve_alias_root<'a>(&'a self, mut ty: &'a Type) -> Result<&'a Type, String> {
@@ -423,7 +482,7 @@ impl<'ctx> Codegen<'ctx> {
             let ret_ty = if let Some(sig) = signature {
                 (*sig.return_type).clone()
             } else {
-                Type::Atom("none".to_string())
+                Type::Symbol("none".to_string())
             };
 
             self.exit_scope(stack_ptr)?;
@@ -518,16 +577,6 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        if matches!((&source_type, target_type), (Type::Slice { .. }, Type::Slice { .. })) {
-            if let Binding::Slice { value, storage, .. } = binding {
-                return Ok(Binding::Slice {
-                    ty: target_type.clone(),
-                    value,
-                    storage,
-                });
-            }
-        }
-
         Ok(binding)
     }
 
@@ -540,15 +589,9 @@ impl<'ctx> Codegen<'ctx> {
                 ty: Type::S32,
                 value: self.context.i32_type().const_int(*value as u64, true),
             }),
-            Expression::Boolean(value) => Ok(Binding::Boolean {
-                value: self
-                    .context
-                    .bool_type()
-                    .const_int(if *value { 1 } else { 0 }, false),
-            }),
-            Expression::Atom(name) => {
+            Expression::Symbol(name) => {
                 let empty_struct = self.context.struct_type(&[], false).const_zero();
-                Ok(Binding::Atom {
+                Ok(Binding::Symbol {
                     name: name.clone(),
                     value: empty_struct,
                 })
@@ -595,20 +638,6 @@ impl<'ctx> Codegen<'ctx> {
                             .into_array_value();
 
                         return Ok(Binding::Array {
-                            ty: local.ty.clone(),
-                            value: loaded,
-                            storage: Some(local.alloca),
-                        });
-                    }
-
-                    if let Type::Slice { .. } = resolved_local_ty {
-                        let loaded = self
-                            .builder
-                            .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
-                            .map_err(|e| e.to_string())?
-                            .into_struct_value();
-
-                        return Ok(Binding::Slice {
                             ty: local.ty.clone(),
                             value: loaded,
                             storage: Some(local.alloca),
@@ -666,20 +695,6 @@ impl<'ctx> Codegen<'ctx> {
                         });
                     }
 
-                    if let Type::Slice { .. } = resolved_global_ty {
-                        let loaded = self
-                            .builder
-                            .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
-                            .map_err(|e| e.to_string())?
-                            .into_struct_value();
-
-                        return Ok(Binding::Slice {
-                            ty: global_var.ty.clone(),
-                            value: loaded,
-                            storage: Some(global_var.pointer),
-                        });
-                    }
-
                     let loaded = self
                         .builder
                         .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
@@ -695,7 +710,7 @@ impl<'ctx> Codegen<'ctx> {
                     } else {
                         Signature {
                             parameters: vec![],
-                            return_type: Box::new(Type::Atom("none".to_string())),
+                            return_type: Box::new(Type::Symbol("none".to_string())),
                             is_variadic: false,
                         }
                     };
@@ -709,7 +724,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Block(exprs) => {
                 self.local_scopes.push(HashMap::new());
-                let mut last_binding = self.atom_binding("none");
+                let mut last_binding = self.symbol_binding("none");
                 for expr in exprs {
                     if let Some(bb) = self.builder.get_insert_block() {
                         if bb.get_terminator().is_some() {
@@ -723,13 +738,13 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Discard(expr) => {
                 self.codegen_expression(expr)?;
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::Return(expr) => {
                 let binding = self.codegen_expression(expr)?;
                 self.exit_current_scope()?;
                 self.build_return(&binding)?;
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::Let { name, value } => {
                 let current_binding = self.codegen_expression(value)?;
@@ -750,7 +765,7 @@ impl<'ctx> Codegen<'ctx> {
                     .last_mut()
                     .unwrap()
                     .insert(name.clone(), LocalVar { ty, alloca });
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::Var { name, ty, value } => {
                 if let Some(val_expr) = value {
@@ -793,7 +808,7 @@ impl<'ctx> Codegen<'ctx> {
                         },
                     );
                 }
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::Assign { target, value } => {
                 let current_binding = self.codegen_expression(value)?;
@@ -809,7 +824,7 @@ impl<'ctx> Codegen<'ctx> {
                             .build_store(local.alloca, val)
                             .map_err(|e| e.to_string())?;
 
-                        Ok(self.atom_binding("none"))
+                        Ok(self.symbol_binding("none"))
                     }
                     Expression::Dereference(ptr_expr) => {
                         let ptr_binding = self.codegen_expression(ptr_expr)?;
@@ -839,7 +854,7 @@ impl<'ctx> Codegen<'ctx> {
                             .build_store(dest_ptr, val)
                             .map_err(|e| e.to_string())?;
 
-                        Ok(self.atom_binding("none"))
+                        Ok(self.symbol_binding("none"))
                     }
                     Expression::Member { .. } => {
                         let dest_ptr_binding = self.codegen_address_of(target)?;
@@ -856,7 +871,7 @@ impl<'ctx> Codegen<'ctx> {
                             .build_store(dest_ptr, val)
                             .map_err(|e| e.to_string())?;
 
-                        Ok(self.atom_binding("none"))
+                        Ok(self.symbol_binding("none"))
                     }
                     _ => Err("unsupported assignment target".to_string()),
                 }
@@ -1010,7 +1025,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 self.builder.position_at_end(merge_bb);
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::For {
                 iterable,
@@ -1039,10 +1054,11 @@ impl<'ctx> Codegen<'ctx> {
                         };
                         (elem_clone, len, first_elem_ptr)
                     }
-                    Type::Slice { ref element } => {
+                    ref other if self.is_slice_type(other)? => {
+                        let elem_ty = self.slice_element_type(other)?;
                         let slice_struct = match iter_binding {
-                            Binding::Slice { value, .. } => value,
-                            _ => return Err("expected slice binding".to_string()),
+                            Binding::Struct { value, .. } => value,
+                            _ => self.binding_basic_value(&iter_binding)?.into_struct_value(),
                         };
                         let ptr_val = self
                             .builder
@@ -1054,7 +1070,7 @@ impl<'ctx> Codegen<'ctx> {
                             .build_extract_value(slice_struct, 1, "slicelen")
                             .map_err(|e| e.to_string())?
                             .into_int_value();
-                        ((**element).clone(), len_val, ptr_val)
+                        (elem_ty, len_val, ptr_val)
                     }
                     other => return Err(format!("cannot iterate over type {:?}", other)),
                 };
@@ -1181,7 +1197,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 self.builder.position_at_end(merge_bb);
-                Ok(self.atom_binding("none"))
+                Ok(self.symbol_binding("none"))
             }
             Expression::If { arms } => self.codegen_if_expression(arms),
             Expression::Match {
@@ -1245,59 +1261,54 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Slice(expr) => {
                 let binding = self.codegen_expression(expr)?;
-                let ty = self.binding_type(&binding)?;
-                let resolved_ty = self.resolve_alias_root(&ty)?;
-                let (struct_val, elem_ty) = match resolved_ty {
-                    Type::Struct(fields) => {
-                        if fields.len() != 2 {
-                            return Err(format!(
-                                "'@slice' requires a struct with 2 fields, found {}",
-                                fields.len()
-                            ));
-                        }
-                        let elem_ty = match &fields[0].ty {
-                            Type::Pointer { element, .. } => (**element).clone(),
-                            other => {
-                                return Err(format!(
-                                    "'@slice' field 0 must be a pointer, found {:?}",
-                                    other
-                                ))
-                            }
+                let (elem_ty, size, storage_ptr) = match &binding {
+                    Binding::Array { ty, value, storage } => {
+                        let (elem, sz) = match ty {
+                            Type::Array { element, size } => ((**element).clone(), *size),
+                            _ => return Err("expected array type".to_string()),
                         };
-                        let struct_val = match binding {
-                            Binding::Struct { value, .. } => value,
-                            _ => self.binding_basic_value(&binding)?.into_struct_value(),
+                        let ptr = if let Some(s) = storage {
+                            *s
+                        } else {
+                            let llvm_arr_ty = value.get_type();
+                            let tmp = self.builder.build_alloca(llvm_arr_ty, "slice_tmp").map_err(|e| e.to_string())?;
+                            self.builder.build_store(tmp, *value).map_err(|e| e.to_string())?;
+                            tmp
                         };
-                        (struct_val, elem_ty)
+                        (elem, sz, ptr)
                     }
-                    other => return Err(format!("'@slice' requires a struct, found {:?}", other)),
+                    _ => return Err("'@slice' requires an array".to_string()),
                 };
 
-                let ptr_val = self
-                    .builder
-                    .build_extract_value(struct_val, 0, "slice_ptr")
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value();
-                let len_val = self
-                    .builder
-                    .build_extract_value(struct_val, 1, "slice_len")
-                    .map_err(|e| e.to_string())?
-                    .into_int_value();
-
-                let ptr_sized_type = self.ptr_sized_int_type();
-                let len_val = if len_val.get_type() != ptr_sized_type {
+                let llvm_elem_ty = self.llvm_type(&elem_ty)?;
+                let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
+                let zero = self.ptr_sized_int_type().const_zero();
+                let first_elem_ptr = unsafe {
                     self.builder
-                        .build_int_cast(len_val, ptr_sized_type, "len_cast")
+                        .build_gep(llvm_arr_ty, storage_ptr, &[zero, zero], "slice_first_elem")
                         .map_err(|e| e.to_string())?
-                } else {
-                    len_val
                 };
 
+                let slice_ty = Type::Struct(vec![
+                    StructFieldType {
+                        name: "ptr".to_string(),
+                        ty: Type::Pointer {
+                            element: Box::new(elem_ty),
+                            is_mut: false,
+                        },
+                    },
+                    StructFieldType {
+                        name: "len".to_string(),
+                        ty: Type::USize,
+                    },
+                ]);
                 let slice_llvm_ty = self.slice_type();
+                let len_val = self.ptr_sized_int_type().const_int(size as u64, false);
+
                 let mut slice_val = slice_llvm_ty.get_undef();
                 slice_val = self
                     .builder
-                    .build_insert_value(slice_val, ptr_val, 0, "slice_ptr")
+                    .build_insert_value(slice_val, first_elem_ptr, 0, "slice_ptr")
                     .map_err(|e| e.to_string())?
                     .into_struct_value();
                 slice_val = self
@@ -1306,15 +1317,13 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?
                     .into_struct_value();
 
-                Ok(Binding::Slice {
-                    ty: Type::Slice {
-                        element: Box::new(elem_ty),
-                    },
+                Ok(Binding::Struct {
+                    ty: slice_ty,
                     value: slice_val,
                     storage: None,
                 })
             }
-            Expression::Type(_) => Ok(self.atom_binding("none")),
+            Expression::Type(_) => Ok(self.symbol_binding("none")),
         }
     }
 
@@ -1355,11 +1364,6 @@ impl<'ctx> Codegen<'ctx> {
             Type::Array { .. } => Ok(Binding::Array {
                 ty: *element,
                 value: loaded.into_array_value(),
-                storage: Some(pointer_value),
-            }),
-            Type::Slice { .. } => Ok(Binding::Slice {
-                ty: *element,
-                value: loaded.into_struct_value(),
                 storage: Some(pointer_value),
             }),
             _ => self.binding_from_basic_value(&element, loaded),
@@ -1409,9 +1413,7 @@ impl<'ctx> Codegen<'ctx> {
         fields: &[StructFieldInit],
     ) -> Result<Binding<'ctx>, String> {
         let generic_type = self.resolve_alias_root(&Checker::generic_type())?.clone();
-        let key_type = Type::Slice {
-            element: Box::new(Type::U8),
-        };
+        let key_type = Type::Alias("String".to_string());
         let key_llvm_type = self.llvm_type(&key_type)?;
         let generic_llvm_type = self.llvm_type(&generic_type)?;
         let count = fields.len();
@@ -1564,8 +1566,29 @@ impl<'ctx> Codegen<'ctx> {
                 IfCondition::Expression(cond_expr) => {
                     let cond_binding = self.codegen_expression(cond_expr)?;
                     let cond_val = match cond_binding {
-                        Binding::Boolean { value } => value,
-                        _ => return Err("if condition must evaluate to a boolean".to_string()),
+                        Binding::Union { value, .. } => {
+                            let tag = self
+                                .builder
+                                .build_extract_value(value, 0, "cond_tag")
+                                .map_err(|e| e.to_string())?
+                                .into_int_value();
+                            self.builder
+                                .build_int_compare(
+                                    IntPredicate::EQ,
+                                    tag,
+                                    self.context.i8_type().const_int(1, false),
+                                    "is_true",
+                                )
+                                .map_err(|e| e.to_string())?
+                        }
+                        Binding::Symbol { name, .. } => {
+                            if name == "true" {
+                                self.context.bool_type().const_int(1, false)
+                            } else {
+                                self.context.bool_type().const_int(0, false)
+                            }
+                        }
+                        _ => return Err("if condition must evaluate to Bool (:true | :false)".to_string()),
                     };
 
                     let then_bb = self
@@ -1620,12 +1643,12 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(merge_bb);
 
-        let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
+        let ty = result_type.unwrap_or_else(|| Type::Symbol("none".to_string()));
         if incoming.is_empty() {
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
-            Ok(self.atom_binding("none"))
+            Ok(self.symbol_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
             let phi = self
@@ -1915,12 +1938,12 @@ impl<'ctx> Codegen<'ctx> {
 
         self.builder.position_at_end(merge_bb);
 
-        let ty = result_type.unwrap_or_else(|| Type::Atom("none".to_string()));
+        let ty = result_type.unwrap_or_else(|| Type::Symbol("none".to_string()));
         if incoming.is_empty() {
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
-            Ok(self.atom_binding("none"))
+            Ok(self.symbol_binding("none"))
         } else {
             let llvm_ty = self.llvm_type(&ty)?;
             let phi = self
@@ -2007,27 +2030,7 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
 
-                if let Type::Slice { .. } = resolved_field_type {
-                    if let Some(storage_ptr) = storage {
-                        let llvm_struct_ty = self.llvm_type(resolved_ty)?.into_struct_type();
-                        let field_gep = self
-                            .builder
-                            .build_struct_gep(llvm_struct_ty, storage_ptr, idx as u32, field)
-                            .map_err(|e| e.to_string())?;
 
-                        let loaded = self
-                            .builder
-                            .build_load(self.llvm_type(&field_type)?, field_gep, field)
-                            .map_err(|e| e.to_string())?
-                            .into_struct_value();
-
-                        return Ok(Binding::Slice {
-                            ty: field_type,
-                            value: loaded,
-                            storage: Some(field_gep),
-                        });
-                    }
-                }
 
                 if let Some(storage_ptr) = storage {
                     let llvm_struct_ty = self.llvm_type(resolved_ty)?.into_struct_type();
@@ -2048,40 +2051,7 @@ impl<'ctx> Codegen<'ctx> {
                     self.binding_from_basic_value(&field_type, extracted)
                 }
             }
-            Binding::Slice {
-                ty: Type::Slice { element },
-                value,
-                ..
-            } => match field {
-                "ptr" => {
-                    let ptr_val = self
-                        .builder
-                        .build_extract_value(value, 0, "sliceptr")
-                        .map_err(|e| e.to_string())?
-                        .into_pointer_value();
 
-                    Ok(Binding::Pointer {
-                        ty: Type::Pointer {
-                            element,
-                            is_mut: false,
-                        },
-                        value: ptr_val,
-                    })
-                }
-                "len" => {
-                    let len_val = self
-                        .builder
-                        .build_extract_value(value, 1, "slicelen")
-                        .map_err(|e| e.to_string())?
-                        .into_int_value();
-
-                    Ok(Binding::Integer {
-                        ty: Type::USize,
-                        value: len_val,
-                    })
-                }
-                _ => Err(format!("unknown slice member '.{}'", field)),
-            },
             Binding::Array {
                 ty: Type::Array { ref element, size },
                 ..
@@ -2134,10 +2104,12 @@ impl<'ctx> Codegen<'ctx> {
             bindings.push(self.codegen_expression(el)?);
         }
 
-        let element_type = self.binding_type(&bindings[0])?;
+        let b0_ty = self.binding_type(&bindings[0])?;
+        let element_type = self.resolve_alias_root(&b0_ty)?.clone();
         for b in &bindings[1..] {
-            let ty = self.binding_type(b)?;
-            if ty != element_type {
+            let b_ty = self.binding_type(b)?;
+            let ty = self.resolve_alias_root(&b_ty)?;
+            if ty != &element_type {
                 return Err(format!(
                     "array literal elements have mismatched types: expected {:?}, found {:?}",
                     element_type, ty
@@ -2175,38 +2147,19 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
         }
 
-        let first_elem_ptr = unsafe {
-            self.builder
-                .build_gep(
-                    llvm_arr_ty,
-                    backing_alloca,
-                    &[zero, zero],
-                    "slice_first_elem",
-                )
-                .map_err(|e| e.to_string())?
-        };
-
-        let slice_llvm_ty = self.slice_type();
-        let len_val = self.ptr_sized_int_type().const_int(count, false);
-
-        let mut slice_val = slice_llvm_ty.get_undef();
-        slice_val = self
+        let loaded = self
             .builder
-            .build_insert_value(slice_val, first_elem_ptr, 0, "slice_ptr")
+            .build_load(llvm_arr_ty, backing_alloca, "arr_literal_val")
             .map_err(|e| e.to_string())?
-            .into_struct_value();
-        slice_val = self
-            .builder
-            .build_insert_value(slice_val, len_val, 1, "slice_len")
-            .map_err(|e| e.to_string())?
-            .into_struct_value();
+            .into_array_value();
 
-        Ok(Binding::Slice {
-            ty: Type::Slice {
+        Ok(Binding::Array {
+            ty: Type::Array {
                 element: Box::new(element_type),
+                size: count as usize,
             },
-            value: slice_val,
-            storage: None,
+            value: loaded,
+            storage: Some(backing_alloca),
         })
     }
 
@@ -2216,18 +2169,39 @@ impl<'ctx> Codegen<'ctx> {
         operand: &Binding<'ctx>,
     ) -> Result<Binding<'ctx>, String> {
         if operator == UnaryOperator::Not {
-            let value = match operand {
-                Binding::Boolean { value } => *value,
-                _ => return Err("expected boolean value for 'not'".to_string()),
+            let cond_val = match operand {
+                Binding::Union { value, .. } => {
+                    let tag = self
+                        .builder
+                        .build_extract_value(*value, 0, "cond_tag")
+                        .map_err(|e| e.to_string())?
+                        .into_int_value();
+                    self.builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            tag,
+                            self.context.i8_type().const_int(1, false),
+                            "is_true",
+                        )
+                        .map_err(|e| e.to_string())?
+                }
+                Binding::Symbol { name, .. } => {
+                    if name == "true" {
+                        self.context.bool_type().const_int(1, false)
+                    } else {
+                        self.context.bool_type().const_int(0, false)
+                    }
+                }
+                _ => return Err("expected Bool value for 'not'".to_string()),
             };
 
             let zero = self.context.bool_type().const_zero();
             let inverted = self
                 .builder
-                .build_int_compare(IntPredicate::EQ, value, zero, "nottmp")
+                .build_int_compare(IntPredicate::EQ, cond_val, zero, "nottmp")
                 .map_err(|error| error.to_string())?;
 
-            return Ok(Binding::Boolean { value: inverted });
+            return self.bool_binding(inverted);
         }
 
         let ty = self.binding_type(operand)?;
@@ -2325,19 +2299,41 @@ impl<'ctx> Codegen<'ctx> {
             ));
         }
 
-        if let (Binding::Atom { name: n1, .. }, Binding::Atom { name: n2, .. }) = (left, right) {
+        if let (Binding::Symbol { name: n1, .. }, Binding::Symbol { name: n2, .. }) = (left, right) {
             let is_equal = n1 == n2;
             let result = match operator {
                 ComparisonOperator::Equal => is_equal,
                 ComparisonOperator::NotEqual => !is_equal,
-                _ => return Err("invalid comparison operator for atoms".to_string()),
+                _ => return Err("invalid comparison operator for symbols".to_string()),
             };
-            return Ok(Binding::Boolean {
-                value: self
-                    .context
-                    .bool_type()
-                    .const_int(if result { 1 } else { 0 }, false),
-            });
+            let cond = self
+                .context
+                .bool_type()
+                .const_int(if result { 1 } else { 0 }, false);
+            return self.bool_binding(cond);
+        }
+
+        if let (Binding::Union { value: v1, .. }, Binding::Union { value: v2, .. }) = (left, right) {
+            let tag1 = self
+                .builder
+                .build_extract_value(*v1, 0, "tag1")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let tag2 = self
+                .builder
+                .build_extract_value(*v2, 0, "tag2")
+                .map_err(|e| e.to_string())?
+                .into_int_value();
+            let predicate = match operator {
+                ComparisonOperator::Equal => IntPredicate::EQ,
+                ComparisonOperator::NotEqual => IntPredicate::NE,
+                _ => return Err("invalid comparison operator for unions".to_string()),
+            };
+            let value = self
+                .builder
+                .build_int_compare(predicate, tag1, tag2, "cmptmp")
+                .map_err(|e| e.to_string())?;
+            return self.bool_binding(value);
         }
 
         let (left_value, right_value) = (
@@ -2383,7 +2379,7 @@ impl<'ctx> Codegen<'ctx> {
             .build_int_compare(predicate, left_value, right_value, "cmptmp")
             .map_err(|error| error.to_string())?;
 
-        Ok(Binding::Boolean { value })
+        self.bool_binding(value)
     }
 
     fn codegen_cast(
@@ -2419,13 +2415,13 @@ impl<'ctx> Codegen<'ctx> {
             Checker::canonical_type_key(&resolved_target),
         );
         if visited.contains(&pair) {
-            if matches!(resolved_target, Type::Slice { .. }) {
+            if self.is_slice_type(&resolved_target)? {
                 let storage = match binding {
-                    Binding::Slice { storage, .. } => storage,
+                    Binding::Struct { storage, .. } => storage,
                     _ => None,
                 };
                 let val = self.binding_basic_value(&binding)?;
-                return Ok(Binding::Slice {
+                return Ok(Binding::Struct {
                     ty: target_type,
                     value: val.into_struct_value(),
                     storage,
@@ -2468,6 +2464,139 @@ impl<'ctx> Codegen<'ctx> {
                 "unsupported cast from {:?} to {:?}",
                 source_type, target_type
             ));
+        }
+
+
+
+        if self.is_slice_type(&resolved_source)? && self.is_slice_type(&resolved_target)? {
+            let source_element = self.slice_element_type(&resolved_source)?;
+            let target_element = self.slice_element_type(&resolved_target)?;
+            let storage = match binding {
+                Binding::Struct { storage, .. } => storage,
+                _ => None,
+            };
+            let source_value = self.binding_basic_value(&binding)?.into_struct_value();
+            if source_element == Type::Opaque || target_element == Type::Opaque {
+                return Ok(Binding::Struct {
+                    ty: target_type,
+                    value: source_value,
+                    storage,
+                });
+            }
+            let source_ptr = self
+                .builder
+                .build_extract_value(source_value, 0, "cast_slice_ptr")
+                .map_err(|error| error.to_string())?
+                .into_pointer_value();
+            let length = self
+                .builder
+                .build_extract_value(source_value, 1, "cast_slice_len")
+                .map_err(|error| error.to_string())?
+                .into_int_value();
+            let target_element_type = self.llvm_type(&target_element)?;
+            let target_ptr = self
+                .builder
+                .build_array_alloca(target_element_type, length, "cast_slice_data")
+                .map_err(|error| error.to_string())?;
+
+            let current_block = self
+                .builder
+                .get_insert_block()
+                .ok_or_else(|| "cannot cast slice outside basic block".to_string())?;
+            let function = current_block
+                .get_parent()
+                .ok_or_else(|| "slice cast has no parent function".to_string())?;
+            let condition_block = self.context.append_basic_block(function, "slice.cast.cond");
+            let body_block = self.context.append_basic_block(function, "slice.cast.body");
+            let end_block = self.context.append_basic_block(function, "slice.cast.end");
+            self.builder
+                .build_unconditional_branch(condition_block)
+                .map_err(|error| error.to_string())?;
+
+            self.builder.position_at_end(condition_block);
+            let index = self
+                .builder
+                .build_phi(self.ptr_sized_int_type(), "slice.cast.index")
+                .map_err(|error| error.to_string())?;
+            index.add_incoming(&[(&self.ptr_sized_int_type().const_zero(), current_block)]);
+            let index_value = index.as_basic_value().into_int_value();
+            let has_next = self
+                .builder
+                .build_int_compare(IntPredicate::ULT, index_value, length, "slice.cast.more")
+                .map_err(|error| error.to_string())?;
+            self.builder
+                .build_conditional_branch(has_next, body_block, end_block)
+                .map_err(|error| error.to_string())?;
+
+            self.builder.position_at_end(body_block);
+            let source_element_type = self.llvm_type(&source_element)?;
+            let source_element_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        source_element_type,
+                        source_ptr,
+                        &[index_value],
+                        "slice.cast.src",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            let source_element_value = self
+                .builder
+                .build_load(source_element_type, source_element_ptr, "slice.cast.value")
+                .map_err(|error| error.to_string())?;
+            let source_element_binding =
+                self.binding_from_basic_value(&source_element, source_element_value)?;
+            let converted = self.codegen_cast_inner(
+                source_element_binding,
+                target_element,
+                visited,
+            )?;
+            let target_element_ptr = unsafe {
+                self.builder
+                    .build_gep(
+                        target_element_type,
+                        target_ptr,
+                        &[index_value],
+                        "slice.cast.dst",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(target_element_ptr, self.binding_basic_value(&converted)?)
+                .map_err(|error| error.to_string())?;
+            let body_end = self.builder.get_insert_block().unwrap();
+            let next_index = self
+                .builder
+                .build_int_add(
+                    index_value,
+                    self.ptr_sized_int_type().const_int(1, false),
+                    "slice.cast.next",
+                )
+                .map_err(|error| error.to_string())?;
+            self.builder
+                .build_unconditional_branch(condition_block)
+                .map_err(|error| error.to_string())?;
+            index.add_incoming(&[(&next_index, body_end)]);
+
+            self.builder.position_at_end(end_block);
+            let target_slice_type = self.llvm_type(&target_type)?.into_struct_type();
+            let slice_value = target_slice_type.get_undef();
+            let slice_value = self
+                .builder
+                .build_insert_value(slice_value, target_ptr, 0, "cast_slice_ptr")
+                .map_err(|error| error.to_string())?
+                .into_struct_value();
+            let slice_value = self
+                .builder
+                .build_insert_value(slice_value, length, 1, "cast_slice_len")
+                .map_err(|error| error.to_string())?
+                .into_struct_value();
+
+            return Ok(Binding::Struct {
+                ty: target_type,
+                value: slice_value,
+                storage,
+            });
         }
 
         if let (Type::Struct(source_fields), Type::Struct(target_fields)) =
@@ -2549,142 +2678,7 @@ impl<'ctx> Codegen<'ctx> {
             });
         }
 
-        if let (
-            Type::Slice {
-                element: source_element,
-            },
-            Type::Slice {
-                element: target_element,
-            },
-        ) = (&resolved_source, &resolved_target)
-        {
-            let storage = match binding {
-                Binding::Slice { storage, .. } => storage,
-                _ => None,
-            };
-            let source_value = self.binding_basic_value(&binding)?.into_struct_value();
-            if **source_element == Type::Opaque || **target_element == Type::Opaque {
-                return Ok(Binding::Slice {
-                    ty: target_type,
-                    value: source_value,
-                    storage,
-                });
-            }
-            let source_ptr = self
-                .builder
-                .build_extract_value(source_value, 0, "cast_slice_ptr")
-                .map_err(|error| error.to_string())?
-                .into_pointer_value();
-            let length = self
-                .builder
-                .build_extract_value(source_value, 1, "cast_slice_len")
-                .map_err(|error| error.to_string())?
-                .into_int_value();
-            let target_element_type = self.llvm_type(target_element)?;
-            let target_ptr = self
-                .builder
-                .build_array_alloca(target_element_type, length, "cast_slice_data")
-                .map_err(|error| error.to_string())?;
 
-            let current_block = self
-                .builder
-                .get_insert_block()
-                .ok_or_else(|| "cannot cast slice outside basic block".to_string())?;
-            let function = current_block
-                .get_parent()
-                .ok_or_else(|| "slice cast has no parent function".to_string())?;
-            let condition_block = self.context.append_basic_block(function, "slice.cast.cond");
-            let body_block = self.context.append_basic_block(function, "slice.cast.body");
-            let end_block = self.context.append_basic_block(function, "slice.cast.end");
-            self.builder
-                .build_unconditional_branch(condition_block)
-                .map_err(|error| error.to_string())?;
-
-            self.builder.position_at_end(condition_block);
-            let index = self
-                .builder
-                .build_phi(self.ptr_sized_int_type(), "slice.cast.index")
-                .map_err(|error| error.to_string())?;
-            index.add_incoming(&[(&self.ptr_sized_int_type().const_zero(), current_block)]);
-            let index_value = index.as_basic_value().into_int_value();
-            let has_next = self
-                .builder
-                .build_int_compare(IntPredicate::ULT, index_value, length, "slice.cast.more")
-                .map_err(|error| error.to_string())?;
-            self.builder
-                .build_conditional_branch(has_next, body_block, end_block)
-                .map_err(|error| error.to_string())?;
-
-            self.builder.position_at_end(body_block);
-            let source_element_type = self.llvm_type(source_element)?;
-            let source_element_ptr = unsafe {
-                self.builder
-                    .build_gep(
-                        source_element_type,
-                        source_ptr,
-                        &[index_value],
-                        "slice.cast.src",
-                    )
-                    .map_err(|error| error.to_string())?
-            };
-            let source_element_value = self
-                .builder
-                .build_load(source_element_type, source_element_ptr, "slice.cast.value")
-                .map_err(|error| error.to_string())?;
-            let source_element_binding =
-                self.binding_from_basic_value(source_element, source_element_value)?;
-            let converted = self.codegen_cast_inner(
-                source_element_binding,
-                (**target_element).clone(),
-                visited,
-            )?;
-            let target_element_ptr = unsafe {
-                self.builder
-                    .build_gep(
-                        target_element_type,
-                        target_ptr,
-                        &[index_value],
-                        "slice.cast.dst",
-                    )
-                    .map_err(|error| error.to_string())?
-            };
-            self.builder
-                .build_store(target_element_ptr, self.binding_basic_value(&converted)?)
-                .map_err(|error| error.to_string())?;
-            let body_end = self.builder.get_insert_block().unwrap();
-            let next_index = self
-                .builder
-                .build_int_add(
-                    index_value,
-                    self.ptr_sized_int_type().const_int(1, false),
-                    "slice.cast.next",
-                )
-                .map_err(|error| error.to_string())?;
-            self.builder
-                .build_unconditional_branch(condition_block)
-                .map_err(|error| error.to_string())?;
-            index.add_incoming(&[(&next_index, body_end)]);
-
-            self.builder.position_at_end(end_block);
-            let target_slice_type = self.llvm_type(&target_type)?.into_struct_type();
-            let slice_value = target_slice_type.get_undef();
-            let slice_value = self
-                .builder
-                .build_insert_value(slice_value, target_ptr, 0, "cast_slice_ptr")
-                .map_err(|error| error.to_string())?
-                .into_struct_value();
-            let slice_value = self
-                .builder
-                .build_insert_value(slice_value, length, 1, "cast_slice_len")
-                .map_err(|error| error.to_string())?
-                .into_struct_value();
-
-            return Ok(Binding::Slice {
-                ty: target_type,
-                value: slice_value,
-                storage,
-            });
-        }
 
         if let (Type::Pointer { .. }, Type::Pointer { .. }) = (&resolved_source, &resolved_target) {
             if let Binding::Pointer { value, .. } = binding {
@@ -2695,7 +2689,6 @@ impl<'ctx> Codegen<'ctx> {
             }
         }
 
-        // 1. Variant or Sub-Union -> Union
         if let Type::Union(target_vars) = &resolved_target {
             let union_llvm_ty = self.llvm_type(&target_type)?.into_struct_type();
             let alloca = self
@@ -3011,16 +3004,6 @@ impl<'ctx> Codegen<'ctx> {
 
         let value = self.binding_int_value(&binding)?;
 
-        if resolved_target == Type::Bool {
-            let zero = value.get_type().const_zero();
-            let bool_val = self
-                .builder
-                .build_int_compare(IntPredicate::NE, value, zero, "tobool")
-                .map_err(|e| e.to_string())?;
-
-            return Ok(Binding::Boolean { value: bool_val });
-        }
-
         let target_llvm_type = self.llvm_type(&target_type)?.into_int_type();
         let source_bits = value.get_type().get_bit_width();
         let target_bits = target_llvm_type.get_bit_width();
@@ -3028,7 +3011,7 @@ impl<'ctx> Codegen<'ctx> {
         let casted = if target_bits == source_bits {
             value
         } else if target_bits > source_bits {
-            if resolved_source != Type::Bool && self.is_signed(&resolved_source) {
+            if self.is_signed(&resolved_source) {
                 self.builder
                     .build_int_s_extend(value, target_llvm_type, "sexttmp")
                     .map_err(|e| e.to_string())?
@@ -3159,7 +3142,7 @@ impl<'ctx> Codegen<'ctx> {
             self.builder
                 .build_unreachable()
                 .map_err(|e| e.to_string())?;
-            Ok(self.atom_binding("none"))
+            Ok(self.symbol_binding("none"))
         } else {
             let return_value = call
                 .try_as_basic_value()
@@ -3216,7 +3199,42 @@ impl<'ctx> Codegen<'ctx> {
             .build_int_z_extend_or_bit_cast(index_value, self.ptr_sized_int_type(), "idxptr")
             .map_err(|e| e.to_string())?;
 
-        match self.binding_type(&binding)? {
+        let ty = self.binding_type(&binding)?;
+        if self.is_slice_type(&ty)? {
+            let element = self.slice_element_type(&ty)?;
+            let slice_struct = self.binding_basic_value(&binding)?.into_struct_value();
+            let ptr_val = self
+                .builder
+                .build_extract_value(slice_struct, 0, "sliceptr")
+                .map_err(|e| e.to_string())?
+                .into_pointer_value();
+
+            let elem_llvm_type = self.llvm_type(&element)?;
+
+            let gep = unsafe {
+                self.builder
+                    .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceidx")
+                    .map_err(|e| e.to_string())?
+            };
+
+            let loaded = self
+                .builder
+                .build_load(elem_llvm_type, gep, "sliceload")
+                .map_err(|e| e.to_string())?;
+
+            let resolved_elem = self.resolve_alias_root(&element)?;
+            if let Type::Struct(_) = resolved_elem {
+                return Ok(Binding::Struct {
+                    ty: element,
+                    value: loaded.into_struct_value(),
+                    storage: Some(gep),
+                });
+            }
+
+            return self.binding_from_basic_value(&element, loaded);
+        }
+
+        match ty {
             Type::Array { element, size } => {
                 if size == 0 {
                     return Err("cannot index empty array".to_string());
@@ -3252,42 +3270,6 @@ impl<'ctx> Codegen<'ctx> {
                         ty: (*element).clone(),
                         value: loaded.into_struct_value(),
                         storage: Some(pointer),
-                    });
-                }
-
-                self.binding_from_basic_value(&element, loaded)
-            }
-            Type::Slice { element } => {
-                let slice_struct = match binding {
-                    Binding::Slice { value, .. } => value,
-                    _ => return Err("expected slice binding".to_string()),
-                };
-
-                let ptr_val = self
-                    .builder
-                    .build_extract_value(slice_struct, 0, "sliceptr")
-                    .map_err(|e| e.to_string())?
-                    .into_pointer_value();
-
-                let elem_llvm_type = self.llvm_type(&element)?;
-
-                let gep = unsafe {
-                    self.builder
-                        .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceidx")
-                        .map_err(|e| e.to_string())?
-                };
-
-                let loaded = self
-                    .builder
-                    .build_load(elem_llvm_type, gep, "sliceload")
-                    .map_err(|e| e.to_string())?;
-
-                let resolved_elem = self.resolve_alias_root(&element)?;
-                if let Type::Struct(_) = resolved_elem {
-                    return Ok(Binding::Struct {
-                        ty: (*element).clone(),
-                        value: loaded.into_struct_value(),
-                        storage: Some(gep),
                     });
                 }
 
@@ -3370,7 +3352,34 @@ impl<'ctx> Codegen<'ctx> {
                     )
                     .map_err(|e| e.to_string())?;
 
-                match self.binding_type(&binding)? {
+                let ty = self.binding_type(&binding)?;
+                if self.is_slice_type(&ty)? {
+                    let element = self.slice_element_type(&ty)?;
+                    let slice_struct = self.binding_basic_value(&binding)?.into_struct_value();
+                    let ptr_val = self
+                        .builder
+                        .build_extract_value(slice_struct, 0, "sliceptr")
+                        .map_err(|e| e.to_string())?
+                        .into_pointer_value();
+
+                    let elem_llvm_type = self.llvm_type(&element)?;
+
+                    let pointer = unsafe {
+                        self.builder
+                            .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceaddr")
+                            .map_err(|e| e.to_string())?
+                    };
+
+                    return Ok(Binding::Pointer {
+                        ty: Type::Pointer {
+                            element: Box::new(element),
+                            is_mut: false,
+                        },
+                        value: pointer,
+                    });
+                }
+
+                match ty {
                     Type::Array { element, size } => {
                         if size == 0 {
                             return Err("cannot index empty array".to_string());
@@ -3393,34 +3402,6 @@ impl<'ctx> Codegen<'ctx> {
                                     "addressptr",
                                 )
                                 .map_err(|error| error.to_string())?
-                        };
-
-                        Ok(Binding::Pointer {
-                            ty: Type::Pointer {
-                                element,
-                                is_mut: false,
-                            },
-                            value: pointer,
-                        })
-                    }
-                    Type::Slice { element } => {
-                        let slice_struct = match binding {
-                            Binding::Slice { value, .. } => value,
-                            _ => return Err("expected slice binding".to_string()),
-                        };
-
-                        let ptr_val = self
-                            .builder
-                            .build_extract_value(slice_struct, 0, "sliceptr")
-                            .map_err(|e| e.to_string())?
-                            .into_pointer_value();
-
-                        let elem_llvm_type = self.llvm_type(&element)?;
-
-                        let pointer = unsafe {
-                            self.builder
-                                .build_gep(elem_llvm_type, ptr_val, &[index_i64], "sliceaddr")
-                                .map_err(|e| e.to_string())?
                         };
 
                         Ok(Binding::Pointer {
@@ -3487,47 +3468,7 @@ impl<'ctx> Codegen<'ctx> {
                             Err("cannot take address of field of a temporary struct without storage".to_string())
                         }
                     }
-                    Binding::Slice { ref ty, storage, .. } => {
-                        let resolved_ty = self.resolve_alias_root(ty)?;
-                        let element = match resolved_ty {
-                            Type::Slice { element } => element.clone(),
-                            _ => return Err("expected slice type".to_string()),
-                        };
-                        if let Some(storage_ptr) = storage {
-                            let slice_llvm_ty = self.slice_type();
-                            match field.as_str() {
-                                "ptr" => {
-                                    let field_gep = self
-                                        .builder
-                                        .build_struct_gep(slice_llvm_ty, storage_ptr, 0, field)
-                                        .map_err(|e| e.to_string())?;
-                                    Ok(Binding::Pointer {
-                                        ty: Type::Pointer {
-                                            element,
-                                            is_mut: false,
-                                        },
-                                        value: field_gep,
-                                    })
-                                }
-                                "len" => {
-                                    let field_gep = self
-                                        .builder
-                                        .build_struct_gep(slice_llvm_ty, storage_ptr, 1, field)
-                                        .map_err(|e| e.to_string())?;
-                                    Ok(Binding::Pointer {
-                                        ty: Type::Pointer {
-                                            element: Box::new(Type::USize),
-                                            is_mut: false,
-                                        },
-                                        value: field_gep,
-                                    })
-                                }
-                                _ => Err(format!("unknown slice field '{}'", field)),
-                            }
-                        } else {
-                            Err("cannot take address of field of a temporary slice without storage".to_string())
-                        }
-                    }
+
                     _ => Err("cannot take address of member of non-struct".to_string()),
                 }
             }
@@ -3610,10 +3551,8 @@ impl<'ctx> Codegen<'ctx> {
 
         let slice_val = slice_llvm_type.const_named_struct(&[ptr.into(), len.into()]);
 
-        Ok(Binding::Slice {
-            ty: Type::Slice {
-                element: Box::new(Type::U8),
-            },
+        Ok(Binding::Struct {
+            ty: Type::Alias("String".to_string()),
             value: slice_val,
             storage: None,
         })
@@ -3630,12 +3569,9 @@ impl<'ctx> Codegen<'ctx> {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }
             Type::Alias(_) => self.binding_from_basic_value(self.resolve_alias_root(ty)?, value),
-            Type::Atom(name) => Ok(Binding::Atom {
+            Type::Symbol(name) => Ok(Binding::Symbol {
                 name: name.clone(),
                 value: value.into_struct_value(),
-            }),
-            Type::Bool => Ok(Binding::Boolean {
-                value: value.into_int_value(),
             }),
             Type::S16
             | Type::S32
@@ -3668,11 +3604,7 @@ impl<'ctx> Codegen<'ctx> {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
             }),
-            Type::Slice { .. } => Ok(Binding::Slice {
-                ty: ty.clone(),
-                value: value.into_struct_value(),
-                storage: None,
-            }),
+
             Type::Function { .. } => Ok(Binding::Pointer {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
@@ -3685,14 +3617,12 @@ impl<'ctx> Codegen<'ctx> {
 
     fn binding_type(&self, binding: &Binding<'ctx>) -> Result<Type, String> {
         match binding {
-            Binding::Atom { name, .. } => Ok(Type::Atom(name.clone())),
+            Binding::Symbol { name, .. } => Ok(Type::Symbol(name.clone())),
             Binding::Integer { ty, .. } => Ok(ty.clone()),
-            Binding::Boolean { .. } => Ok(Type::Bool),
             Binding::Array { ty, .. } => Ok(ty.clone()),
             Binding::Struct { ty, .. } => Ok(ty.clone()),
             Binding::Union { ty, .. } => Ok(ty.clone()),
             Binding::Pointer { ty, .. } => Ok(ty.clone()),
-            Binding::Slice { ty, .. } => Ok(ty.clone()),
             Binding::Function { signature, .. } => {
                 let parameters = signature.parameters.iter().map(|p| p.ty.clone()).collect();
                 Ok(Type::Function {
@@ -3706,14 +3636,12 @@ impl<'ctx> Codegen<'ctx> {
 
     fn binding_basic_value(&self, binding: &Binding<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
         match binding {
-            Binding::Atom { value, .. } => Ok((*value).into()),
+            Binding::Symbol { value, .. } => Ok((*value).into()),
             Binding::Integer { value, .. } => Ok((*value).into()),
-            Binding::Boolean { value } => Ok((*value).into()),
             Binding::Array { value, .. } => Ok((*value).into()),
             Binding::Struct { value, .. } => Ok((*value).into()),
             Binding::Union { value, .. } => Ok((*value).into()),
             Binding::Pointer { value, .. } => Ok((*value).into()),
-            Binding::Slice { value, .. } => Ok((*value).into()),
             Binding::Function { value, .. } => {
                 Ok(value.as_global_value().as_pointer_value().into())
             }
@@ -3723,7 +3651,6 @@ impl<'ctx> Codegen<'ctx> {
     fn binding_int_value(&self, binding: &Binding<'ctx>) -> Result<IntValue<'ctx>, String> {
         match binding {
             Binding::Integer { value, .. } => Ok(*value),
-            Binding::Boolean { value } => Ok(*value),
             _ => Err("expected integer or boolean value".to_string()),
         }
     }
@@ -3801,7 +3728,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn llvm_type_align(&self, ty: &Type) -> Result<u64, String> {
         match ty {
-            Type::Atom(_) => Ok(1),
+            Type::Symbol(_) => Ok(1),
             _ => {
                 let llvm_type = self.llvm_type(ty)?;
                 Ok(self.target_data.get_abi_alignment(&llvm_type) as u64)
@@ -3811,11 +3738,10 @@ impl<'ctx> Codegen<'ctx> {
 
     fn llvm_type_size(&self, ty: &Type) -> Result<u64, String> {
         match ty {
-            Type::Atom(_) => Ok(0),
+            Type::Symbol(_) => Ok(0),
             Type::USize | Type::SSize | Type::Pointer { .. } | Type::Function { .. } => {
                 Ok(self.ptr_byte_size())
             }
-            Type::Slice { .. } => Ok(2 * self.ptr_byte_size()),
             _ => {
                 let llvm_type = self.llvm_type(ty)?;
                 Ok(self.target_data.get_abi_size(&llvm_type))
@@ -3830,13 +3756,12 @@ impl<'ctx> Codegen<'ctx> {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }
             Type::Alias(_) => self.llvm_type(self.resolve_alias_root(ty)?),
-            Type::Atom(_) => Ok(self.context.struct_type(&[], false).into()),
+            Type::Symbol(_) => Ok(self.context.struct_type(&[], false).into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
             Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().into()),
             Type::U8 => Ok(self.context.i8_type().into()),
-            Type::Bool => Ok(self.context.bool_type().into()),
             Type::Struct(fields) => {
                 let field_llvm_types: Vec<BasicTypeEnum<'ctx>> = fields
                     .iter()
@@ -3858,7 +3783,6 @@ impl<'ctx> Codegen<'ctx> {
             Type::Pointer { .. } | Type::Function { .. } => {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
-            Type::Slice { .. } => Ok(self.slice_type().into()),
             Type::Opaque | Type::MetaType => {
                 Err("opaque or meta type has no runtime representation".to_string())
             }
@@ -3872,13 +3796,12 @@ impl<'ctx> Codegen<'ctx> {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }
             Type::Alias(_) => self.zero_value(self.resolve_alias_root(ty)?),
-            Type::Atom(_) => Ok(self.context.struct_type(&[], false).const_zero().into()),
+            Type::Symbol(_) => Ok(self.context.struct_type(&[], false).const_zero().into()),
             Type::S16 | Type::U16 => Ok(self.context.i16_type().const_zero().into()),
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),
             Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().const_zero().into()),
             Type::U8 => Ok(self.context.i8_type().const_zero().into()),
-            Type::Bool => Ok(self.context.bool_type().const_zero().into()),
             Type::Struct(fields) => {
                 let struct_llvm_type = self.llvm_type(ty)?.into_struct_type();
                 let field_zeroes = fields
@@ -3906,7 +3829,6 @@ impl<'ctx> Codegen<'ctx> {
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
-            Type::Slice { .. } => Ok(self.slice_type().const_zero().into()),
             Type::Opaque | Type::MetaType => {
                 Err("opaque or meta type has no zero value".to_string())
             }

@@ -59,7 +59,7 @@ extern fn write(fd: s32, buf: *u8, len: u64) -> s64
 Types
 ==================
 
-type String := []u8
+type String := Slice <u8>
 type Integer := s32 | s64 | u32 | u64
 type Node := *(
     val: s32
@@ -75,8 +75,10 @@ meta type ResizeableArray<T> := (
 (source_file
   (type_definition
     name: (type_identifier)
-    type: (slice_type
-      (primitive_type)))
+    type: (generic_type
+      name: (type_identifier)
+      type_arguments: (type_arguments
+        (primitive_type))))
   (type_definition
     name: (type_identifier)
     type: (union_type

@@ -234,8 +234,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         }),
         Expression::Integer(v) => Ok(Expression::Integer(*v)),
         Expression::String(v) => Ok(Expression::String(v.clone())),
-        Expression::Boolean(v) => Ok(Expression::Boolean(*v)),
-        Expression::Atom(v) => Ok(Expression::Atom(v.clone())),
+        Expression::Symbol(v) => Ok(Expression::Symbol(v.clone())),
         Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
         Expression::Array(elements) => {
             let mut resolved = Vec::with_capacity(elements.len());
@@ -438,6 +437,54 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
     crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
 
+    for _ in 0..3 {
+        let mut shared_canonical_targets: HashMap<String, Type> = HashMap::new();
+        for (module, scope) in modules.iter().zip(module_scopes.iter()) {
+            let checker = Checker::new(scope);
+            for (name, prov) in &scope.type_aliases {
+                if !prov.item.is_meta {
+                    if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
+                        shared_canonical_targets.insert(name.clone(), target);
+                    }
+                }
+            }
+            for (name, prov) in &scope.home_type_aliases {
+                if !prov.item.is_meta {
+                    if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
+                        shared_canonical_targets.insert(name.clone(), target);
+                    }
+                }
+            }
+            for file in &module.source_files {
+                for alias in &file.type_aliases {
+                    if !alias.is_meta {
+                        if let Ok(target) = canonicalize_type(&alias.target, &checker) {
+                            shared_canonical_targets.insert(alias.name.clone(), target);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (module, scope) in modules.iter_mut().zip(module_scopes.iter_mut()) {
+            for (name, target) in &shared_canonical_targets {
+                if let Some(prov) = scope.type_aliases.get_mut(name) {
+                    prov.item.target = target.clone();
+                }
+                if let Some(prov) = scope.home_type_aliases.get_mut(name) {
+                    prov.item.target = target.clone();
+                }
+            }
+            for file in &mut module.source_files {
+                for alias in &mut file.type_aliases {
+                    if let Some(target) = shared_canonical_targets.get(&alias.name) {
+                        alias.target = target.clone();
+                    }
+                }
+            }
+        }
+    }
+
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
         for file in &mut module.source_files {
@@ -460,9 +507,13 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 if alias.is_meta {
                     continue;
                 }
+                let mut resolved_alias = alias.clone();
+                if let Ok(target) = canonicalize_type(&alias.target, &checker) {
+                    resolved_alias.target = target;
+                }
                 compiled_aliases
                     .entry(alias.name.clone())
-                    .or_insert_with(|| alias.clone());
+                    .or_insert(resolved_alias);
             }
             for def in &file.definitions {
                 if def.is_meta {
@@ -479,7 +530,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     if let Some(sig) = &resolved_sig {
                         let ret = &sig.return_type;
                         if **ret != Type::S32
-                            && !matches!(**ret, Type::Atom(ref name) if name == "none")
+                            && !matches!(**ret, Type::Symbol(ref name) if name == "none")
                         {
                             return Err(format!(
                                 "in '{}': entry point 'main' must return 's32' or ':none', found {:?}",
