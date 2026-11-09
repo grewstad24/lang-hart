@@ -20,6 +20,7 @@ module.exports = grammar({
   ],
 
   conflicts: $ => [
+    [$.argument_list, $.tuple_literal],
   ],
 
   rules: {
@@ -173,6 +174,7 @@ module.exports = grammar({
       $.pointer_type,
       $.array_type,
       $.struct_type,
+      $.tuple_type,
       $.union_type,
       $.symbol_literal,
       $.parenthesized_type,
@@ -210,9 +212,20 @@ module.exports = grammar({
     )),
 
     struct_type: $ => seq(
-      '(',
-      repeat(seq($.struct_field_type, optional(','))),
-      ')'
+      '{',
+      repeat1(seq($.struct_field_type, optional(','))),
+      '}'
+    ),
+
+    tuple_type: $ => choice(
+      seq('(', ')'),
+      seq(
+        '(',
+        $._type,
+        repeat1(seq(',', $._type)),
+        optional(','),
+        ')'
+      )
     ),
 
     struct_field_type: $ => seq(
@@ -230,11 +243,11 @@ module.exports = grammar({
     parenthesized_type: $ => seq('(', $._type, ')'),
 
     // Block
-    block: $ => seq(
+    block: $ => prec(PREC.PRIMARY - 1, seq(
       '{',
       repeat($._expression),
       '}'
-    ),
+    )),
 
     // Expressions
     _expression: $ => choice(
@@ -267,7 +280,8 @@ module.exports = grammar({
       $.sizeof_expression,
       $.type_literal,
       $.parenthesized_expression,
-      $.struct_literal,
+      prec(1, $.struct_literal),
+      $.tuple_literal,
       $.array_literal,
       $.block,
       $._literal,
@@ -324,7 +338,7 @@ module.exports = grammar({
     field_expression: $ => prec(PREC.POSTFIX, seq(
       field('expression', $._expression),
       '.',
-      field('field', $.identifier)
+      field('field', choice($.identifier, $.integer_literal))
     )),
 
     dereference_expression: $ => prec(PREC.POSTFIX, seq(
@@ -478,25 +492,37 @@ module.exports = grammar({
       ')'
     )),
 
-    struct_literal: $ => choice(
+    struct_literal: $ => prec(PREC.PRIMARY, choice(
       seq(
-        '(',
+        '{',
         repeat1(seq($.struct_field_init, optional(','))),
-        ')'
+        '}'
       ),
       seq(
         '@struct',
+        choice(
+          seq('{', repeat(seq($.struct_field_init, optional(','))), '}'),
+          seq('(', repeat(seq($.struct_field_init, optional(','))), ')')
+        )
+      )
+    )),
+
+    tuple_literal: $ => choice(
+      seq('(', ')'),
+      seq(
         '(',
-        repeat(seq($.struct_field_init, optional(','))),
+        $._expression,
+        repeat1(seq(',', $._expression)),
+        optional(','),
         ')'
       )
     ),
 
-    struct_field_init: $ => seq(
+    struct_field_init: $ => prec(PREC.ASSIGN + 1, seq(
       field('name', $.identifier),
       ':=',
       field('value', $._expression)
-    ),
+    )),
 
     array_literal: $ => seq(
       '[',

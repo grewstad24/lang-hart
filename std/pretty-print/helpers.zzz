@@ -1,21 +1,33 @@
 mod pprint
 
-val heavyCheck  := "\u{2714}"
-val heavyCross  := "\u{2718}"
 val bulletPoint := "\u{2022}"
+val southEastArrow := "\u{2198}"
 
-val styleRed     := "\u{1B}[31m"
-val styleGreen   := "\u{1B}[32m"
-val styleYellow  := "\u{1B}[33m"
-val styleCyan    := "\u{1B}[36m"
-val styleItalic  := "\u{1B}[3m"
-val styleReset   := "\u{1B}[0m"
+val styleRed := "\u{1B}[31m"
+val styleBrightRed := "\u{1B}[91m"
+val styleGreen := "\u{1B}[32m"
+val styleYellow := "\u{1B}[33m"
+val styleCyan := "\u{1B}[36m"
+val styleBlue := "\u{1B}[34m"
+val styleMagenta := "\u{1B}[35m"
+
+val styleItalic := "\u{1B}[3m"
+val styleBold := "\u{1B}[1m"
+val styleDim := "\u{1B}[2m"
+val styleReset := "\u{1B}[0m"
 
 
 fn pprint_bool(z: Bool) -> :none {
       match z {
-            :true => @slice [ styleGreen, heavyCheck, styleReset ] ..print()
-            :false => @slice [ styleRed, heavyCross, styleReset ] ..print()
+            :true => @slice [ styleGreen, "✔ true", styleReset ] ..print()
+            :false => @slice [ styleRed, "✘ false", styleReset ] ..print()
+      }
+}
+
+fn pprint_atom(z: Atom, err: Bool) -> :none {
+      match err {
+            :false => @slice [ styleMagenta, styleItalic, styleBold, z.str, styleReset ] ..print()
+            :true => @slice [ styleBrightRed, styleItalic, styleBold, z.str, styleReset ] ..print()
       }
 }
 
@@ -27,24 +39,69 @@ fn pprint_integer(z: Integer) -> :none {
       @slice [ styleCyan, z, styleReset ] ..print()
 }
 
-fn pprint_array( z: Slice <Generic>, indent_level: u16 ) -> :none {
+fn pprint_voidance(z: Voidance, indent_level: u16) -> :none {
+      match z using v {
+            :none => @slice [ styleDim, "∅ none", styleReset ] ..print()
+            :error => @slice [ styleBrightRed, styleBold, "‼ error", styleReset ] ..print()
+            ErrorAndReason => {
+                  @slice [ styleBrightRed, styleBold, "‼ error ", styleReset] ..print()
+                  internal_pprint(v.2, indent_level + 1, :true)
+            }
+      }
+}
+
+fn pprint_array( z: Slice <Generic>, indent_level: u16, err: Bool ) -> :none {
       switch indent_level {
             0 as u16 => :none
             else => print(:nl)
       }
       for z using elem {
-            repeat indent_level print((
-                  soft_tab := :softTab
-                  spaces := 6 as u32
-            ))
+            switch indent_level {
+                  0 as u16 => :none
+                  else => {
+                        repeat indent_level print(( :softTab, 6 as u32 ))
+                        match err {
+                              :false => print("• ")
+                              else => print(@slice [styleBrightRed, "• ", styleReset])
+                        }
+                  }
+            }
+
             match elem using inner {
                   Slice <Generic> => {
-                        print(bulletPoint)
-                        pprint_array(inner, indent_level + 1 as u16)
+                        print("↘")
+                        pprint_array(inner, indent_level + 1 as u16, err)
+                  }
+                  Record => {
+                        pprint_record(inner, indent_level + 1 as u16, err)
                   }
                   else => {
-                        print(@slice [bulletPoint, " "])
-                        internal_pprint(elem, indent_level)
+                        internal_pprint(inner, indent_level, err)
+                        print(:nl)
+                  }
+            }
+      }
+}
+
+fn pprint_record( item: Record, indent_level: u16, err: Bool ) -> :none {
+      switch indent_level {
+            0 as u16 => :none
+            else => print(:nl)
+      }
+      repeat item.*.len using i {
+            repeat indent_level print(( :softTab, 6 as u32 ))
+            let k := item.*.key[i]
+            let v := item.*.val[i]
+            match err {
+                  :true => print(@slice [styleBrightRed, k, styleReset])
+                  :false => print(k)
+            }
+            print(@slice [ styleBlue, styleBold, ": ", styleReset ])
+            match v using inner {
+                  Record => pprint_record(inner, indent_level + 1 as u16, err)
+                  Slice <Generic> => pprint_array(inner, indent_level + 1 as u16, err)
+                  else => {
+                        internal_pprint(inner, indent_level, err)
                         print(:nl)
                   }
             }

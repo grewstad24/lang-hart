@@ -121,6 +121,13 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
                     .collect();
                 Type::Struct(flds)
             }
+            Type::Tuple(elements) => {
+                let elems = elements
+                    .iter()
+                    .map(|e| expand(e, aliases, visited))
+                    .collect();
+                Type::Tuple(elems)
+            }
             Type::Pointer { element, is_mut } => Type::Pointer {
                 element: Box::new(expand(element, aliases, visited)),
                 is_mut: *is_mut,
@@ -596,6 +603,14 @@ impl<'a> Checker<'a> {
                     .join(",");
                 format!("14_struct_{{{}}}", inner)
             }
+            Type::Tuple(elements) => {
+                let inner = elements
+                    .iter()
+                    .map(Self::canonical_type_key)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("14_tuple_({})", inner)
+            }
             Type::Function {
                 parameters,
                 return_type,
@@ -651,6 +666,12 @@ impl<'a> Checker<'a> {
             Type::Struct(fields) => {
                 for f in fields {
                     self.validate_user_type(&f.ty)?;
+                }
+                Ok(())
+            }
+            Type::Tuple(elements) => {
+                for e in elements {
+                    self.validate_user_type(e)?;
                 }
                 Ok(())
             }
@@ -736,6 +757,13 @@ impl<'a> Checker<'a> {
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(Type::Struct(resolved_fields))
+            }
+            Type::Tuple(elements) => {
+                let resolved_elements = elements
+                    .iter()
+                    .map(|e| self.resolve_type_inner(e, visited, indirect))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Type::Tuple(resolved_elements))
             }
             Type::Pointer { element, is_mut } => Ok(Type::Pointer {
                 element: Box::new(self.resolve_type_inner(element, visited, true)?),
@@ -888,6 +916,15 @@ impl<'a> Checker<'a> {
         }
 
         if Self::types_compatible_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
+            let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
+            *expr = Expression::Cast {
+                expression: Box::new(orig),
+                ty: res_expected.clone(),
+            };
+            return Ok(res_expected);
+        }
+
+        if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
@@ -1300,6 +1337,15 @@ impl<'a> Checker<'a> {
                 self.resolve_type(&Self::record_type())
             }
 
+            Expression::Tuple(elements) => {
+                let mut elem_types = Vec::with_capacity(elements.len());
+                for elem in elements.iter_mut() {
+                    let ty = self.type_of_expression(elem)?;
+                    elem_types.push(ty);
+                }
+                Ok(Type::Tuple(elem_types))
+            }
+
             Expression::Identifier(name) => {
                 if self.scope.lookup_type_alias(name).is_some() {
                     return Err(format!(
@@ -1587,6 +1633,21 @@ impl<'a> Checker<'a> {
                                     )
                                 })?;
                             self.resolve_type(&target_field.ty)?
+                        }
+                        Type::Tuple(elements) => {
+                            let idx: usize = field.parse().map_err(|_| {
+                                format!(
+                                    "in '{}': tuple access expects positive integer index, found '{}'",
+                                    self.current_file_path, field
+                                )
+                            })?;
+                            if idx == 0 || idx > elements.len() {
+                                return Err(format!(
+                                    "in '{}': tuple index {} out of bounds for tuple of length {}",
+                                    self.current_file_path, idx, elements.len()
+                                ));
+                            }
+                            self.resolve_type(&elements[idx - 1])?
                         }
                         other => {
                             return Err(format!(
@@ -2323,6 +2384,21 @@ impl<'a> Checker<'a> {
                             ))
                         }
                     }
+                    Type::Tuple(elements) => {
+                        let idx: usize = field.parse().map_err(|_| {
+                            format!(
+                                "in '{}': tuple access expects positive integer index, found '{}'",
+                                self.current_file_path, field
+                            )
+                        })?;
+                        if idx == 0 || idx > elements.len() {
+                            return Err(format!(
+                                "in '{}': tuple index {} out of bounds for tuple of length {}",
+                                self.current_file_path, idx, elements.len()
+                            ));
+                        }
+                        Ok(elements[idx - 1].clone())
+                    }
                     Type::Array { element, .. } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer {
                             element,
@@ -2411,6 +2487,36 @@ impl<'a> Checker<'a> {
                                 name: "ptr".to_string(),
                                 ty: Type::Pointer {
                                     element,
+                                    is_mut: false,
+                                },
+                            },
+                            StructFieldType {
+                                name: "len".to_string(),
+                                ty: Type::USize,
+                            },
+                        ]))
+                    }
+                    Type::Tuple(elements) => {
+                        if elements.is_empty() {
+                            return Err(format!(
+                                "in '{}': '@slice' cannot be used on an empty tuple",
+                                self.current_file_path
+                            ));
+                        }
+                        let first = &elements[0];
+                        for elem in &elements[1..] {
+                            if !self.are_types_compatible(elem, first)? {
+                                return Err(format!(
+                                    "in '{}': '@slice' on tuple requires all elements to have compatible types, expected {:?}, found {:?}",
+                                    self.current_file_path, first, elem
+                                ));
+                            }
+                        }
+                        Ok(Type::Struct(vec![
+                            StructFieldType {
+                                name: "ptr".to_string(),
+                                ty: Type::Pointer {
+                                    element: Box::new(first.clone()),
                                     is_mut: false,
                                 },
                             },
@@ -2535,6 +2641,17 @@ impl<'a> Checker<'a> {
                     }
                     for (f1, f2) in fields1.iter().zip(fields2.iter()) {
                         if f1.name != f2.name || !compatible(&f1.ty, &f2.ty, aliases, visited) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+                (Type::Tuple(elems1), Type::Tuple(elems2)) => {
+                    if elems1.len() != elems2.len() {
+                        return false;
+                    }
+                    for (e1, e2) in elems1.iter().zip(elems2.iter()) {
+                        if !compatible(e1, e2, aliases, visited) {
                             return false;
                         }
                     }
@@ -2697,6 +2814,15 @@ impl<'a> Checker<'a> {
                                     && supported(&source.ty, &target.ty, aliases, visited)
                             });
                 }
+                (Type::Tuple(source_elems), Type::Tuple(target_elems)) => {
+                    return source_elems.len() == target_elems.len()
+                        && source_elems
+                            .iter()
+                            .zip(target_elems)
+                            .all(|(source, target)| {
+                                supported(source, target, aliases, visited)
+                            });
+                }
                 (
                     Type::Array {
                         element: source_element,
@@ -2725,6 +2851,13 @@ impl<'a> Checker<'a> {
                         return false;
                     }
                     if **source == Type::Opaque || **target == Type::Opaque {
+                        return true;
+                    }
+                    let is_target_generic = match target.as_ref() {
+                        Type::Alias(name) => name == "Generic",
+                        other => aliases.get("Generic").is_some_and(|gen_ty| gen_ty == other),
+                    };
+                    if is_target_generic {
                         return true;
                     }
                     return Checker::types_compatible_with_aliases(source, target, aliases);

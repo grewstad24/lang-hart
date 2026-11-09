@@ -48,6 +48,14 @@ pub fn mangle_type(ty: &Type) -> String {
                 .join("_");
             format!("struct_{}", inner)
         }
+        Type::Tuple(elements) => {
+            let inner = elements
+                .iter()
+                .map(mangle_type)
+                .collect::<Vec<_>>()
+                .join("_");
+            format!("tuple_{}", inner)
+        }
         Type::Union(variants) => {
             let inner = variants
                 .iter()
@@ -122,6 +130,13 @@ pub fn substitute_type(ty: &Type, substitutions: &HashMap<String, Type>) -> Type
                 })
                 .collect();
             Type::Struct(new_fields)
+        }
+        Type::Tuple(elements) => {
+            let new_elements = elements
+                .iter()
+                .map(|e| substitute_type(e, substitutions))
+                .collect();
+            Type::Tuple(new_elements)
         }
         Type::Union(variants) => {
             let new_variants = variants
@@ -267,6 +282,11 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::Record(fields) => {
             for f in fields {
                 substitute_expression(&mut f.value, substitutions);
+            }
+        }
+        Expression::Tuple(elements) => {
+            for el in elements {
+                substitute_expression(el, substitutions);
             }
         }
         Expression::Integer(_)
@@ -501,6 +521,11 @@ fn scan_and_rewrite_expression(
                 scan_and_rewrite_expression(&mut f.value, scope, generated, changed)?;
             }
         }
+        Expression::Tuple(elements) => {
+            for el in elements {
+                scan_and_rewrite_expression(el, scope, generated, changed)?;
+            }
+        }
         Expression::SizeOf(_)
         | Expression::Type(_)
         | Expression::Identifier(_)
@@ -598,6 +623,11 @@ fn concretize_type(
         Type::Struct(fields) => {
             for f in fields {
                 concretize_type(&mut f.ty, templates, generated, changed)?;
+            }
+        }
+        Type::Tuple(elements) => {
+            for e in elements {
+                concretize_type(e, templates, generated, changed)?;
             }
         }
         Type::Union(variants) => {
@@ -787,6 +817,11 @@ fn concretize_expression(
         Expression::Record(fields) => {
             for f in fields {
                 concretize_expression(&mut f.value, templates, generated, changed)?;
+            }
+        }
+        Expression::Tuple(elements) => {
+            for el in elements {
+                concretize_expression(el, templates, generated, changed)?;
             }
         }
         Expression::Integer(_)

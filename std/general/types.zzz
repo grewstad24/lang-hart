@@ -1,4 +1,4 @@
-export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool } to .
+export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance } to .
 
 
 type String := Slice <u8>
@@ -9,25 +9,34 @@ type SignedInteger := s16 | s32 | s64
 
 type UnsignedInteger := u16 | u32 | u64
 
-type Record := *(
+type Record := *{
       len: usize
       key: *String
       val: *Generic
-)
+}
+
+type ErrorAndReason := (:error, Atom | Record)
+
+type Error := ErrorAndReason | :error
+
+type Voidance := Error | :none
 
 type Bool := :true | :false
 
-type Atom := ( str: String )
+type Atom := { str: String }
 
-meta type Slice <T> := (
+meta type Slice <T> := {
       ptr: *T
       len: usize
-)
+}
 
-type Generic :=
+type UnvoidGeneric :=
       Integer
       | String
       | Bool
       | Record
       | Slice <Generic>
       | Atom
+      | *Generic
+
+type Generic := UnvoidGeneric | Voidance

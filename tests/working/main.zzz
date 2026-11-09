@@ -1,6 +1,17 @@
-import { .print.pretty, .print }
+import { .print.pretty }
 
 fn main() -> :none {
-      @generalise ["apple", 42, :true, [3, [4, 5], 6], :false] ..pprint()
-      print(:nl)
+      @generalise {
+            name := "bob"
+            id := "bob123"
+            userno := 12345
+            status := :online
+            details := {
+                  adult := :true
+                  friends := [ "alice", "john" ]
+                  cookies := :none
+                  address := (:error, :networkTimeOut)
+            }
+            premium := :false
+      } ..pprint()
 }

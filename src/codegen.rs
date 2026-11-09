@@ -599,10 +599,11 @@ impl<'ctx> Codegen<'ctx> {
             Expression::String(value) => self.codegen_string_literal(value),
             Expression::Struct(fields) => self.codegen_struct_literal(fields),
             Expression::Record(fields) => self.codegen_record_literal(fields),
+            Expression::Tuple(elements) => self.codegen_tuple_literal(elements),
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
                     let resolved_local_ty = self.resolve_alias_root(&local.ty)?;
-                    if let Type::Struct(_) = resolved_local_ty {
+                    if matches!(resolved_local_ty, Type::Struct(_) | Type::Tuple(_)) {
                         let loaded = self
                             .builder
                             .build_load(self.llvm_type(&local.ty)?, local.alloca, name)
@@ -653,7 +654,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 if let Some(global_var) = self.global_vars.get(name) {
                     let resolved_global_ty = self.resolve_alias_root(&global_var.ty)?;
-                    if let Type::Struct(_) = resolved_global_ty {
+                    if matches!(resolved_global_ty, Type::Struct(_) | Type::Tuple(_)) {
                         let loaded = self
                             .builder
                             .build_load(self.llvm_type(&global_var.ty)?, global_var.pointer, name)
@@ -1277,7 +1278,37 @@ impl<'ctx> Codegen<'ctx> {
                         };
                         (elem, sz, ptr)
                     }
-                    _ => return Err("'@slice' requires an array".to_string()),
+                    Binding::Struct { ty, value, storage } if matches!(self.resolve_alias_root(ty)?, Type::Tuple(_)) => {
+                        let elements = match self.resolve_alias_root(ty)? {
+                            Type::Tuple(elems) => elems.clone(),
+                            _ => unreachable!(),
+                        };
+                        if elements.is_empty() {
+                            return Err("'@slice' on empty tuple unsupported".to_string());
+                        }
+                        let elem_ty = elements[0].clone();
+                        let size = elements.len();
+                        let llvm_elem_ty = self.llvm_type(&elem_ty)?;
+                        let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
+                        let arr_tmp = self.builder.build_alloca(llvm_arr_ty, "tuple_slice_arr").map_err(|e| e.to_string())?;
+                        let zero = self.ptr_sized_int_type().const_zero();
+                        for (i, elem_t) in elements.iter().enumerate() {
+                            let idx = self.ptr_sized_int_type().const_int(i as u64, false);
+                            let elem_dest_ptr = unsafe {
+                                self.builder.build_gep(llvm_arr_ty, arr_tmp, &[zero, idx], "elem_dest").map_err(|e| e.to_string())?
+                            };
+                            let elem_val = if let Some(s) = storage {
+                                let struct_ty = self.llvm_type(ty)?.into_struct_type();
+                                let elem_src_ptr = self.builder.build_struct_gep(struct_ty, *s, i as u32, "tuple_elem_ptr").map_err(|e| e.to_string())?;
+                                self.builder.build_load(self.llvm_type(elem_t)?, elem_src_ptr, "tuple_elem_val").map_err(|e| e.to_string())?
+                            } else {
+                                self.builder.build_extract_value(*value, i as u32, "tuple_elem_val").map_err(|e| e.to_string())?
+                            };
+                            self.builder.build_store(elem_dest_ptr, elem_val).map_err(|e| e.to_string())?;
+                        }
+                        (elem_ty, size, arr_tmp)
+                    }
+                    _ => return Err("'@slice' requires an array or tuple".to_string()),
                 };
 
                 let llvm_elem_ty = self.llvm_type(&elem_ty)?;
@@ -1403,6 +1434,41 @@ impl<'ctx> Codegen<'ctx> {
 
         Ok(Binding::Struct {
             ty: struct_type,
+            value: struct_val,
+            storage: None,
+        })
+    }
+
+    fn codegen_tuple_literal(
+        &mut self,
+        elements: &[Expression],
+    ) -> Result<Binding<'ctx>, String> {
+        let mut element_types = Vec::with_capacity(elements.len());
+        let mut element_values = Vec::with_capacity(elements.len());
+
+        for elem in elements {
+            let binding = self.codegen_expression(elem)?;
+            let ty = self.binding_type(&binding)?;
+            let val = self.binding_basic_value(&binding)?;
+
+            element_types.push(ty);
+            element_values.push(val);
+        }
+
+        let tuple_type = Type::Tuple(element_types);
+        let llvm_struct_type = self.llvm_type(&tuple_type)?.into_struct_type();
+
+        let mut struct_val = llvm_struct_type.get_undef();
+        for (i, val) in element_values.into_iter().enumerate() {
+            struct_val = self
+                .builder
+                .build_insert_value(struct_val, val, i as u32, &format!("tuple_fld_{}", i))
+                .map_err(|e| e.to_string())?
+                .into_struct_value();
+        }
+
+        Ok(Binding::Struct {
+            ty: tuple_type,
             value: struct_val,
             storage: None,
         })
@@ -1778,13 +1844,14 @@ impl<'ctx> Codegen<'ctx> {
             self.local_scopes.push(HashMap::new());
 
             let variant_type = arm.variant_type.as_ref().unwrap();
+            let resolved_arm_variant_type = self.resolve_alias_root(variant_type)?.clone();
             let arm_llvm_ty = self.llvm_type(variant_type)?;
             let payload_ptr = self
                 .builder
                 .build_struct_gep(union_llvm_type, union_storage, 1, "payload_ptr")
                 .map_err(|e| e.to_string())?;
 
-            if let Type::Union(inner_vars) = variant_type {
+            if let Type::Union(inner_vars) = &resolved_arm_variant_type {
                 let sub_union_llvm_ty = arm_llvm_ty.into_struct_type();
                 let sub_alloca = self
                     .builder
@@ -1973,20 +2040,27 @@ impl<'ctx> Codegen<'ctx> {
                 storage,
             } => {
                 let resolved_ty = self.resolve_alias_root(ty)?;
-                let fields = match resolved_ty {
-                    Type::Struct(flds) => flds,
-                    _ => return Err("expected struct type".to_string()),
+                let (idx, field_type) = match resolved_ty {
+                    Type::Struct(fields) => {
+                        fields
+                            .iter()
+                            .enumerate()
+                            .find(|(_, f)| f.name == field)
+                            .map(|(i, f)| (i, f.ty.clone()))
+                            .ok_or_else(|| format!("unknown struct field '{}'", field))?
+                    }
+                    Type::Tuple(elements) => {
+                        let idx: usize = field.parse().map_err(|_| format!("unknown tuple field '{}'", field))?;
+                        if idx == 0 || idx > elements.len() {
+                            return Err(format!("tuple index {} out of bounds", idx));
+                        }
+                        (idx - 1, elements[idx - 1].clone())
+                    }
+                    _ => return Err("expected struct or tuple type".to_string()),
                 };
 
-                let (idx, field_type) = fields
-                    .iter()
-                    .enumerate()
-                    .find(|(_, f)| f.name == field)
-                    .map(|(i, f)| (i, f.ty.clone()))
-                    .ok_or_else(|| format!("unknown struct field '{}'", field))?;
-
                 let resolved_field_type = self.resolve_alias_root(&field_type)?;
-                if let Type::Struct(_) = resolved_field_type {
+                if matches!(resolved_field_type, Type::Struct(_) | Type::Tuple(_)) {
                     if let Some(storage_ptr) = storage {
                         let llvm_struct_ty = self.llvm_type(resolved_ty)?.into_struct_type();
                         let field_gep = self
@@ -2623,6 +2697,42 @@ impl<'ctx> Codegen<'ctx> {
                         self.binding_basic_value(&converted)?,
                         index as u32,
                         &target_field.name,
+                    )
+                    .map_err(|error| error.to_string())?
+                    .into_struct_value();
+            }
+
+            return Ok(Binding::Struct {
+                ty: target_type,
+                value: target_value,
+                storage: None,
+            });
+        }
+
+        if let (Type::Tuple(source_elements), Type::Tuple(target_elements)) =
+            (&resolved_source, &resolved_target)
+        {
+            let source_value = self.binding_basic_value(&binding)?.into_struct_value();
+            let target_llvm_type = self.llvm_type(&target_type)?.into_struct_type();
+            let mut target_value = target_llvm_type.get_undef();
+
+            for (index, (source_elem, target_elem)) in
+                source_elements.iter().zip(target_elements).enumerate()
+            {
+                let elem_value = self
+                    .builder
+                    .build_extract_value(source_value, index as u32, &format!("cast_tuple_elem_{}", index))
+                    .map_err(|error| error.to_string())?;
+                let elem_binding = self.binding_from_basic_value(source_elem, elem_value)?;
+                let converted =
+                    self.codegen_cast_inner(elem_binding, target_elem.clone(), visited)?;
+                target_value = self
+                    .builder
+                    .build_insert_value(
+                        target_value,
+                        self.binding_basic_value(&converted)?,
+                        index as u32,
+                        &format!("cast_tuple_elem_{}", index),
                     )
                     .map_err(|error| error.to_string())?
                     .into_struct_value();
@@ -3585,7 +3695,7 @@ impl<'ctx> Codegen<'ctx> {
                 ty: ty.clone(),
                 value: value.into_int_value(),
             }),
-            Type::Struct { .. } => Ok(Binding::Struct {
+            Type::Struct { .. } | Type::Tuple { .. } => Ok(Binding::Struct {
                 ty: ty.clone(),
                 value: value.into_struct_value(),
                 storage: None,
@@ -3700,30 +3810,27 @@ impl<'ctx> Codegen<'ctx> {
             return Ok(self.context.i8_type().array_type(0).into());
         }
 
-        let mut storage_element = None;
-        let mut storage_element_size = 0;
-        let mut max_alignment = 0;
-
+        let mut max_alignment = 1;
         for variant in variants {
             let alignment = self.llvm_type_align(variant)?;
-            let size = self.llvm_type_size(variant)?;
-            if size > 0
-                && (alignment > max_alignment
-                    || (alignment == max_alignment && size > storage_element_size))
-            {
-                let llvm_type = self.llvm_type(variant)?;
-                storage_element = Some(llvm_type);
-                storage_element_size = size;
-                max_alignment = alignment;
-            }
+            max_alignment = max_alignment.max(alignment);
         }
 
-        let Some(storage_element) = storage_element else {
-            return Ok(self.context.i8_type().array_type(0).into());
+        let (storage_ty, elem_size) = match max_alignment {
+            align if align >= 16 => (
+                self.context
+                    .custom_width_int_type(std::num::NonZeroU32::new(128).unwrap())
+                    .unwrap(),
+                16,
+            ),
+            8 => (self.context.i64_type(), 8),
+            4 => (self.context.i32_type(), 4),
+            2 => (self.context.i16_type(), 2),
+            _ => (self.context.i8_type(), 1),
         };
 
-        let element_count = payload_size.div_ceil(storage_element_size);
-        Ok(storage_element.array_type(element_count as u32).into())
+        let element_count = payload_size.div_ceil(elem_size);
+        Ok(storage_ty.array_type(element_count as u32).into())
     }
 
     fn llvm_type_align(&self, ty: &Type) -> Result<u64, String> {
@@ -3769,6 +3876,13 @@ impl<'ctx> Codegen<'ctx> {
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(self.context.struct_type(&field_llvm_types, false).into())
             }
+            Type::Tuple(elements) => {
+                let elem_llvm_types: Vec<BasicTypeEnum<'ctx>> = elements
+                    .iter()
+                    .map(|elem| self.llvm_type(elem))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(self.context.struct_type(&elem_llvm_types, false).into())
+            }
             Type::Union(variants) => {
                 let tag_ty = self.context.i8_type();
                 let payload_ty = self.union_payload_storage_type(variants)?;
@@ -3809,6 +3923,14 @@ impl<'ctx> Codegen<'ctx> {
                     .map(|f| self.zero_value(&f.ty))
                     .collect::<Result<Vec<_>, String>>()?;
                 Ok(struct_llvm_type.const_named_struct(&field_zeroes).into())
+            }
+            Type::Tuple(elements) => {
+                let struct_llvm_type = self.llvm_type(ty)?.into_struct_type();
+                let elem_zeroes = elements
+                    .iter()
+                    .map(|elem| self.zero_value(elem))
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(struct_llvm_type.const_named_struct(&elem_zeroes).into())
             }
             Type::Union(_) => {
                 let union_llvm_type = self.llvm_type(ty)?.into_struct_type();

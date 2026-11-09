@@ -98,6 +98,7 @@ pub enum Type {
         type_arguments: Vec<Type>,
     },
     Struct(Vec<StructFieldType>),
+    Tuple(Vec<Type>),
     Pointer {
         element: Box<Type>,
         is_mut: bool,
@@ -196,6 +197,7 @@ pub enum Expression {
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
     Record(Vec<StructFieldInit>),
+    Tuple(Vec<Expression>),
     Member {
         expression: Box<Expression>,
         field: String,
@@ -1196,7 +1198,10 @@ impl Parser {
     pub fn parse_block(&mut self) -> Result<Expression, String> {
         self.expect(Token::LBrace)?;
         self.skip_newlines();
+        self.parse_block_body()
+    }
 
+    pub fn parse_block_body(&mut self) -> Result<Expression, String> {
         let mut expressions = Vec::new();
 
         while !self.is(Token::RBrace) && !self.is(Token::Eof) {
@@ -1918,7 +1923,7 @@ impl Parser {
         loop {
             if self.is(Token::Newline) {
                 match self.peek_non_newline() {
-                    Token::Star | Token::Slash | Token::Percent => {
+                    Token::Slash | Token::Percent => {
                         self.skip_newlines();
                     }
                     _ => break,
@@ -2041,6 +2046,13 @@ impl Parser {
                         expression = Expression::AddressOf {
                             expression: Box::new(expression),
                             is_mut,
+                        };
+                    } else if let Token::Integer(value) = self.peek() {
+                        let field = value.to_string();
+                        self.advance();
+                        expression = Expression::Member {
+                            expression: Box::new(expression),
+                            field,
                         };
                     } else {
                         let field = self.expect_field_name()?;
@@ -2295,12 +2307,14 @@ impl Parser {
                 }
                 if tag == "generalise" {
                     let operand = self.parse_primary()?;
-                    match unspanned_expression(&operand) {
-                        Expression::Struct(_) | Expression::Array(_) | Expression::Record(_) | Expression::Slice(_) => {
-                            return Ok(Self::generalise_expression(operand)?);
-                        }
-                        _ => return Err(format!("'@generalise' expects a struct or array literal, found {:?}", operand)),
-                    }
+                    let gen_expr = Self::generalise_expression(operand)?;
+                    return match unspanned_expression(&gen_expr) {
+                        Expression::Record(_) | Expression::Slice(_) => Ok(gen_expr),
+                        _ => Ok(Expression::Cast {
+                            expression: Box::new(gen_expr),
+                            ty: Type::Alias("Generic".to_string()),
+                        }),
+                    };
                 }
                 let is_record = tag == "record";
                 if tag != "record" && tag != "struct" {
@@ -2309,8 +2323,19 @@ impl Parser {
                         tag
                     ));
                 }
-                self.expect(Token::LParen)?;
-                let fields = self.parse_struct_fields(Token::RParen)?;
+                let closing = if self.is(Token::LBrace) {
+                    self.advance();
+                    Token::RBrace
+                } else if self.is(Token::LParen) {
+                    self.advance();
+                    Token::RParen
+                } else {
+                    return Err(format!(
+                        "expected '{{' after '@{}', found {:?}",
+                        tag, self.peek()
+                    ));
+                };
+                let fields = self.parse_struct_fields(closing)?;
                 if is_record {
                     Ok(Expression::Record(fields))
                 } else {
@@ -2321,39 +2346,29 @@ impl Parser {
                 self.advance();
                 self.skip_newlines();
 
-                if self.is_struct_type_start() {
-                    let mut fields = Vec::new();
-                    while !self.is(Token::RParen) && !self.is(Token::Eof) {
-                        let field_name = self.expect_field_name()?;
-                        if self.is(Token::Colon) || self.is(Token::ColonColon) {
-                            self.advance();
-                        } else {
-                            return Err(format!(
-                                "expected ':' after field name, found {:?}",
-                                self.peek()
-                            ));
-                        }
-                        self.skip_newlines();
-                        let ty = self.parse_type()?;
-                        fields.push(StructFieldType {
-                            name: field_name,
-                            ty,
-                        });
-                        self.skip_newlines();
-                        if self.is(Token::Comma) {
+                if self.is(Token::RParen) {
+                    self.advance();
+                    Ok(Expression::Tuple(Vec::new()))
+                } else {
+                    let first = self.parse_expression()?;
+                    self.skip_newlines();
+                    if self.is(Token::Comma) {
+                        let mut elements = vec![first];
+                        while self.is(Token::Comma) {
                             self.advance();
                             self.skip_newlines();
+                            if self.is(Token::RParen) {
+                                break;
+                            }
+                            elements.push(self.parse_expression()?);
+                            self.skip_newlines();
                         }
+                        self.expect(Token::RParen)?;
+                        Ok(Expression::Tuple(elements))
+                    } else {
+                        self.expect(Token::RParen)?;
+                        Ok(first)
                     }
-                    self.expect(Token::RParen)?;
-                    Ok(Expression::Type(Type::Struct(fields)))
-                } else if self.is_struct_literal_start() {
-                    let fields = self.parse_struct_fields(Token::RParen)?;
-                    Ok(Expression::Struct(fields))
-                } else {
-                    let expr = self.parse_expression()?;
-                    self.expect(Token::RParen)?;
-                    Ok(expr)
                 }
             }
             Token::LBracket => {
@@ -2383,7 +2398,43 @@ impl Parser {
                     tok
                 ));
             }
-            Token::LBrace => self.parse_block(),
+            Token::LBrace => {
+                self.advance();
+                self.skip_newlines();
+
+                if self.is_struct_type_start() {
+                    let mut fields = Vec::new();
+                    while !self.is(Token::RBrace) && !self.is(Token::Eof) {
+                        let field_name = self.expect_field_name()?;
+                        if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                            self.advance();
+                        } else {
+                            return Err(format!(
+                                "expected ':' after field name, found {:?}",
+                                self.peek()
+                            ));
+                        }
+                        self.skip_newlines();
+                        let ty = self.parse_type()?;
+                        fields.push(StructFieldType {
+                            name: field_name,
+                            ty,
+                        });
+                        self.skip_newlines();
+                        if self.is(Token::Comma) {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(Token::RBrace)?;
+                    Ok(Expression::Type(Type::Struct(fields)))
+                } else if self.is_struct_literal_start() {
+                    let fields = self.parse_struct_fields(Token::RBrace)?;
+                    Ok(Expression::Struct(fields))
+                } else {
+                    self.parse_block_body()
+                }
+            }
             Token::If => self.parse_if_expression(),
             Token::Switch => self.parse_switch_expression(),
             Token::Match => self.parse_match_expression(),
@@ -2493,14 +2544,7 @@ impl Parser {
             self.expect(Token::ColonEqual)?;
             self.skip_newlines();
 
-            let value = if self.is(Token::LParen) {
-                self.advance();
-                self.skip_newlines();
-                let inner_fields = self.parse_struct_fields(Token::RParen)?;
-                Expression::Struct(inner_fields)
-            } else {
-                self.parse_expression()?
-            };
+            let value = self.parse_expression()?;
 
             fields.push(StructFieldInit { name, value });
 
@@ -2519,8 +2563,12 @@ impl Parser {
                 expression: Box::new(Self::generalise_expression(*expression)?),
                 span,
             }),
+            Expression::AddressOf { expression, .. } => Ok(Expression::AddressOf {
+                expression: Box::new(Self::generalise_expression(*expression)?),
+                is_mut: false,
+            }),
             Expression::Symbol(name) => {
-                if name == "true" || name == "false" {
+                if name == "true" || name == "false" || name == "none" || name == "error" {
                     Ok(Expression::Symbol(name))
                 } else {
                     Ok(Expression::Struct(vec![StructFieldInit {
@@ -2554,6 +2602,26 @@ impl Parser {
                 Ok(Expression::Record(gen_fields))
             }
             Expression::Array(elements) => {
+                let gen_elems = elements
+                    .into_iter()
+                    .map(|e| {
+                        let gen_val = Self::generalise_expression(e)?;
+                        Ok(Expression::Cast {
+                            expression: Box::new(gen_val),
+                            ty: Type::Alias("Generic".to_string()),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                Ok(Expression::Slice(Box::new(Expression::Array(gen_elems))))
+            }
+            Expression::Tuple(elements) => {
+                if elements.len() == 2 && matches!(unspanned_expression(&elements[0]), Expression::Symbol(s) if s == "error") {
+                    let mut iter = elements.into_iter();
+                    let err_elem = iter.next().unwrap();
+                    let reason_elem = iter.next().unwrap();
+                    let gen_reason = Self::generalise_expression(reason_elem)?;
+                    return Ok(Expression::Tuple(vec![err_elem, gen_reason]));
+                }
                 let gen_elems = elements
                     .into_iter()
                     .map(|e| {
@@ -2946,8 +3014,37 @@ impl Parser {
                 self.advance();
                 self.skip_newlines();
 
+                let mut types = Vec::new();
+                if self.is(Token::RParen) {
+                    self.advance();
+                    return Ok(Type::Tuple(types));
+                }
+                let first = self.parse_type()?;
+                self.skip_newlines();
+                if self.is(Token::Comma) {
+                    types.push(first);
+                    while self.is(Token::Comma) {
+                        self.advance();
+                        self.skip_newlines();
+                        if self.is(Token::RParen) {
+                            break;
+                        }
+                        types.push(self.parse_type()?);
+                        self.skip_newlines();
+                    }
+                    self.expect(Token::RParen)?;
+                    Ok(Type::Tuple(types))
+                } else {
+                    self.expect(Token::RParen)?;
+                    Ok(first)
+                }
+            }
+            Token::LBrace => {
+                self.advance();
+                self.skip_newlines();
+
                 let mut fields = Vec::new();
-                while !self.is(Token::RParen) && !self.is(Token::Eof) {
+                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
                     let field_name = self.expect_field_name()?;
                     if self.is(Token::Colon) || self.is(Token::ColonColon) {
                         self.advance();
@@ -2969,7 +3066,7 @@ impl Parser {
                         self.skip_newlines();
                     }
                 }
-                self.expect(Token::RParen)?;
+                self.expect(Token::RBrace)?;
                 Ok(Type::Struct(fields))
             }
             token => Err(format!("expected type, found {:?}", token)),

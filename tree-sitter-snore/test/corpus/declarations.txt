@@ -61,14 +61,14 @@ Types
 
 type String := Slice <u8>
 type Integer := s32 | s64 | u32 | u64
-type Node := *(
+type Node := *{
     val: s32
     next: *Node
-)
-meta type ResizeableArray<T> := (
+}
+meta type ResizeableArray<T> := {
     arr: *T
     len: usize
-)
+}
 
 ---
 

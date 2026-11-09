@@ -5,13 +5,13 @@ Expressions and Literals
 fn test() {
     let x := 1 + 2 * 3
     let b := not :false
-    let r := @record (
+    let r := @record {
         name := "alice"
         age := 30
-    )
-    let s := (
+    }
+    let s := {
         key := "val"
-    )
+    }
     let sz := @sizeOf s32
     let p := alloc(type s32)
     p.* := 42

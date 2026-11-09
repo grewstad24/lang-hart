@@ -3,16 +3,19 @@ decl mod pprint {
       import { .print }
 }
 
-fn pprint( item: Generic ) -> :none {
-      internal_pprint(item, 0 as u16)
+fn pprint( item: Generic ) -> Voidance {
+      internal_pprint(item, 0 as u16, :false)
 }
 
-fn internal_pprint( item: Generic, indent_level: u16 ) -> :none {
+fn internal_pprint( item: Generic, indent_level: u16, err: Bool ) -> Voidance {
       match item using z {
             Bool => pprint_bool(z)
             Integer => pprint_integer(z)
             String => pprint_string(z)
-            Slice<Generic> => pprint_array(z, indent_level)
-            else => :none
+            Atom => pprint_atom(z, err)
+            Slice<Generic> => pprint_array(z, indent_level, err)
+            Record => pprint_record(z, indent_level, err)
+            *Generic => pprint(z.*)
+            Voidance => pprint_voidance(z, indent_level)
       }
 }

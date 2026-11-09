@@ -263,6 +263,13 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Record(resolved))
         }
+        Expression::Tuple(elements) => {
+            let mut resolved = Vec::with_capacity(elements.len());
+            for el in elements {
+                resolved.push(canonicalize_expression(el, checker)?);
+            }
+            Ok(Expression::Tuple(resolved))
+        }
         Expression::Unary { operator, operand } => Ok(Expression::Unary {
             operator: operator.clone(),
             operand: Box::new(canonicalize_expression(operand, checker)?),

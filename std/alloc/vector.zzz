@@ -1,19 +1,19 @@
 mod alloc
 
-meta type Vector <T> := (
+meta type Vector <T> := {
       arr: Slice <T>
       capacity: usize
-)
+}
 
 meta fn alloc_vector( T: type, len: usize ) ->
 Vector<T> | :zeroLengthError
 {
       return if {
             len = 0 => :zeroLengthError
-            else => (
+            else => {
                   arr := contiguous_alloc(len * 2, type T)
                   capacity := len * 2
-            )
+            }
       }
 }
 
