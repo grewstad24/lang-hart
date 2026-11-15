@@ -3,11 +3,11 @@ decl mod pprint {
       import { .print }
 }
 
-fn pprint( item: Generic ) -> Voidance {
-      internal_pprint(item, 0 as u16, :false)
+def pprint( item ) {
+      internal_pprint(item, 0, :false)
 }
 
-fn internal_pprint( item: Generic, indent_level: u16, err: Bool ) -> Voidance {
+def internal_pprint( item, indent_level, err ) {
       match item using z {
             Bool => pprint_bool(z)
             Integer => pprint_integer(z)

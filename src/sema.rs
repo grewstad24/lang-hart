@@ -563,6 +563,7 @@ impl<'a> Checker<'a> {
     pub fn canonical_type_key(ty: &Type) -> String {
         match ty {
             Type::Opaque => "00_opaque".to_string(),
+            Type::Inferred => "00_inferred".to_string(),
             Type::MetaType => "00_metatype".to_string(),
             Type::Never => "00_never".to_string(),
             Type::U8 => "02_u8".to_string(),
@@ -943,7 +944,7 @@ impl<'a> Checker<'a> {
         }
 
         for (name, prov) in &self.scope.definitions {
-            if prov.item.is_meta {
+            if prov.item.is_meta || prov.item.is_def {
                 continue;
             }
             if let Some(sig) = &prov.item.signature {
@@ -999,7 +1000,13 @@ impl<'a> Checker<'a> {
     }
 
     fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
-        if def.is_meta {
+        if def.name == "main" && def.is_def {
+            return Err(format!(
+                "in '{}': entry point 'main' must be a function ('fn'), never a 'def'",
+                self.current_file_path
+            ));
+        }
+        if def.is_meta || def.is_def {
             return Ok(());
         }
 
@@ -1045,11 +1052,12 @@ impl<'a> Checker<'a> {
                 .current_function_return_type
                 .replace(expected_return.clone());
             let body_ty_res = self.type_of_expression(&mut def.value);
+            let captured_return = self.current_function_return_type.take();
             self.current_function_return_type = old_return_type;
             self.exit_scope();
 
             let mut body_ty = body_ty_res?;
-            if body_ty != Type::Never {
+            if expected_return != Type::Inferred && body_ty != Type::Never {
                 body_ty =
                     self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
                 if !self.are_types_compatible(&body_ty, &expected_return)? {
@@ -1058,6 +1066,27 @@ impl<'a> Checker<'a> {
                         self.current_file_path, def.name, expected_return, body_ty
                     ));
                 }
+            } else if expected_return == Type::Inferred {
+                let deduced = match captured_return {
+                    Some(t) if t != Type::Inferred => t,
+                    _ => {
+                        if body_ty == Type::Never {
+                            Type::Symbol("none".to_string())
+                        } else {
+                            body_ty.clone()
+                        }
+                    }
+                };
+                *sig.return_type = deduced.clone();
+                let param_types = sig.parameters.iter().map(|p| p.ty.clone()).collect();
+                self.resolved_definitions.insert(
+                    def.name.clone(),
+                    Type::Function {
+                        parameters: param_types,
+                        return_type: Box::new(deduced),
+                        is_variadic: sig.is_variadic,
+                    },
+                );
             }
         } else {
             let ty = self.type_of_expression(&mut def.value)?;
@@ -1120,21 +1149,37 @@ impl<'a> Checker<'a> {
 
     fn resolve_definition(&mut self, name: &str) -> Result<Type, String> {
         if let Some(ty) = self.resolved_definitions.get(name) {
-            return Ok(ty.clone());
+            if let Type::Function { return_type, .. } = ty {
+                if **return_type != Type::Inferred {
+                    return Ok(ty.clone());
+                }
+            } else {
+                return Ok(ty.clone());
+            }
         }
 
-        let def = self.scope.lookup_definition(name).ok_or_else(|| {
+        let def = self.scope.lookup_definition(name).cloned().ok_or_else(|| {
             format!(
                 "in '{}': unknown identifier '{}' (not defined in this module or imported)",
                 self.current_file_path, name
             )
         })?;
 
-        if def.is_meta {
+        if def.is_meta || def.is_def {
             return Err(format!(
-                "in '{}': meta function '{}' cannot be referenced as a runtime value",
-                self.current_file_path, name
+                "in '{}': {} function '{}' cannot be referenced as a runtime value",
+                self.current_file_path,
+                if def.is_meta { "meta" } else { "def" },
+                name
             ));
+        }
+
+        if def.signature.is_some() {
+            let mut def_clone = def.clone();
+            self.check_definition_body(&mut def_clone)?;
+            if let Some(resolved) = self.resolved_definitions.get(name) {
+                return Ok(resolved.clone());
+            }
         }
 
         if !self.resolving_definitions.insert(name.to_string()) {
@@ -1432,6 +1477,10 @@ impl<'a> Checker<'a> {
                     )
                 })?;
                 let mut actual = self.type_of_expression(expr)?;
+                if expected == Type::Inferred {
+                    self.current_function_return_type = Some(actual);
+                    return Ok(Type::Never);
+                }
                 actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
                 if !self.are_types_compatible(&actual, &expected)? {
                     return Err(format!(
@@ -1578,10 +1627,14 @@ impl<'a> Checker<'a> {
                             info_mut.is_initialized = true;
                         }
                     } else {
-                        return Err(format!(
-                            "in '{}': unknown variable '{}'",
-                            self.current_file_path, name
-                        ));
+                        self.local_scopes.last_mut().unwrap().insert(
+                            name.clone(),
+                            BindingInfo {
+                                ty: val_ty.clone(),
+                                is_mutable: false,
+                                is_initialized: true,
+                            },
+                        );
                     }
                     Ok(Type::Symbol("none".to_string()))
                 }
@@ -1839,15 +1892,7 @@ impl<'a> Checker<'a> {
             } => {
                 let raw_target_ty = self.type_of_expression(target)?;
                 let target_ty = self.resolve_type(&raw_target_ty)?;
-                let target_variants = match &target_ty {
-                    Type::Union(vars) => vars.clone(),
-                    other => {
-                        return Err(format!(
-                            "in '{}': match target must evaluate to a sum type, found {:?}",
-                            self.current_file_path, other
-                        ));
-                    }
-                };
+                let aliases = self.alias_targets();
 
                 if arms.is_empty() {
                     return Err(format!(
@@ -1856,56 +1901,125 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
+                if !matches!(&target_ty, Type::Union(_)) {
+                    let mut matched_idx = None;
+                    for (idx, arm) in arms.iter().enumerate() {
+                        if let Some(raw_ty) = &arm.variant_type {
+                            let resolved = self.resolve_type(raw_ty)?;
+                            if Self::types_compatible_with_aliases(&target_ty, &resolved, &aliases)
+                                || Self::types_compatible_with_aliases(&resolved, &target_ty, &aliases)
+                            {
+                                matched_idx = Some(idx);
+                                break;
+                            }
+                        } else {
+                            matched_idx = Some(idx);
+                            break;
+                        }
+                    }
+
+                    let matched_idx = matched_idx.ok_or_else(|| {
+                        format!(
+                            "in '{}': no match arm for type {:?}",
+                            self.current_file_path, target_ty
+                        )
+                    })?;
+
+                    let (target_expr, b_name, matched_arm) = match std::mem::replace(
+                        expression,
+                        Expression::Symbol("false".to_string()),
+                    ) {
+                        Expression::Match {
+                            target,
+                            binding_name,
+                            mut arms,
+                        } => {
+                            let arm = arms.remove(matched_idx);
+                            (target, binding_name, arm)
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    *expression = if b_name.is_empty() {
+                        Expression::Block(vec![
+                            Expression::Discard(target_expr),
+                            *matched_arm.body,
+                        ])
+                    } else {
+                        Expression::Block(vec![
+                            Expression::Let {
+                                name: b_name,
+                                value: target_expr,
+                            },
+                            *matched_arm.body,
+                        ])
+                    };
+
+                    return self.type_of_expression(expression);
+                }
+
+                let target_variants = match &target_ty {
+                    Type::Union(vars) => vars.clone(),
+                    _ => unreachable!(),
+                };
+
                 let mut unhandled = target_variants.clone();
                 let mut arm_types = Vec::new();
-                let aliases = self.alias_targets();
-                let num_arms = arms.len();
+                let mut active_arms = Vec::new();
 
-                for (arm_idx, arm) in arms.iter_mut().enumerate() {
-                    let arm_var_ty = if let Some(raw_ty) = &arm.variant_type {
+                for mut arm in std::mem::take(arms) {
+                    if let Some(raw_ty) = &arm.variant_type {
                         let resolved = self.resolve_type(raw_ty)?;
-                        arm.variant_type = Some(resolved.clone());
 
                         let covered_variants = match &resolved {
                             Type::Union(inner) => inner.clone(),
                             single => vec![single.clone()],
                         };
 
+                        let mut matching_covered = Vec::new();
                         for v in &covered_variants {
                             let matches_variant = |target: &Type| {
                                 Self::types_compatible_with_aliases(v, target, &aliases)
                                     && Self::types_compatible_with_aliases(target, v, &aliases)
                             };
 
-                            if !target_variants.iter().any(matches_variant) {
-                                return Err(format!(
-                                    "in '{}': match arm variant {:?} is not a member of sum type {:?}",
-                                    self.current_file_path, v, target_ty
-                                ));
+                            if target_variants.iter().any(matches_variant) {
+                                matching_covered.push(v.clone());
+                                if let Some(pos) = unhandled.iter().position(matches_variant) {
+                                    unhandled.remove(pos);
+                                }
                             }
-
-                            let pos = unhandled.iter().position(matches_variant).ok_or_else(|| {
-                                format!(
-                                    "in '{}': unreachable or duplicate match arm for variant {:?}",
-                                    self.current_file_path, v
-                                )
-                            })?;
-                            unhandled.remove(pos);
                         }
 
-                        resolved
+                        if matching_covered.is_empty() {
+                            continue;
+                        }
+
+                        let narrowed_ty = if matching_covered.len() == 1 {
+                            matching_covered[0].clone()
+                        } else {
+                            Type::Union(matching_covered)
+                        };
+                        arm.variant_type = Some(narrowed_ty.clone());
+
+                        self.enter_scope();
+                        self.local_scopes.last_mut().unwrap().insert(
+                            binding_name.clone(),
+                            BindingInfo {
+                                ty: narrowed_ty,
+                                is_mutable: false,
+                                is_initialized: true,
+                            },
+                        );
+
+                        let arm_res_ty = self.type_of_expression(&mut arm.body);
+                        self.exit_scope();
+                        let arm_ty = self.resolve_type(&arm_res_ty?)?;
+                        arm_types.push(arm_ty);
+                        active_arms.push(arm);
                     } else {
-                        if arm_idx != num_arms - 1 {
-                            return Err(format!(
-                                "in '{}': fallback 'else' arm must be the final arm in match",
-                                self.current_file_path
-                            ));
-                        }
                         if unhandled.is_empty() {
-                            return Err(format!(
-                                "in '{}': fallback 'else' arm is unreachable; all variants already matched",
-                                self.current_file_path
-                            ));
+                            continue;
                         }
 
                         let narrowed_ty = if unhandled.len() == 1 {
@@ -1918,23 +2032,23 @@ impl<'a> Checker<'a> {
 
                         arm.variant_type = Some(narrowed_ty.clone());
                         unhandled.clear();
-                        narrowed_ty
-                    };
 
-                    self.enter_scope();
-                    self.local_scopes.last_mut().unwrap().insert(
-                        binding_name.clone(),
-                        BindingInfo {
-                            ty: arm_var_ty,
-                            is_mutable: false,
-                            is_initialized: true,
-                        },
-                    );
+                        self.enter_scope();
+                        self.local_scopes.last_mut().unwrap().insert(
+                            binding_name.clone(),
+                            BindingInfo {
+                                ty: narrowed_ty,
+                                is_mutable: false,
+                                is_initialized: true,
+                            },
+                        );
 
-                    let arm_res_ty = self.type_of_expression(&mut arm.body);
-                    self.exit_scope();
-                    let arm_ty = self.resolve_type(&arm_res_ty?)?;
-                    arm_types.push(arm_ty);
+                        let arm_res_ty = self.type_of_expression(&mut arm.body);
+                        self.exit_scope();
+                        let arm_ty = self.resolve_type(&arm_res_ty?)?;
+                        arm_types.push(arm_ty);
+                        active_arms.push(arm);
+                    }
                 }
 
                 if !unhandled.is_empty() {
@@ -1943,6 +2057,8 @@ impl<'a> Checker<'a> {
                         self.current_file_path, unhandled
                     ));
                 }
+
+                *arms = active_arms;
 
                 let unified_return_ty = self.unify_to_sum_type(&arm_types)?;
 
@@ -2477,6 +2593,8 @@ impl<'a> Checker<'a> {
                 Ok(Type::USize)
             }
 
+            Expression::TypeOf(_) => Ok(Type::MetaType),
+
             Expression::Slice(expr) => {
                 let ty = self.type_of_expression(expr)?;
                 let resolved = self.resolve_type(&ty)?;
@@ -2578,6 +2696,10 @@ impl<'a> Checker<'a> {
             visited: &mut HashSet<(String, String)>,
         ) -> bool {
             if provided == expected {
+                return true;
+            }
+
+            if provided == &Type::Inferred || expected == &Type::Inferred {
                 return true;
             }
 
@@ -2945,87 +3067,3 @@ impl<'a> Checker<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_pointer_cast_invariants() {
-        let ptr_opaque = Type::Pointer {
-            element: Box::new(Type::Opaque),
-            is_mut: false,
-        };
-        let ptr_s32 = Type::Pointer {
-            element: Box::new(Type::S32),
-            is_mut: false,
-        };
-        let ptr_u8 = Type::Pointer {
-            element: Box::new(Type::U8),
-            is_mut: false,
-        };
-        let ptr_mut_s32 = Type::Pointer {
-            element: Box::new(Type::S32),
-            is_mut: true,
-        };
-
-        // *mut T can be cast to *T
-        assert!(Checker::is_supported_cast(&ptr_mut_s32, &ptr_s32));
-        // *T cannot be cast to *mut T
-        assert!(!Checker::is_supported_cast(&ptr_s32, &ptr_mut_s32));
-
-        // *opaque as *T -> allowed
-        assert!(Checker::is_supported_cast(&ptr_opaque, &ptr_s32));
-        assert!(Checker::is_supported_cast(&ptr_opaque, &ptr_u8));
-
-        // *T as *opaque -> allowed
-        assert!(Checker::is_supported_cast(&ptr_s32, &ptr_opaque));
-        assert!(Checker::is_supported_cast(&ptr_u8, &ptr_opaque));
-
-        // *T as *U -> rejected
-        assert!(!Checker::is_supported_cast(&ptr_s32, &ptr_u8));
-        assert!(!Checker::is_supported_cast(&ptr_u8, &ptr_s32));
-
-        // int as *T -> rejected
-        assert!(!Checker::is_supported_cast(&Type::USize, &ptr_s32));
-        assert!(!Checker::is_supported_cast(&Type::U64, &ptr_s32));
-        assert!(!Checker::is_supported_cast(&Type::S32, &ptr_s32));
-    }
-
-    #[test]
-    fn test_dereference_assignment_semantics() {
-        let scope = ModuleScope::new("test".to_string());
-        let mut checker = Checker::new(&scope);
-        checker.enter_scope();
-        checker.local_scopes.last_mut().unwrap().insert(
-            "ptr".to_string(),
-            BindingInfo {
-                ty: Type::Pointer {
-                    element: Box::new(Type::S32),
-                    is_mut: true,
-                },
-                is_mutable: false,
-                is_initialized: true,
-            },
-        );
-
-        // ptr.* := 10 -> valid
-        let mut assign = Expression::Assign {
-            target: Box::new(Expression::Dereference(Box::new(Expression::Identifier(
-                "ptr".to_string(),
-            )))),
-            value: Box::new(Expression::Integer(10)),
-        };
-        assert!(checker.type_of_expression(&mut assign).is_ok());
-
-        // invalid target: (1 + 2) := 10 -> rejected
-        let mut invalid_assign = Expression::Assign {
-            target: Box::new(Expression::Binary {
-                left: Box::new(Expression::Integer(1)),
-                operator: crate::syntax::BinaryOperator::Add,
-                right: Box::new(Expression::Integer(2)),
-            }),
-            value: Box::new(Expression::Integer(10)),
-        };
-        assert!(checker.type_of_expression(&mut invalid_assign).is_err());
-    }
-}

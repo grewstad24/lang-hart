@@ -21,6 +21,8 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$.argument_list, $.tuple_literal],
+    [$.address_of_expression],
+    [$.mut_declaration, $.assignment_expression],
   ],
 
   rules: {
@@ -32,17 +34,19 @@ module.exports = grammar({
       $.export_directive,
       $.import_directive,
       $.function_definition,
+      $.def_definition,
       $.extern_function_declaration,
       $.type_definition,
-      $.val_declaration,
+      $.const_declaration,
     ),
 
-    val_declaration: $ => seq(
-      'val',
+    const_declaration: $ => prec.right(PREC.ASSIGN, seq(
+      choice('const', 'val'),
       field('name', $.identifier),
+      optional(seq(':', field('type', $._type))),
       ':=',
       field('value', $._expression)
-    ),
+    )),
 
     comment: $ => token(seq('#', /.*/)),
 
@@ -141,6 +145,20 @@ module.exports = grammar({
       field('parameters', $.parameter_list),
       optional(seq('->', field('return_type', $._type))),
       field('body', $.block)
+    ),
+
+    def_definition: $ => seq(
+      'def',
+      field('name', alias($.identifier, $.function_identifier)),
+      field('parameters', $.def_parameter_list),
+      field('body', $.block)
+    ),
+
+    def_parameter_list: $ => seq(
+      '(',
+      commaSep($.identifier),
+      optional(','),
+      ')'
     ),
 
     extern_function_declaration: $ => seq(
@@ -256,8 +274,8 @@ module.exports = grammar({
     ),
 
     _non_assignment_expression: $ => choice(
-      $.let_declaration,
-      $.var_declaration,
+      $.const_declaration,
+      $.mut_declaration,
       $.binary_expression,
       $.unary_expression,
       $.cast_expression,
@@ -278,6 +296,7 @@ module.exports = grammar({
       $.atom_expression,
       $.generalise_expression,
       $.sizeof_expression,
+      $.typeof_expression,
       $.type_literal,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
@@ -288,15 +307,8 @@ module.exports = grammar({
       $.identifier,
     ),
 
-    let_declaration: $ => prec.right(PREC.ASSIGN, seq(
-      'let',
-      field('name', $.identifier),
-      ':=',
-      field('value', $._expression)
-    )),
-
-    var_declaration: $ => prec.right(PREC.ASSIGN, seq(
-      'var',
+    mut_declaration: $ => prec.right(PREC.ASSIGN, seq(
+      'mut',
       field('name', $.identifier),
       optional(seq(':', field('type', $._type))),
       optional(seq(':=', field('value', $._expression)))
@@ -459,6 +471,11 @@ module.exports = grammar({
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',
       field('type', $._type)
+    )),
+
+    typeof_expression: $ => prec(PREC.PRIMARY, seq(
+      '@typeOf',
+      field('value', $._expression)
     )),
 
     type_literal: $ => prec(PREC.PRIMARY, seq(

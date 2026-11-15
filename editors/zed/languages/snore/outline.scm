@@ -13,6 +13,6 @@
 (mod_declaration
   name: (identifier) @name) @item
 
-(val_declaration
+(const_declaration
   name: (identifier) @name) @item
 

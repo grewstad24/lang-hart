@@ -418,6 +418,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             })
         }
         Expression::SizeOf(ty) => Ok(Expression::SizeOf(canonicalize_type(ty, checker)?)),
+        Expression::TypeOf(expr) => Ok(Expression::TypeOf(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Type(ty) => Ok(Expression::Type(canonicalize_type(ty, checker)?)),
     }
@@ -441,6 +442,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let resolver = ModuleResolver::new();
     let mut module_scopes = resolver.resolve_modules(&modules)?;
 
+    crate::monomorphize::specialise_def_functions(&mut modules, &mut module_scopes)?;
     crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
     crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
 
@@ -523,7 +525,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     .or_insert(resolved_alias);
             }
             for def in &file.definitions {
-                if def.is_meta {
+                if def.is_meta || def.is_def {
                     continue;
                 }
                 let resolved_sig = def
@@ -534,6 +536,12 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 let resolved_value = canonicalize_expression(&def.value, &checker)?;
 
                 if def.name == "main" {
+                    if def.is_def {
+                        return Err(format!(
+                            "in '{}': entry point 'main' must be a function ('fn'), never a 'def'",
+                            file.file_path
+                        ));
+                    }
                     if let Some(sig) = &resolved_sig {
                         let ret = &sig.return_type;
                         if **ret != Type::S32
@@ -554,6 +562,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                         signature: resolved_sig,
                         value: resolved_value,
                         is_meta: false,
+                        is_def: false,
                     });
                     continue;
                 }
@@ -567,6 +576,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     signature: resolved_sig,
                     value: resolved_value,
                     is_meta: false,
+                    is_def: false,
                 });
             }
 

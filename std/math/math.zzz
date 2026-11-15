@@ -1,9 +1,9 @@
 export { add, sub, mul, div } to .math
 
-fn add( a: s32, b: s32 ) -> s32 { a + b }
+def add( a, b ) { a + b }
 
-fn sub( a: s32, b: s32 ) -> s32 { a - b }
+def sub( a, b ) { a - b }
 
-fn mul( a: s32, b: s32 ) -> s32 { a * b }
+def mul( a, b ) { a * b }
 
-fn div( a: s32, b: s32 ) -> s32 { a / b }
+def div( a, b ) { a / b }

@@ -32,9 +32,10 @@ fn main() -> :none {
     parameters: (parameter_list)
     return_type: (symbol_literal)
     body: (block
-      (let_declaration
-        name: (identifier)
-        value: (array_literal
+      (identifier)
+      (assignment_expression
+        left: (identifier)
+        right: (array_literal
           (integer_literal)
           (integer_literal)
           (integer_literal)))

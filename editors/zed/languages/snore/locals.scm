@@ -17,13 +17,10 @@
 (parameter
   name: (identifier) @local.definition)
 
-(let_declaration
+(mut_declaration
   name: (identifier) @local.definition)
 
-(var_declaration
-  name: (identifier) @local.definition)
-
-(val_declaration
+(const_declaration
   name: (identifier) @local.definition)
 
 (match_expression

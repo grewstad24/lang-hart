@@ -149,7 +149,7 @@ meta fn resize(T: type, vec: *mut Vector<T>, len: usize) -> *T {
 ---
 
 (source_file
-  (val_declaration
+  (const_declaration
     name: (identifier)
     value: (integer_literal))
   (function_definition

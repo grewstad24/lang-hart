@@ -815,14 +815,29 @@ impl<'ctx> Codegen<'ctx> {
                 let current_binding = self.codegen_expression(value)?;
                 match unspanned_expression(target) {
                     Expression::Identifier(name) => {
-                        let local = self
-                            .lookup_local(name)
-                            .ok_or_else(|| format!("unknown local variable '{}'", name))?;
+                        let (local_alloca, local_ty) = if let Some(local) = self.lookup_local(name) {
+                            (local.alloca, local.ty.clone())
+                        } else {
+                            let ty = self.binding_type(&current_binding)?;
+                            let llvm_ty = self.llvm_type(&ty)?;
+                            let alloca = self
+                                .builder
+                                .build_alloca(llvm_ty, name)
+                                .map_err(|e| e.to_string())?;
+                            self.local_scopes.last_mut().unwrap().insert(
+                                name.clone(),
+                                LocalVar {
+                                    ty: ty.clone(),
+                                    alloca,
+                                },
+                            );
+                            (alloca, ty)
+                        };
 
-                        let coerced_binding = self.coerce_to_type(current_binding, &local.ty)?;
+                        let coerced_binding = self.coerce_to_type(current_binding, &local_ty)?;
                         let val = self.binding_basic_value(&coerced_binding)?;
                         self.builder
-                            .build_store(local.alloca, val)
+                            .build_store(local_alloca, val)
                             .map_err(|e| e.to_string())?;
 
                         Ok(self.symbol_binding("none"))
@@ -1260,6 +1275,7 @@ impl<'ctx> Codegen<'ctx> {
                     value: self.ptr_sized_int_type().const_int(size, false),
                 })
             }
+            Expression::TypeOf(_) => Ok(self.symbol_binding("none")),
             Expression::Slice(expr) => {
                 let binding = self.codegen_expression(expr)?;
                 let (elem_ty, size, storage_ptr) = match &binding {
@@ -3674,7 +3690,7 @@ impl<'ctx> Codegen<'ctx> {
         value: BasicValueEnum<'ctx>,
     ) -> Result<Binding<'ctx>, String> {
         match ty {
-            Type::Never => Err("never type has no basic value".to_string()),
+            Type::Never | Type::Inferred => Err("never type has no basic value".to_string()),
             Type::GenericInstance { name, .. } => {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }
@@ -3859,6 +3875,7 @@ impl<'ctx> Codegen<'ctx> {
     fn llvm_type(&self, ty: &Type) -> Result<BasicTypeEnum<'ctx>, String> {
         match ty {
             Type::Never => Err("never type is not a basic type in LLVM".to_string()),
+            Type::Inferred => Err("inferred type reached codegen".to_string()),
             Type::GenericInstance { name, .. } => {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }
@@ -3905,7 +3922,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn zero_value(&self, ty: &Type) -> Result<BasicValueEnum<'ctx>, String> {
         match ty {
-            Type::Never => Err("never has no zero value".to_string()),
+            Type::Never | Type::Inferred => Err("never has no zero value".to_string()),
             Type::GenericInstance { name, .. } => {
                 Err(format!("unconcretized generic type '{}' reached codegen", name))
             }

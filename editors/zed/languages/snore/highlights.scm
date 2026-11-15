@@ -7,12 +7,12 @@
   "to"
   "from"
   "fn"
+  "def"
   "meta"
   "extern"
   "type"
+  "const"
   "val"
-  "let"
-  "var"
   "if"
   "else"
   "switch"
@@ -34,18 +34,18 @@
 ; Variables & Identifiers (default fallback first)
 (identifier) @variable
 
-(let_declaration
+(mut_declaration
   name: (identifier) @variable)
 
-(var_declaration
-  name: (identifier) @variable)
-
-(val_declaration
+(const_declaration
   name: (identifier) @variable)
 
 ; Parameters
 (parameter
   name: (identifier) @variable.parameter)
+
+(def_parameter_list
+  (identifier) @variable.parameter)
 
 (match_expression
   binder: (identifier) @variable.parameter)
@@ -82,6 +82,7 @@
 "@record" @attribute
 "@struct" @attribute
 "@sizeOf" @function.macro
+"@typeOf" @function.macro
 "@slice" @function.macro
 "@atom" @function.macro
 "@generalise" @function.macro

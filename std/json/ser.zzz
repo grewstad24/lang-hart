@@ -1,1 +1,1 @@
-fn stringify_json( item: Generic, buffer: String ) -> :none {}
+def stringify_json( item, buffer ) {}

@@ -99,6 +99,7 @@ pub enum Type {
     },
     Struct(Vec<StructFieldType>),
     Tuple(Vec<Type>),
+    Inferred,
     Pointer {
         element: Box<Type>,
         is_mut: bool,
@@ -274,6 +275,7 @@ pub enum Expression {
         body: Box<Expression>,
     },
     SizeOf(Type),
+    TypeOf(Box<Expression>),
     Slice(Box<Expression>),
     Type(Type),
 }
@@ -304,6 +306,7 @@ pub struct Definition {
     pub signature: Option<Signature>,
     pub value: Expression,
     pub is_meta: bool,
+    pub is_def: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -423,8 +426,10 @@ pub enum Token {
     Arrow,
     Underscore,
     FnKeyword,
+    Def,
     TypeKeyword,
     ValKeyword,
+    Const,
     Var,
     Let,
     If,
@@ -799,10 +804,12 @@ impl Lexer {
         }
 
         match text.as_str() {
+            "const" => Token::Const,
             "val" => Token::ValKeyword,
             "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
             "fn" => Token::FnKeyword,
+            "def" => Token::Def,
             "var" => Token::Var,
             "let" => Token::Let,
             "if" => Token::If,
@@ -1036,6 +1043,14 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
+            Token::Const => {
+                self.advance();
+                Ok("const".to_string())
+            }
+            Token::Mut => {
+                self.advance();
+                Ok("mut".to_string())
+            }
             Token::ValKeyword => {
                 self.advance();
                 Ok("val".to_string())
@@ -1050,6 +1065,14 @@ impl Parser {
             Token::Identifier(name) => {
                 self.advance();
                 Ok(name)
+            }
+            Token::Const => {
+                self.advance();
+                Ok("const".to_string())
+            }
+            Token::Mut => {
+                self.advance();
+                Ok("mut".to_string())
             }
             Token::ValKeyword => {
                 self.advance();
@@ -1560,6 +1583,10 @@ impl Parser {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
                 }
+                Token::Def => {
+                    let def = self.parse_def_definition()?;
+                    definitions.push(def);
+                }
                 Token::Meta => {
                     self.advance(); // consume 'meta'
                     self.skip_newlines();
@@ -1638,8 +1665,8 @@ impl Parser {
                         type_parameters,
                     });
                 }
-                Token::ValKeyword => {
-                    self.advance(); // consume 'val'
+                Token::Const | Token::ValKeyword => {
+                    self.advance(); // consume 'const' or 'val'
                     self.skip_newlines();
                     let name = self.expect_identifier()?;
                     self.skip_newlines();
@@ -1652,6 +1679,7 @@ impl Parser {
                         signature: None,
                         value,
                         is_meta: false,
+                        is_def: false,
                     });
                 }
                 Token::Extern => {
@@ -1722,7 +1750,7 @@ impl Parser {
                 }
                 token => {
                     return Err(format!(
-                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'type', 'val', 'extern', 'decl mod', 'mod', 'export', or 'import'",
+                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'def', 'type', 'val', 'extern', 'decl mod', 'mod', 'export', or 'import'",
                         file_path, token
                     ));
                 }
@@ -1816,6 +1844,70 @@ impl Parser {
             signature: Some(signature),
             value: body,
             is_meta: false,
+            is_def: false,
+        })
+    }
+
+    pub fn parse_def_definition(&mut self) -> Result<Definition, String> {
+        self.expect(Token::Def)?;
+        let name = self.expect_identifier()?;
+        if name == "main" {
+            return Err(format_error(
+                self.current_span(),
+                "entry point 'main' must be a function ('fn'), never a 'def'",
+            ));
+        }
+
+        self.expect(Token::LParen)?;
+        self.skip_newlines();
+        let mut parameters = Vec::new();
+        while !self.is(Token::RParen) && !self.is(Token::Eof) {
+            let param_name = self.expect_field_name()?;
+            self.skip_newlines();
+            if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                return Err(format_error(
+                    self.current_span(),
+                    &format!(
+                        "type annotations are not allowed on 'def' parameters; remove type annotation on '{}'",
+                        param_name
+                    ),
+                ));
+            }
+            parameters.push(Parameter {
+                name: param_name,
+                ty: Type::Inferred,
+            });
+            self.skip_newlines();
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
+        }
+        self.expect(Token::RParen)?;
+
+        self.skip_newlines();
+        if self.is(Token::Arrow) {
+            return Err(format_error(
+                self.current_span(),
+                "return type annotations are not allowed on 'def' functions",
+            ));
+        }
+
+        self.skip_newlines();
+        let body = self.parse_block()?;
+
+        let signature = Signature {
+            parameters,
+            return_type: Box::new(Type::Inferred),
+            is_variadic: false,
+        };
+
+        Ok(Definition {
+            name,
+            signature: Some(signature),
+            value: body,
+            is_meta: false,
+            is_def: true,
         })
     }
 
@@ -2118,6 +2210,8 @@ impl Parser {
         matches!(
             &self.tokens[idx],
             Token::Identifier(_)
+                | Token::Const
+                | Token::Mut
                 | Token::Val
                 | Token::Var
                 | Token::Let
@@ -2164,6 +2258,8 @@ impl Parser {
         if idx < self.tokens.len() {
             match &self.tokens[idx] {
                 Token::Identifier(_)
+                | Token::Const
+                | Token::Mut
                 | Token::Val
                 | Token::Var
                 | Token::Let
@@ -2216,6 +2312,8 @@ impl Parser {
         if idx < self.tokens.len() {
             match &self.tokens[idx] {
                 Token::Identifier(_)
+                | Token::Const
+                | Token::Mut
                 | Token::Val
                 | Token::Var
                 | Token::Let
@@ -2316,10 +2414,14 @@ impl Parser {
                         }),
                     };
                 }
+                if tag == "typeOf" {
+                    let operand = self.parse_primary()?;
+                    return Ok(Expression::TypeOf(Box::new(operand)));
+                }
                 let is_record = tag == "record";
                 if tag != "record" && tag != "struct" {
                     return Err(format!(
-                        "unknown struct tag '@{}', expected '@record', '@struct', '@sizeOf', '@slice', '@atom', or '@generalise'",
+                        "unknown struct tag '@{}', expected '@record', '@struct', '@sizeOf', '@slice', '@atom', '@generalise', or '@typeOf'",
                         tag
                     ));
                 }
@@ -2439,12 +2541,27 @@ impl Parser {
             Token::Switch => self.parse_switch_expression(),
             Token::Match => self.parse_match_expression(),
             Token::Let => {
+                return Err(format_error(
+                    self.current_span(),
+                    "the 'let' keyword has been removed; use ':=' for variable declarations (or 'mut' for mutable variables)",
+                ));
+            }
+            Token::Var => {
+                return Err(format_error(
+                    self.current_span(),
+                    "the 'var' keyword has been removed; use 'mut' for mutable variables or 'const' for constants",
+                ));
+            }
+            Token::Const => {
                 self.advance();
                 let name = self.expect_identifier()?;
                 if self.is(Token::Colon) || self.is(Token::ColonColon) {
-                    return Err(format!(
-                        "constants cannot be declared without an initialiser: 'let {} : ...' is prohibited, use 'let {} := <value>'",
-                        name, name
+                    return Err(format_error(
+                        self.current_span(),
+                        &format!(
+                            "constants cannot be declared without an initialiser: 'const {} : ...' is prohibited, use 'const {} := <value>'",
+                            name, name
+                        ),
                     ));
                 }
                 self.expect(Token::ColonEqual)?;
@@ -2455,7 +2572,7 @@ impl Parser {
                     value: Box::new(value),
                 })
             }
-            Token::Var => {
+            Token::Mut => {
                 self.advance();
                 let name = self.expect_identifier()?;
                 if self.is(Token::Colon) || self.is(Token::ColonColon) {
@@ -2484,10 +2601,13 @@ impl Parser {
                         value: Some(Box::new(value)),
                     })
                 } else {
-                    Err(format!(
-                        "expected ':' or ':=' after 'var {}', found {:?}",
-                        name,
-                        self.peek()
+                    Err(format_error(
+                        self.current_span(),
+                        &format!(
+                            "expected ':' or ':=' after 'mut {}', found {:?}",
+                            name,
+                            self.peek()
+                        ),
                     ))
                 }
             }

@@ -1,32 +1,32 @@
 mod print
 
 
-fn print_string( s: String ) -> :none {
+def print_string(s) {
       printf("%s".ptr, s.ptr)
 }
 
 
-fn pr_nl() -> :none {
+def pr_nl() {
       printf("\n".ptr)
 }
 
 
-fn pr_tab() -> :none {
+def pr_tab() {
       printf("\t".ptr)
 }
 
 
-fn print_sint( num: SignedInteger ) -> :none {
+def print_sint(num) {
       printf("%lld".ptr, num as s64)
 }
 
 
-fn print_uint( num: UnsignedInteger ) -> :none {
+def print_uint(num) {
       printf("%llu".ptr, num as u64)
 }
 
 
-fn printa( arr: Slice <Printable> ) -> :none {
+def printa(arr) {
       repeat arr.len using i {
             print(arr[i])
       }
