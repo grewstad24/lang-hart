@@ -140,7 +140,7 @@ module.exports = grammar({
     // Functions
     function_definition: $ => seq(
       optional('meta'),
-      'fn',
+      choice('func', 'fn'),
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
       optional(seq('->', field('return_type', $._type))),
@@ -163,7 +163,7 @@ module.exports = grammar({
 
     extern_function_declaration: $ => seq(
       'extern',
-      'fn',
+      choice('func', 'fn'),
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
       optional(seq('->', field('return_type', $._type)))

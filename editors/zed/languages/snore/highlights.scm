@@ -6,6 +6,7 @@
   "import"
   "to"
   "from"
+  "func"
   "fn"
   "def"
   "meta"

@@ -1,4 +1,4 @@
 mod io
 
 
-extern fn read(fd: s32, buf: *u8, bytes: u64) -> s64
+extern func read(fd: s32, buf: *u8, bytes: u64) -> s64

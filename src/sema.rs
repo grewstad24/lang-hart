@@ -1002,7 +1002,7 @@ impl<'a> Checker<'a> {
     fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
         if def.name == "main" && def.is_def {
             return Err(format!(
-                "in '{}': entry point 'main' must be a function ('fn'), never a 'def'",
+                "in '{}': entry point 'main' must be a function ('func'), never a 'def'",
                 self.current_file_path
             ));
         }

@@ -1,4 +1,4 @@
 mod io
 
 
-extern fn fflush(ptr: *u8) -> s32
+extern func fflush(ptr: *u8) -> s32

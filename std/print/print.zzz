@@ -6,7 +6,7 @@ decl mod print {
 }
 
 
-extern fn printf( ptr: *u8, ...) -> s32
+extern func printf( ptr: *u8, ...) -> s32
 
 
 type Printable :=

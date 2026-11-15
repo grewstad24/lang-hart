@@ -5,7 +5,7 @@ meta type Vector <T> := {
       capacity: usize
 }
 
-meta fn alloc_vector( T: type, len: usize ) ->
+meta func alloc_vector( T: type, len: usize ) ->
 Vector<T> | :zeroLengthError
 {
       return if {
@@ -17,7 +17,7 @@ Vector<T> | :zeroLengthError
       }
 }
 
-meta fn resize_vector( T: type, vec: *mut Vector <T>, new_len: usize ) -> :none {
+meta func resize_vector( T: type, vec: *mut Vector <T>, new_len: usize ) -> :none {
       if {
             vec.*.capacity < new_len => {
                   vec.*.capacity := new_len * 2 as usize

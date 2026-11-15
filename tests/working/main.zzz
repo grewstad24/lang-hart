@@ -2,7 +2,7 @@ import { .print.pretty, .heap, .math }
 
 const greeting := "hello"
 
-fn main() -> :none {
+func main() -> :none {
       ptr1 := heap_new(5)
       ptr2 := heap_new(greeting)
 

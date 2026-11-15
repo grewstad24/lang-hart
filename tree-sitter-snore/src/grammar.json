@@ -759,8 +759,17 @@
           ]
         },
         {
-          "type": "STRING",
-          "value": "fn"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "func"
+            },
+            {
+              "type": "STRING",
+              "value": "fn"
+            }
+          ]
         },
         {
           "type": "FIELD",
@@ -922,8 +931,17 @@
           "value": "extern"
         },
         {
-          "type": "STRING",
-          "value": "fn"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "func"
+            },
+            {
+              "type": "STRING",
+              "value": "fn"
+            }
+          ]
         },
         {
           "type": "FIELD",

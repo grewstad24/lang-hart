@@ -538,7 +538,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 if def.name == "main" {
                     if def.is_def {
                         return Err(format!(
-                            "in '{}': entry point 'main' must be a function ('fn'), never a 'def'",
+                            "in '{}': entry point 'main' must be a function ('func'), never a 'def'",
                             file.file_path
                         ));
                     }

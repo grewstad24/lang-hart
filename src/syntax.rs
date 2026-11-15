@@ -426,6 +426,7 @@ pub enum Token {
     Arrow,
     Underscore,
     FnKeyword,
+    FnOld,
     Def,
     TypeKeyword,
     ValKeyword,
@@ -808,7 +809,8 @@ impl Lexer {
             "val" => Token::ValKeyword,
             "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
-            "fn" => Token::FnKeyword,
+            "func" => Token::FnKeyword,
+            "fn" => Token::FnOld,
             "def" => Token::Def,
             "var" => Token::Var,
             "let" => Token::Let,
@@ -1583,6 +1585,12 @@ impl Parser {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
                 }
+                Token::FnOld => {
+                    return Err(format_error(
+                        self.current_span(),
+                        "the 'fn' keyword has been replaced with 'func'",
+                    ));
+                }
                 Token::Def => {
                     let def = self.parse_def_definition()?;
                     definitions.push(def);
@@ -1594,6 +1602,11 @@ impl Parser {
                         let mut def = self.parse_fn_definition()?;
                         def.is_meta = true;
                         definitions.push(def);
+                    } else if self.is(Token::FnOld) {
+                        return Err(format_error(
+                            self.current_span(),
+                            "the 'fn' keyword has been replaced with 'func'",
+                        ));
                     } else if self.is(Token::TypeKeyword) {
                         self.advance(); // consume 'type'
                         self.skip_newlines();
@@ -1627,7 +1640,7 @@ impl Parser {
                         });
                     } else {
                         return Err(format!(
-                            "expected 'fn' or 'type' after 'meta', found {:?}",
+                            "expected 'func' or 'type' after 'meta', found {:?}",
                             self.peek()
                         ));
                     }
@@ -1684,6 +1697,12 @@ impl Parser {
                 }
                 Token::Extern => {
                     self.advance(); // consume 'extern'
+                    if self.is(Token::FnOld) {
+                        return Err(format_error(
+                            self.current_span(),
+                            "the 'fn' keyword has been replaced with 'func'",
+                        ));
+                    }
                     self.expect(Token::FnKeyword)?;
                     let name = self.expect_identifier()?;
 
@@ -1750,7 +1769,7 @@ impl Parser {
                 }
                 token => {
                     return Err(format!(
-                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'fn', 'def', 'type', 'val', 'extern', 'decl mod', 'mod', 'export', or 'import'",
+                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'func', 'def', 'type', 'val', 'const', 'extern', 'decl mod', 'mod', 'export', or 'import'",
                         file_path, token
                     ));
                 }
@@ -1792,7 +1811,7 @@ impl Parser {
     }
 
     fn parse_fn_definition(&mut self) -> Result<Definition, String> {
-        self.advance(); // consume 'fn'
+        self.advance(); // consume 'func'
         let name = self.expect_identifier()?;
 
         self.expect(Token::LParen)?;
@@ -1854,7 +1873,7 @@ impl Parser {
         if name == "main" {
             return Err(format_error(
                 self.current_span(),
-                "entry point 'main' must be a function ('fn'), never a 'def'",
+                "entry point 'main' must be a function ('func'), never a 'def'",
             ));
         }
 
