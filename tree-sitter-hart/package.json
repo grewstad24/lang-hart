@@ -1,21 +1,21 @@
 {
-  "name": "tree-sitter-snore",
+  "name": "tree-sitter-hart",
   "version": "0.1.0",
-  "description": "Snore grammar for tree-sitter",
+  "description": "Hart grammar for tree-sitter",
   "main": "bindings/node",
   "types": "bindings/node",
   "keywords": [
     "parsing",
     "incremental",
     "tree-sitter",
-    "snore"
+    "hart"
   ],
   "author": "grewstad",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://codeberg.org/grewstad/snore.git",
-    "directory": "tree-sitter-snore"
+    "directory": "tree-sitter-hart"
   },
   "files": [
     "grammar.js",
@@ -33,11 +33,11 @@
   },
   "tree-sitter": [
     {
-      "scope": "source.snore",
+      "scope": "source.hart",
       "file-types": [
-        "zzz"
+        "hart"
       ],
-      "injection-regex": "^snore$"
+      "injection-regex": "^hart$"
     }
   ],
   "scripts": {

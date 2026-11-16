@@ -1,6 +1,6 @@
-# tree-sitter-snore
+# tree-sitter-hart
 
-Tree-sitter grammar for the [Snore](https://codeberg.org/grewstad/snore) programming language (`.zzz` files).
+Tree-sitter grammar for the [Hart](https://codeberg.org/grewstad/snore) programming language (`.hart` files).
 
 ## Features
 

@@ -1,7 +1,0 @@
-name = "Snore"
-grammar = "snore"
-path_suffixes = ["zzz"]
-line_comments = ["# "]
-tab_size = 6
-hard_tabs = false
-

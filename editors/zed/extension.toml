@@ -1,12 +1,12 @@
-id = "snore"
-name = "Snore"
+id = "hart"
+name = "Hart"
 version = "0.1.3"
 schema_version = 1
 authors = ["Arihan Bhor"]
-description = "Snore language support"
+description = "Hart language support"
 repository = "https://codeberg.org/grewstad/snore"
 
-[grammars.snore]
+[grammars.hart]
 repository = "https://codeberg.org/grewstad/snore"
-path = "tree-sitter-snore"
+path = "tree-sitter-hart"
 rev = "main"

@@ -55,34 +55,24 @@ fn run_tool_command(
     }
 }
 
-pub fn get_snore_home_dir() -> Option<PathBuf> {
-    if let Some(snore_home) = env::var_os("SNORE_HOME") {
-        return Some(PathBuf::from(snore_home));
+pub fn get_hart_home_dir() -> Option<PathBuf> {
+    if let Some(hart_home) = env::var_os("HART_HOME") {
+        return Some(PathBuf::from(hart_home));
     }
-    let default_home = env::var_os("HOME")
+    env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".snore"));
-    if let Some(ref path) = default_home {
-        if path.is_dir() {
-            return default_home;
-        }
-    }
-    let tmp_snore = PathBuf::from("/tmp/.snore");
-    if tmp_snore.is_dir() {
-        return Some(tmp_snore);
-    }
-    default_home
+        .map(|home| PathBuf::from(home).join(".hart"))
 }
 
 fn get_cosmocc_dir() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("SNORE_COSMOCC") {
+    if let Some(path) = env::var_os("HART_COSMOCC") {
         let p = PathBuf::from(path);
         if p.join("bin").join("apelink").exists() {
             return Ok(p);
         }
     }
-    if let Some(snore_home) = get_snore_home_dir() {
-        let p = snore_home.join("cosmocc");
+    if let Some(hart_home) = get_hart_home_dir() {
+        let p = hart_home.join("cosmocc");
         if p.join("bin").join("apelink").exists() {
             return Ok(p);
         }
@@ -98,14 +88,14 @@ fn get_cosmocc_dir() -> Result<PathBuf, String> {
     if vendor_cosmo.join("bin").join("apelink").exists() {
         return Ok(vendor_cosmo);
     }
-    Err("could not find Cosmopolitan toolchain ('cosmocc'). Ensure it is installed in '~/.snore/cosmocc' or '~/.local/opt/cosmocc'.".to_string())
+    Err("could not find Cosmopolitan toolchain ('cosmocc'). Ensure it is installed in '~/.hart/cosmocc' or '~/.local/opt/cosmocc'.".to_string())
 }
 
 pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, String> {
-    let mut zzz_files = Vec::new();
+    let mut hart_files = Vec::new();
     let mut visited_dirs = Vec::new();
 
-    fn collect_zzz_files(
+    fn collect_hart_files(
         dir: &Path,
         files: &mut Vec<PathBuf>,
         visited: &mut Vec<PathBuf>,
@@ -125,14 +115,14 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
             let path = entry.path();
             if path.is_dir() {
                 subdirs.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("zzz") {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("hart") {
                 files.push(path);
             }
         }
 
         subdirs.sort();
         for subdir in subdirs {
-            collect_zzz_files(&subdir, files, visited)?;
+            collect_hart_files(&subdir, files, visited)?;
         }
 
         Ok(())
@@ -140,11 +130,11 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
 
     for dir in dirs {
         if dir.is_dir() {
-            collect_zzz_files(dir, &mut zzz_files, &mut visited_dirs)?;
+            collect_hart_files(dir, &mut hart_files, &mut visited_dirs)?;
         }
     }
 
-    zzz_files.sort();
+    hart_files.sort();
 
     // Map named module -> (Option<Declaration (exports, imports, decl_path)>, Vec<SourceFile>)
     let mut named_modules: HashMap<
@@ -156,7 +146,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
     > = HashMap::new();
     let mut unnamed_modules: Vec<LogicalModule> = Vec::new();
 
-    for path in zzz_files {
+    for path in hart_files {
         let code = fs::read_to_string(&path)
             .map_err(|e| format!("failed to read '{}': {}", path.display(), e))?;
 
@@ -472,10 +462,14 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let total_start = Instant::now();
 
     let mut search_dirs = Vec::new();
-    if let Some(snore_home) = get_snore_home_dir() {
-        if snore_home.is_dir() {
-            search_dirs.push(snore_home);
+    if let Some(hart_home) = get_hart_home_dir() {
+        if hart_home.is_dir() {
+            search_dirs.push(hart_home);
         }
+    }
+    let local_std = PathBuf::from("std");
+    if local_std.is_dir() && !search_dirs.iter().any(|d| d.join("std").is_dir() || d == &local_std) {
+        search_dirs.push(local_std);
     }
     search_dirs.push(project_dir.to_path_buf());
 
@@ -483,7 +477,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let mut modules = discover_logical_modules(&search_dirs)?;
 
     if modules.is_empty() {
-        return Err("no .zzz modules found to compile".to_string());
+        return Err("no .hart modules found to compile".to_string());
     }
     println!("  [1/6] Parse & discover modules   ({})", format_duration(step_start.elapsed()));
 

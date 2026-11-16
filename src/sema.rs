@@ -295,7 +295,7 @@ impl ModuleResolver {
                         registry.type_aliases.insert(sym.clone(), prov);
                     } else {
                         let message = format!(
-                            "export error: symbol '{}' is not defined in any .zzz file in this module",
+                            "export error: symbol '{}' is not defined in any .hart file in this module",
                             sym
                         );
                         return Err(format_error(&export_rule.span, &message));

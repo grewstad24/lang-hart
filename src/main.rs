@@ -1,13 +1,13 @@
 use std::env;
 use std::path::PathBuf;
 
-use snore::driver::compile_project;
+use hart::driver::compile_project;
 
 fn main() {
     let project_dir = match env::args().nth(1) {
         Some(path) => PathBuf::from(path),
         None => {
-            eprintln!("usage: snore <project-directory>");
+            eprintln!("usage: hart <project-directory>");
             std::process::exit(1);
         }
     };

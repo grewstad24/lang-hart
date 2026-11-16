@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SNORE_HOME="${HOME}/.snore"
+HART_HOME="${HOME}/.hart"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STD_SRC="${PROJECT_ROOT}/std"
 COSMO_SRC="${PROJECT_ROOT}/vendor/cosmocc"
-COSMO_DEST="${SNORE_HOME}/cosmocc"
+COSMO_DEST="${HART_HOME}/cosmocc"
 
-# 1. Reset ~/.snore
-printf "1/3 : Resetting %s ... " "${SNORE_HOME}"
-rm -rf "${SNORE_HOME}"
-mkdir -p "${SNORE_HOME}"
+# 1. Reset ~/.hart
+printf "1/3 : Resetting %s ... " "${HART_HOME}"
+rm -rf "${HART_HOME}"
+mkdir -p "${HART_HOME}"
 echo "done"
 
 # 2. Copy standard library
 printf "2/3 : Installing standard library ... "
 if [ -d "${STD_SRC}" ]; then
-    cp -r "${STD_SRC}" "${SNORE_HOME}/std"
+    cp -r "${STD_SRC}" "${HART_HOME}/std"
     echo "done"
 else
     echo "skipped (warning: '${STD_SRC}' not found)" >&2
@@ -34,3 +34,4 @@ else
     echo "error: cosmocc not found in '${COSMO_SRC}' or '~/.local/opt/cosmocc'" >&2
     exit 1
 fi
+

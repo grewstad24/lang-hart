@@ -1,7 +1,7 @@
 {
   "targets": [
     {
-      "target_name": "tree_sitter_snore_binding",
+      "target_name": "tree_sitter_hart_binding",
       "dependencies": [
         "<!(node -p \"require('node-addon-api').gyp\")"
       ],

@@ -2,19 +2,19 @@
   "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
   "grammars": [
     {
-      "name": "snore",
-      "camelcase": "Snore",
-      "scope": "source.snore",
+      "name": "hart",
+      "camelcase": "Hart",
+      "scope": "source.hart",
       "file-types": [
-        "zzz"
+        "hart"
       ],
-      "injection-regex": "^snore$"
+      "injection-regex": "^hart$"
     }
   ],
   "metadata": {
     "version": "0.1.0",
     "license": "MIT",
-    "description": "Snore grammar for tree-sitter"
+    "description": "Hart grammar for tree-sitter"
   }
 }
 
