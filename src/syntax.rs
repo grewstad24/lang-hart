@@ -8,17 +8,19 @@ pub struct Span {
 }
 
 pub fn format_error(span: &Span, message: &str) -> String {
-    if message.starts_with(&format!("{}:", span.file)) {
-        message.to_string()
+    let contextual_message = if let Some(stripped) = message.strip_prefix(&format!("{}: error: ", span.file)) {
+        stripped
+    } else if let Some(stripped) = message.strip_prefix(&format!("in '{}': ", span.file)) {
+        stripped
+    } else if message.starts_with(&format!("{}:", span.file)) {
+        return message.to_string();
     } else {
-        let contextual_message = message
-            .strip_prefix(&format!("in '{}': ", span.file))
-            .unwrap_or(message);
-        format!(
-            "{}:{}:{}: error: {}",
-            span.file, span.line, span.col, contextual_message
-        )
-    }
+        message
+    };
+    format!(
+        "{}:{}:{}: error: {}",
+        span.file, span.line, span.col, contextual_message
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,7 +67,7 @@ impl fmt::Display for NamespacePath {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructFieldType {
     pub name: String,
     pub ty: Type,
@@ -77,7 +79,7 @@ pub struct StructFieldInit {
     pub value: Expression,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Opaque,
     MetaType,
@@ -155,6 +157,264 @@ pub enum ComparisonOperator {
     LessEqual,
     Greater,
     GreaterEqual,
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Opaque => write!(f, "opaque"),
+            Type::MetaType => write!(f, "type"),
+            Type::Never => write!(f, "never"),
+            Type::S16 => write!(f, "s16"),
+            Type::S32 => write!(f, "s32"),
+            Type::S64 => write!(f, "s64"),
+            Type::U8 => write!(f, "u8"),
+            Type::U16 => write!(f, "u16"),
+            Type::U32 => write!(f, "u32"),
+            Type::U64 => write!(f, "u64"),
+            Type::USize => write!(f, "usize"),
+            Type::SSize => write!(f, "ssize"),
+            Type::Symbol(name) => write!(f, ":{}", name),
+            Type::Alias(name) => {
+                if let Some((base, args)) = name.split_once("__") {
+                    let arg_list = args.replace("__", ", ");
+                    write!(f, "{}<{}>", base, arg_list)
+                } else {
+                    write!(f, "{}", name)
+                }
+            }
+            Type::GenericInstance { name, type_arguments } => {
+                write!(f, "{}<", name)?;
+                for (i, arg) in type_arguments.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ">")
+            }
+            Type::Struct(fields) => {
+                write!(f, "{{ ")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", field.name, field.ty)?;
+                }
+                write!(f, " }}")
+            }
+            Type::Tuple(elements) => {
+                if elements.is_empty() {
+                    write!(f, "()")
+                } else if elements.len() == 1 {
+                    write!(f, "({},)", elements[0])
+                } else {
+                    write!(f, "(")?;
+                    for (i, elem) in elements.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, ")")
+                }
+            }
+            Type::Inferred => write!(f, "_"),
+            Type::Pointer { element, is_mut } => {
+                if *is_mut {
+                    write!(f, "*mut {}", element)
+                } else {
+                    write!(f, "*{}", element)
+                }
+            }
+            Type::Array { element, size } => write!(f, "[{}]{}", size, element),
+            Type::Function { parameters, return_type, is_variadic } => {
+                write!(f, "func(")?;
+                for (i, param) in parameters.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", param)?;
+                }
+                if *is_variadic {
+                    if !parameters.is_empty() {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "...")?;
+                }
+                write!(f, ") -> {}", return_type)
+            }
+            Type::Union(variants) => {
+                for (i, variant) in variants.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", variant)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl fmt::Display for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expression::Spanned { expression, .. } => write!(f, "{}", expression),
+            Expression::Integer(n) => write!(f, "{}", n),
+            Expression::String(bytes) => {
+                if let Ok(s) = std::str::from_utf8(bytes) {
+                    write!(f, "\"{}\"", s)
+                } else {
+                    write!(f, "\"{}\"", String::from_utf8_lossy(bytes))
+                }
+            }
+            Expression::Symbol(name) => write!(f, ":{}", name),
+            Expression::Identifier(name) => write!(f, "{}", name),
+            Expression::Array(elements) => {
+                write!(f, "[")?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, "]")
+            }
+            Expression::Struct(fields) => {
+                write!(f, "{{ ")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} := {}", field.name, field.value)?;
+                }
+                write!(f, " }}")
+            }
+            Expression::Record(fields) => {
+                write!(f, "@record {{ ")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} := {}", field.name, field.value)?;
+                }
+                write!(f, " }}")
+            }
+            Expression::Tuple(elements) => {
+                if elements.is_empty() {
+                    write!(f, "()")
+                } else if elements.len() == 1 {
+                    write!(f, "({},)", elements[0])
+                } else {
+                    write!(f, "(")?;
+                    for (i, elem) in elements.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    write!(f, ")")
+                }
+            }
+            Expression::Member { expression, field } => {
+                write!(f, "{}.{}", expression, field)
+            }
+            Expression::Index { expression, index } => {
+                write!(f, "{}[{}]", expression, index)
+            }
+            Expression::AddressOf { expression, is_mut } => {
+                if *is_mut {
+                    write!(f, "&mut {}", expression)
+                } else {
+                    write!(f, "&{}", expression)
+                }
+            }
+            Expression::Dereference(expression) => {
+                write!(f, "{}.*", expression)
+            }
+            Expression::Cast { expression, ty } => {
+                write!(f, "{} as {}", expression, ty)
+            }
+            Expression::Call { target, arguments } => {
+                write!(f, "{}(", target)?;
+                for (i, arg) in arguments.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+            Expression::Unary { operator, operand } => {
+                write!(f, "{} {}", operator, operand)
+            }
+            Expression::Binary { left, operator, right } => {
+                write!(f, "{} {} {}", left, operator, right)
+            }
+            Expression::Comparison { left, operator, right } => {
+                write!(f, "{} {} {}", left, operator, right)
+            }
+            Expression::Block(_) => write!(f, "{{ ... }}"),
+            Expression::Discard(expr) => write!(f, "_{}", expr),
+            Expression::Return(expr) => write!(f, "return {}", expr),
+            Expression::If { .. } => write!(f, "if ..."),
+            Expression::Match { target, .. } => write!(f, "match {}", target),
+            Expression::Let { name, value } => write!(f, "{} := {}", name, value),
+            Expression::Var { name, ty, value } => {
+                write!(f, "mut {}", name)?;
+                if let Some(t) = ty {
+                    write!(f, ": {}", t)?;
+                }
+                if let Some(v) = value {
+                    write!(f, " := {}", v)?;
+                }
+                Ok(())
+            }
+            Expression::Assign { target, value } => write!(f, "{} = {}", target, value),
+            Expression::Repeat { count, .. } => write!(f, "repeat {}", count),
+            Expression::For { iterable, .. } => write!(f, "for {}", iterable),
+            Expression::SizeOf(ty) => write!(f, "@sizeOf {}", ty),
+            Expression::TypeOf(expr) => write!(f, "@typeOf {}", expr),
+            Expression::Slice(expr) => write!(f, "@slice {}", expr),
+            Expression::Type(ty) => write!(f, "type {}", ty),
+        }
+    }
+}
+
+impl fmt::Display for UnaryOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UnaryOperator::Plus => write!(f, "+"),
+            UnaryOperator::Minus => write!(f, "-"),
+            UnaryOperator::Not => write!(f, "not"),
+        }
+    }
+}
+
+impl fmt::Display for BinaryOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BinaryOperator::Add => write!(f, "+"),
+            BinaryOperator::Subtract => write!(f, "-"),
+            BinaryOperator::Multiply => write!(f, "*"),
+            BinaryOperator::Divide => write!(f, "/"),
+            BinaryOperator::Modulo => write!(f, "%"),
+        }
+    }
+}
+
+impl fmt::Display for ComparisonOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ComparisonOperator::Equal => write!(f, "="),
+            ComparisonOperator::NotEqual => write!(f, "!="),
+            ComparisonOperator::Less => write!(f, "<"),
+            ComparisonOperator::LessEqual => write!(f, "<="),
+            ComparisonOperator::Greater => write!(f, ">"),
+            ComparisonOperator::GreaterEqual => write!(f, ">="),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -426,13 +686,10 @@ pub enum Token {
     Arrow,
     Underscore,
     FnKeyword,
-    FnOld,
     Def,
     TypeKeyword,
     ValKeyword,
     Const,
-    Var,
-    Let,
     If,
     Else,
     Match,
@@ -465,6 +722,92 @@ pub enum Token {
     TypeSSize,
     Newline,
     Eof,
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Token::Identifier(s) => write!(f, "'{}'", s),
+            Token::Integer(n) => write!(f, "{}", n),
+            Token::Float(fl) => write!(f, "{}", fl),
+            Token::String(bytes) => {
+                if let Ok(s) = std::str::from_utf8(bytes) {
+                    write!(f, "\"{}\"", s)
+                } else {
+                    write!(f, "string literal")
+                }
+            }
+            Token::Symbol(s) => write!(f, ":{}", s),
+            Token::LParen => write!(f, "'('"),
+            Token::RParen => write!(f, "')'"),
+            Token::LBracket => write!(f, "'['"),
+            Token::RBracket => write!(f, "']'"),
+            Token::LBrace => write!(f, "'{{'"),
+            Token::RBrace => write!(f, "'}}'"),
+            Token::Colon => write!(f, "':'"),
+            Token::ColonColon => write!(f, "'::'"),
+            Token::ColonEqual => write!(f, "':='"),
+            Token::Comma => write!(f, "','"),
+            Token::Dot => write!(f, "'.'"),
+            Token::Plus => write!(f, "'+'"),
+            Token::Minus => write!(f, "'-'"),
+            Token::Star => write!(f, "'*'"),
+            Token::Slash => write!(f, "'/'"),
+            Token::Percent => write!(f, "'%'"),
+            Token::Ampersand => write!(f, "'&'"),
+            Token::Caret => write!(f, "'^'"),
+            Token::Pipe => write!(f, "'|'"),
+            Token::At => write!(f, "'@'"),
+            Token::Equal => write!(f, "'='"),
+            Token::NotEqual => write!(f, "'!='"),
+            Token::Less => write!(f, "'<'"),
+            Token::LessEqual => write!(f, "'<='"),
+            Token::Greater => write!(f, "'>'"),
+            Token::GreaterEqual => write!(f, "'>='"),
+            Token::FatArrow => write!(f, "'=>'"),
+            Token::Arrow => write!(f, "'->'"),
+            Token::DotDot => write!(f, "'..'"),
+            Token::DotDotDot => write!(f, "'...'"),
+            Token::Underscore => write!(f, "'_'"),
+            Token::FnKeyword => write!(f, "'func'"),
+            Token::Def => write!(f, "'def'"),
+            Token::TypeKeyword => write!(f, "'type'"),
+            Token::ValKeyword | Token::Val => write!(f, "'const'"),
+            Token::Const => write!(f, "'const'"),
+            Token::If => write!(f, "'if'"),
+            Token::Else => write!(f, "'else'"),
+            Token::Match => write!(f, "'match'"),
+            Token::Switch => write!(f, "'switch'"),
+            Token::Using => write!(f, "'using'"),
+            Token::Over => write!(f, "'over'"),
+            Token::Return => write!(f, "'return'"),
+            Token::As => write!(f, "'as'"),
+            Token::Not => write!(f, "'not'"),
+            Token::Repeat => write!(f, "'repeat'"),
+            Token::For => write!(f, "'for'"),
+            Token::Meta => write!(f, "'meta'"),
+            Token::Mut => write!(f, "'mut'"),
+            Token::Decl => write!(f, "'decl'"),
+            Token::Mod => write!(f, "'mod'"),
+            Token::Export => write!(f, "'export'"),
+            Token::Import => write!(f, "'import'"),
+            Token::To => write!(f, "'to'"),
+            Token::Extern => write!(f, "'extern'"),
+            Token::TypeOpaque => write!(f, "'opaque'"),
+            Token::Never => write!(f, "'never'"),
+            Token::TypeS16 => write!(f, "'s16'"),
+            Token::TypeS32 => write!(f, "'s32'"),
+            Token::TypeS64 => write!(f, "'s64'"),
+            Token::TypeU8 => write!(f, "'u8'"),
+            Token::TypeU16 => write!(f, "'u16'"),
+            Token::TypeU32 => write!(f, "'u32'"),
+            Token::TypeU64 => write!(f, "'u64'"),
+            Token::TypeUSize => write!(f, "'usize'"),
+            Token::TypeSSize => write!(f, "'ssize'"),
+            Token::Newline => write!(f, "newline"),
+            Token::Eof => write!(f, "end of file"),
+        }
+    }
 }
 
 pub struct Lexer {
@@ -658,7 +1001,7 @@ impl Lexer {
                                         tok,
                                         Token::Identifier(_)
                                             | Token::Val
-                                            | Token::Var
+                                            | Token::Const
                                             | Token::TypeKeyword
                                             | Token::RParen
                                             | Token::RBracket
@@ -810,10 +1153,7 @@ impl Lexer {
             "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
             "func" => Token::FnKeyword,
-            "fn" => Token::FnOld,
             "def" => Token::Def,
-            "var" => Token::Var,
-            "let" => Token::Let,
             "if" => Token::If,
             "else" => Token::Else,
             "match" => Token::Match,
@@ -1034,7 +1374,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(format!("expected {:?}, found {:?}", expected, current))
+            Err(format!("expected {}, found {}", expected, current))
         }
     }
 
@@ -1057,7 +1397,7 @@ impl Parser {
                 self.advance();
                 Ok("val".to_string())
             }
-            token => Err(format!("expected identifier, found {:?}", token)),
+            token => Err(format!("expected identifier, found {}", token)),
         }
     }
 
@@ -1083,14 +1423,6 @@ impl Parser {
             Token::Val => {
                 self.advance();
                 Ok("val".to_string())
-            }
-            Token::Var => {
-                self.advance();
-                Ok("var".to_string())
-            }
-            Token::Let => {
-                self.advance();
-                Ok("let".to_string())
             }
             Token::If => {
                 self.advance();
@@ -1204,7 +1536,7 @@ impl Parser {
                 self.advance();
                 Ok("type".to_string())
             }
-            token => Err(format!("expected field name identifier, found {:?}", token)),
+            token => Err(format!("expected field name identifier, found {}", token)),
         }
     }
 
@@ -1246,7 +1578,7 @@ impl Parser {
                 expressions.push(Expression::Discard(Box::new(expr)));
             } else {
                 return Err(format!(
-                    "expected newline or '}}' after expression, found {:?}",
+                    "expected newline or '}}' after expression, found {}",
                     self.peek()
                 ));
             }
@@ -1261,7 +1593,7 @@ impl Parser {
         self.skip_newlines();
         if !self.is(Token::Dot) {
             return Err(format!(
-                "expected namespace starting with '.', found {:?}",
+                "expected namespace starting with '.', found {}",
                 self.peek()
             ));
         }
@@ -1442,13 +1774,13 @@ impl Parser {
                 Token::Decl => {
                     if module_decl.is_some() {
                         return Err(format!(
-                            "in '{}': file cannot declare more than one module declaration",
+                            "{}: error: file cannot declare more than one module declaration",
                             file_path
                         ));
                     }
                     if !exports.is_empty() || !imports.is_empty() {
                         return Err(format!(
-                            "in '{}': exports and imports must be declared inside the 'decl mod' block",
+                            "{}: error: exports and imports must be declared inside the 'decl mod' block",
                             file_path
                         ));
                     }
@@ -1473,7 +1805,7 @@ impl Parser {
                             Token::Export => {
                                 if has_export {
                                     return Err(format!(
-                                        "in '{}': module '{}' cannot have more than one export statement",
+                                        "{}: error: module '{}' cannot have more than one export statement",
                                         file_path, name
                                     ));
                                 }
@@ -1484,7 +1816,7 @@ impl Parser {
                             Token::Import => {
                                 if has_import {
                                     return Err(format!(
-                                        "in '{}': module '{}' cannot have more than one import statement",
+                                        "{}: error: module '{}' cannot have more than one import statement",
                                         file_path, name
                                     ));
                                 }
@@ -1497,7 +1829,7 @@ impl Parser {
                             }
                             token => {
                                 return Err(format!(
-                                    "in '{}': unexpected token inside 'decl mod {}': {:?}. Only 'export' and 'import' are allowed.",
+                                    "{}: error: unexpected token inside 'decl mod {}': {}. Only 'export' and 'import' are allowed.",
                                     file_path, name, token
                                 ));
                             }
@@ -1516,13 +1848,13 @@ impl Parser {
                 Token::Mod => {
                     if module_decl.is_some() {
                         return Err(format!(
-                            "in '{}': file cannot declare more than one module declaration",
+                            "{}: error: file cannot declare more than one module declaration",
                             file_path
                         ));
                     }
                     if !exports.is_empty() || !imports.is_empty() {
                         return Err(format!(
-                            "in '{}': only the module declaration site ('decl mod') can declare imports and exports; member files cannot",
+                            "{}: error: only the module declaration site ('decl mod') can declare imports and exports; member files cannot",
                             file_path
                         ));
                     }
@@ -1538,19 +1870,19 @@ impl Parser {
                 Token::Export => {
                     if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
                         return Err(format!(
-                            "in '{}': member file of module '{}' cannot declare exports. Only 'decl mod {}' can declare exports.",
+                            "{}: error: member file of module '{}' cannot declare exports. Only 'decl mod {}' can declare exports.",
                             file_path, name, name
                         ));
                     }
                     if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
                         return Err(format!(
-                            "in '{}': exports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
+                            "{}: error: exports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
                             file_path, name, name
                         ));
                     }
                     if has_top_level_export {
                         return Err(format!(
-                            "in '{}': cannot have more than one export statement per module",
+                            "{}: error: cannot have more than one export statement per module",
                             file_path
                         ));
                     }
@@ -1561,19 +1893,19 @@ impl Parser {
                 Token::Import => {
                     if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
                         return Err(format!(
-                            "in '{}': member file of module '{}' cannot declare imports. Only 'decl mod {}' can declare imports.",
+                            "{}: error: member file of module '{}' cannot declare imports. Only 'decl mod {}' can declare imports.",
                             file_path, name, name
                         ));
                     }
                     if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
                         return Err(format!(
-                            "in '{}': imports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
+                            "{}: error: imports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
                             file_path, name, name
                         ));
                     }
                     if has_top_level_import {
                         return Err(format!(
-                            "in '{}': cannot have more than one import statement per module",
+                            "{}: error: cannot have more than one import statement per module",
                             file_path
                         ));
                     }
@@ -1584,12 +1916,6 @@ impl Parser {
                 Token::FnKeyword => {
                     let def = self.parse_fn_definition()?;
                     definitions.push(def);
-                }
-                Token::FnOld => {
-                    return Err(format_error(
-                        self.current_span(),
-                        "the 'fn' keyword has been replaced with 'func'",
-                    ));
                 }
                 Token::Def => {
                     let def = self.parse_def_definition()?;
@@ -1602,11 +1928,6 @@ impl Parser {
                         let mut def = self.parse_fn_definition()?;
                         def.is_meta = true;
                         definitions.push(def);
-                    } else if self.is(Token::FnOld) {
-                        return Err(format_error(
-                            self.current_span(),
-                            "the 'fn' keyword has been replaced with 'func'",
-                        ));
                     } else if self.is(Token::TypeKeyword) {
                         self.advance(); // consume 'type'
                         self.skip_newlines();
@@ -1640,7 +1961,7 @@ impl Parser {
                         });
                     } else {
                         return Err(format!(
-                            "expected 'func' or 'type' after 'meta', found {:?}",
+                            "expected 'func' or 'type' after 'meta', found {}",
                             self.peek()
                         ));
                     }
@@ -1697,12 +2018,6 @@ impl Parser {
                 }
                 Token::Extern => {
                     self.advance(); // consume 'extern'
-                    if self.is(Token::FnOld) {
-                        return Err(format_error(
-                            self.current_span(),
-                            "the 'fn' keyword has been replaced with 'func'",
-                        ));
-                    }
                     self.expect(Token::FnKeyword)?;
                     let name = self.expect_identifier()?;
 
@@ -1724,7 +2039,7 @@ impl Parser {
                             self.advance();
                         } else {
                             return Err(format!(
-                                "expected ':' after parameter name, found {:?}",
+                                "expected ':' after parameter name, found {}",
                                 self.peek()
                             ));
                         }
@@ -1768,9 +2083,12 @@ impl Parser {
                     self.skip_newlines();
                 }
                 token => {
-                    return Err(format!(
-                        "in '{}': unexpected token at top level: {:?}. Declarations must start with 'func', 'def', 'type', 'val', 'const', 'extern', 'decl mod', 'mod', 'export', or 'import'",
-                        file_path, token
+                    return Err(format_error(
+                        self.current_span(),
+                        &format!(
+                            "unexpected token at top level: {}. Declarations must start with 'func', 'def', 'type', 'const', 'extern', 'decl mod', 'mod', 'export', or 'import'",
+                            token
+                        ),
                     ));
                 }
             }
@@ -1823,7 +2141,7 @@ impl Parser {
                 self.advance();
             } else {
                 return Err(format!(
-                    "expected ':' after parameter name, found {:?}",
+                    "expected ':' after parameter name, found {}",
                     self.peek()
                 ));
             }
@@ -2232,8 +2550,6 @@ impl Parser {
                 | Token::Const
                 | Token::Mut
                 | Token::Val
-                | Token::Var
-                | Token::Let
                 | Token::If
                 | Token::Else
                 | Token::Match
@@ -2280,8 +2596,6 @@ impl Parser {
                 | Token::Const
                 | Token::Mut
                 | Token::Val
-                | Token::Var
-                | Token::Let
                 | Token::If
                 | Token::Else
                 | Token::Match
@@ -2334,8 +2648,6 @@ impl Parser {
                 | Token::Const
                 | Token::Mut
                 | Token::Val
-                | Token::Var
-                | Token::Let
                 | Token::If
                 | Token::Else
                 | Token::Match
@@ -2413,7 +2725,7 @@ impl Parser {
                     let operand = self.parse_primary()?;
                     let symbol_name = match unspanned_expression(&operand) {
                         Expression::Symbol(name) => name.clone(),
-                        _ => return Err(format!("'@atom' expects a symbol, found {:?}", operand)),
+                        _ => return Err("'@atom' expects a symbol literal (e.g. :foo)".to_string()),
                     };
                     return Ok(Expression::Struct(vec![
                         StructFieldInit {
@@ -2452,7 +2764,7 @@ impl Parser {
                     Token::RParen
                 } else {
                     return Err(format!(
-                        "expected '{{' after '@{}', found {:?}",
+                        "expected '{{' after '@{}', found {}",
                         tag, self.peek()
                     ));
                 };
@@ -2515,7 +2827,7 @@ impl Parser {
             | Token::TypeOpaque => {
                 let tok = self.peek().clone();
                 return Err(format!(
-                    "unexpected type token '{:?}' in expression position; pass types explicitly using 'type <Type>' (e.g. 'type s32')",
+                    "unexpected type token '{}' in expression position; pass types explicitly using 'type <Type>' (e.g. 'type s32')",
                     tok
                 ));
             }
@@ -2531,7 +2843,7 @@ impl Parser {
                             self.advance();
                         } else {
                             return Err(format!(
-                                "expected ':' after field name, found {:?}",
+                                "expected ':' after field name, found {}",
                                 self.peek()
                             ));
                         }
@@ -2559,18 +2871,6 @@ impl Parser {
             Token::If => self.parse_if_expression(),
             Token::Switch => self.parse_switch_expression(),
             Token::Match => self.parse_match_expression(),
-            Token::Let => {
-                return Err(format_error(
-                    self.current_span(),
-                    "the 'let' keyword has been removed; use ':=' for variable declarations (or 'mut' for mutable variables)",
-                ));
-            }
-            Token::Var => {
-                return Err(format_error(
-                    self.current_span(),
-                    "the 'var' keyword has been removed; use 'mut' for mutable variables or 'const' for constants",
-                ));
-            }
             Token::Const => {
                 self.advance();
                 let name = self.expect_identifier()?;
@@ -2623,7 +2923,7 @@ impl Parser {
                     Err(format_error(
                         self.current_span(),
                         &format!(
-                            "expected ':' or ':=' after 'mut {}', found {:?}",
+                            "expected ':' or ':=' after 'mut {}', found {}",
                             name,
                             self.peek()
                         ),
@@ -2661,7 +2961,7 @@ impl Parser {
                 })
             }
             Token::For => self.parse_for_expression(),
-            token => Err(format!("unexpected token in expression: {:?}", token)),
+            token => Err(format!("unexpected token in expression: {}", token)),
         }
     }
 
@@ -3139,7 +3439,7 @@ impl Parser {
                         self.advance();
                         value as usize
                     }
-                    token => return Err(format!("expected array size, found {:?}", token)),
+                    token => return Err(format!("expected array size, found {}", token)),
                 };
                 self.expect(Token::RBracket)?;
                 self.skip_newlines();
@@ -3189,7 +3489,7 @@ impl Parser {
                         self.advance();
                     } else {
                         return Err(format!(
-                            "expected ':' after field name, found {:?}",
+                            "expected ':' after field name, found {}",
                             self.peek()
                         ));
                     }
@@ -3208,7 +3508,7 @@ impl Parser {
                 self.expect(Token::RBrace)?;
                 Ok(Type::Struct(fields))
             }
-            token => Err(format!("expected type, found {:?}", token)),
+            token => Err(format!("expected type, found {}", token)),
         }
     }
 }

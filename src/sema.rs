@@ -74,14 +74,18 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
         t: &Type,
         aliases: &HashMap<String, TypeAlias>,
         visited: &mut HashSet<String>,
+        indirect: bool,
     ) -> Type {
         match t {
             Type::Alias(name) => {
+                if indirect {
+                    return t.clone();
+                }
                 if !visited.insert(name.clone()) {
                     return t.clone();
                 }
                 let res = if let Some(alias) = aliases.get(name) {
-                    expand(&alias.target, aliases, visited)
+                    expand(&alias.target, aliases, visited, indirect)
                 } else {
                     t.clone()
                 };
@@ -91,7 +95,7 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
             Type::Union(variants) => {
                 let mut flat = Vec::new();
                 for v in variants {
-                    let res = expand(v, aliases, visited);
+                    let res = expand(v, aliases, visited, indirect);
                     if let Type::Union(inner) = res {
                         flat.extend(inner);
                     } else {
@@ -116,7 +120,7 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
                     .iter()
                     .map(|f| StructFieldType {
                         name: f.name.clone(),
-                        ty: expand(&f.ty, aliases, visited),
+                        ty: expand(&f.ty, aliases, visited, indirect),
                     })
                     .collect();
                 Type::Struct(flds)
@@ -124,16 +128,16 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
             Type::Tuple(elements) => {
                 let elems = elements
                     .iter()
-                    .map(|e| expand(e, aliases, visited))
+                    .map(|e| expand(e, aliases, visited, indirect))
                     .collect();
                 Type::Tuple(elems)
             }
             Type::Pointer { element, is_mut } => Type::Pointer {
-                element: Box::new(expand(element, aliases, visited)),
+                element: Box::new(expand(element, aliases, visited, true)),
                 is_mut: *is_mut,
             },
             Type::Array { element, size } => Type::Array {
-                element: Box::new(expand(element, aliases, visited)),
+                element: Box::new(expand(element, aliases, visited, indirect)),
                 size: *size,
             },
             Type::Function {
@@ -143,11 +147,11 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
             } => {
                 let params = parameters
                     .iter()
-                    .map(|p| expand(p, aliases, visited))
+                    .map(|p| expand(p, aliases, visited, indirect))
                     .collect();
                 Type::Function {
                     parameters: params,
-                    return_type: Box::new(expand(return_type, aliases, visited)),
+                    return_type: Box::new(expand(return_type, aliases, visited, indirect)),
                     is_variadic: *is_variadic,
                 }
             }
@@ -157,7 +161,7 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
             } => {
                 let new_args = type_arguments
                     .iter()
-                    .map(|a| expand(a, aliases, visited))
+                    .map(|a| expand(a, aliases, visited, indirect))
                     .collect();
                 Type::GenericInstance {
                     name: name.clone(),
@@ -168,7 +172,7 @@ pub fn expand_type_aliases_with_map(ty: &Type, aliases: &HashMap<String, TypeAli
         }
     }
 
-    expand(ty, aliases, &mut visited)
+    expand(ty, aliases, &mut visited, false)
 }
 
 impl ModuleResolver {
@@ -524,7 +528,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        Err(format!("expected slice type, found {:?}", ty))
+        Err(format!("expected slice type, found {}", ty))
     }
 
     pub fn slice_pointer_type(&self, ty: &Type) -> Result<Type, String> {
@@ -534,7 +538,7 @@ impl<'a> Checker<'a> {
                 return self.resolve_type(&fields[0].ty);
             }
         }
-        Err(format!("expected slice type, found {:?}", ty))
+        Err(format!("expected slice type, found {}", ty))
     }
 
     pub fn bool_type() -> Type {
@@ -561,6 +565,13 @@ impl<'a> Checker<'a> {
     }
 
     pub fn canonical_type_key(ty: &Type) -> String {
+        Self::canonical_type_key_depth(ty, 0)
+    }
+
+    fn canonical_type_key_depth(ty: &Type, depth: usize) -> String {
+        if depth > 32 {
+            return "...".to_string();
+        }
         match ty {
             Type::Opaque => "00_opaque".to_string(),
             Type::Inferred => "00_inferred".to_string(),
@@ -583,7 +594,7 @@ impl<'a> Checker<'a> {
             } => {
                 let inner = type_arguments
                     .iter()
-                    .map(Self::canonical_type_key)
+                    .map(|a| Self::canonical_type_key_depth(a, depth + 1))
                     .collect::<Vec<_>>()
                     .join(",");
                 format!("10_generic_{}<{}>", name, inner)
@@ -591,15 +602,15 @@ impl<'a> Checker<'a> {
             Type::Pointer { element, is_mut } => format!(
                 "11_ptr_{}_{}",
                 if *is_mut { "mut" } else { "const" },
-                Self::canonical_type_key(element)
+                Self::canonical_type_key_depth(element, depth + 1)
             ),
             Type::Array { element, size } => {
-                format!("13_arr_{}_{}", size, Self::canonical_type_key(element))
+                format!("13_arr_{}_{}", size, Self::canonical_type_key_depth(element, depth + 1))
             }
             Type::Struct(fields) => {
                 let inner = fields
                     .iter()
-                    .map(|f| format!("{}:{}", f.name, Self::canonical_type_key(&f.ty)))
+                    .map(|f| format!("{}:{}", f.name, Self::canonical_type_key_depth(&f.ty, depth + 1)))
                     .collect::<Vec<_>>()
                     .join(",");
                 format!("14_struct_{{{}}}", inner)
@@ -607,7 +618,7 @@ impl<'a> Checker<'a> {
             Type::Tuple(elements) => {
                 let inner = elements
                     .iter()
-                    .map(Self::canonical_type_key)
+                    .map(|e| Self::canonical_type_key_depth(e, depth + 1))
                     .collect::<Vec<_>>()
                     .join(",");
                 format!("14_tuple_({})", inner)
@@ -619,20 +630,20 @@ impl<'a> Checker<'a> {
             } => {
                 let params = parameters
                     .iter()
-                    .map(Self::canonical_type_key)
+                    .map(|p| Self::canonical_type_key_depth(p, depth + 1))
                     .collect::<Vec<_>>()
                     .join(",");
                 format!(
                     "15_fn_({})_{}_{}",
                     params,
-                    Self::canonical_type_key(return_type),
+                    Self::canonical_type_key_depth(return_type, depth + 1),
                     is_variadic
                 )
             }
             Type::Union(variants) => {
                 let inner = variants
                     .iter()
-                    .map(Self::canonical_type_key)
+                    .map(|v| Self::canonical_type_key_depth(v, depth + 1))
                     .collect::<Vec<_>>()
                     .join("|");
                 format!("16_union_{}", inner)
@@ -650,7 +661,7 @@ impl<'a> Checker<'a> {
             Type::Alias(name) => {
                 if self.scope.lookup_type_alias(name).is_none() {
                     return Err(format!(
-                        "in '{}': unknown type '{}'",
+                        "{}: error: unknown type '{}'",
                         self.current_file_path, name
                     ));
                 }
@@ -699,7 +710,7 @@ impl<'a> Checker<'a> {
                 }
                 if !visited.insert(name.clone()) {
                     return Err(format!(
-                        "in '{}': recursive type alias '{}' has an infinitely-sized by-value cycle",
+                        "{}: error: recursive type alias '{}' has an infinitely-sized by-value cycle",
                         self.current_file_path, name
                     ));
                 }
@@ -709,7 +720,7 @@ impl<'a> Checker<'a> {
                     .map(|a| &a.target)
                     .or_else(|| self.scope.home_type_aliases.get(name).map(|p| &p.item.target))
                     .ok_or_else(|| {
-                        format!("in '{}': unknown type '{}'", self.current_file_path, name)
+                        format!("{}: error: unknown type '{}'", self.current_file_path, name)
                     })?;
                 let resolved = self.resolve_type_inner(target, visited, indirect)?;
                 visited.remove(name);
@@ -810,7 +821,7 @@ impl<'a> Checker<'a> {
 
                 if unique.len() > 256 {
                     return Err(format!(
-                        "in '{}': sum type exceeds maximum of 256 variants (found {})",
+                        "{}: error: sum type exceeds maximum of 256 variants (found {})",
                         self.current_file_path,
                         unique.len()
                     ));
@@ -877,7 +888,7 @@ impl<'a> Checker<'a> {
         for field in fields {
             if !seen_fields.insert(field.name.clone()) {
                 return Err(format!(
-                    "in '{}': duplicate field '@{}' in struct literal",
+                    "{}: error: duplicate field '@{}' in struct literal",
                     self.current_file_path, field.name
                 ));
             }
@@ -911,7 +922,7 @@ impl<'a> Checker<'a> {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
-                ty: res_expected.clone(),
+                ty: expected_ty.clone(),
             };
             return Ok(res_expected);
         }
@@ -920,16 +931,25 @@ impl<'a> Checker<'a> {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
-                ty: res_expected.clone(),
+                ty: expected_ty.clone(),
             };
             return Ok(res_expected);
         }
 
-        if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
+        if let Type::Union(target_vars) = &res_expected {
+            if Self::castable_union_variant_with_aliases(&res_actual, target_vars, &self.alias_targets()).is_some() {
+                let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
+                *expr = Expression::Cast {
+                    expression: Box::new(orig),
+                    ty: expected_ty.clone(),
+                };
+                return Ok(res_expected);
+            }
+        } else if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
-                ty: res_expected.clone(),
+                ty: expected_ty.clone(),
             };
             return Ok(res_expected);
         }
@@ -1002,7 +1022,7 @@ impl<'a> Checker<'a> {
     fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
         if def.name == "main" && def.is_def {
             return Err(format!(
-                "in '{}': entry point 'main' must be a function ('func'), never a 'def'",
+                "{}: error: entry point 'main' must be a function ('func'), never a 'def'",
                 self.current_file_path
             ));
         }
@@ -1022,7 +1042,7 @@ impl<'a> Checker<'a> {
                 if !seen_params.insert(p.name.clone()) {
                     self.exit_scope();
                     return Err(format!(
-                        "in '{}': duplicate parameter name '{}' in function '{}'",
+                        "{}: error: duplicate parameter name '{}' in function '{}'",
                         self.current_file_path, p.name, def.name
                     ));
                 }
@@ -1030,7 +1050,7 @@ impl<'a> Checker<'a> {
                 if resolved_param_ty == Type::Never {
                     self.exit_scope();
                     return Err(format!(
-                        "in '{}': parameter '{}' cannot be never in function '{}'",
+                        "{}: error: parameter '{}' cannot be never in function '{}'",
                         self.current_file_path, p.name, def.name
                     ));
                 }
@@ -1062,7 +1082,7 @@ impl<'a> Checker<'a> {
                     self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
                 if !self.are_types_compatible(&body_ty, &expected_return)? {
                     return Err(format!(
-                        "in '{}': function '{}' return type mismatch: expected {:?}, found {:?}",
+                        "{}: error: function '{}' return type mismatch: expected {}, found {}",
                         self.current_file_path, def.name, expected_return, body_ty
                     ));
                 }
@@ -1099,14 +1119,14 @@ impl<'a> Checker<'a> {
     fn resolve_external_function(&mut self, name: &str) -> Result<Signature, String> {
         let raw = self.scope.lookup_extern(name).ok_or_else(|| {
             format!(
-                "in '{}': unknown external function '{}'",
+                "{}: error: unknown external function '{}'",
                 self.current_file_path, name
             )
         })?;
 
         if !self.resolving_extern_functions.insert(name.to_string()) {
             return Err(format!(
-                "in '{}': cyclic dependency involving external function '{}'",
+                "{}: error: cyclic dependency involving external function '{}'",
                 self.current_file_path, name
             ));
         }
@@ -1117,14 +1137,14 @@ impl<'a> Checker<'a> {
         for p in &raw.signature.parameters {
             if !seen_params.insert(p.name.clone()) {
                 return Err(format!(
-                    "in '{}': duplicate parameter name '{}' in extern function '{}'",
+                    "{}: error: duplicate parameter name '{}' in extern function '{}'",
                     self.current_file_path, p.name, name
                 ));
             }
             let resolved_p_ty = self.resolve_type(&p.ty)?;
             if resolved_p_ty == Type::Never {
                 return Err(format!(
-                    "in '{}': parameter '{}' in extern function '{}' cannot be never",
+                    "{}: error: parameter '{}' in extern function '{}' cannot be never",
                     self.current_file_path, p.name, name
                 ));
             }
@@ -1160,14 +1180,14 @@ impl<'a> Checker<'a> {
 
         let def = self.scope.lookup_definition(name).cloned().ok_or_else(|| {
             format!(
-                "in '{}': unknown identifier '{}' (not defined in this module or imported)",
+                "{}: error: unknown identifier '{}' (not defined in this module or imported)",
                 self.current_file_path, name
             )
         })?;
 
         if def.is_meta || def.is_def {
             return Err(format!(
-                "in '{}': {} function '{}' cannot be referenced as a runtime value",
+                "{}: error: {} function '{}' cannot be referenced as a runtime value",
                 self.current_file_path,
                 if def.is_meta { "meta" } else { "def" },
                 name
@@ -1184,7 +1204,7 @@ impl<'a> Checker<'a> {
 
         if !self.resolving_definitions.insert(name.to_string()) {
             return Err(format!(
-                "in '{}': cyclic dependency involving global constant '@{}'",
+                "{}: error: cyclic dependency involving global constant '@{}'",
                 self.current_file_path, name
             ));
         }
@@ -1247,19 +1267,19 @@ impl<'a> Checker<'a> {
             Expression::Identifier(name) => {
                 if self.scope.lookup_definition(name.as_str()).is_some() {
                     return Err(format!(
-                        "in '{}': cannot reassign to module-level constant '{}'",
+                        "{}: error: cannot reassign to module-level constant '{}'",
                         self.current_file_path, name
                     ));
                 }
                 if self.scope.lookup_extern(name.as_str()).is_some() {
                     return Err(format!(
-                        "in '{}': cannot assign to external function '{}'",
+                        "{}: error: cannot assign to external function '{}'",
                         self.current_file_path, name
                     ));
                 }
                 if self.scope.lookup_type_alias(name.as_str()).is_some() {
                     return Err(format!(
-                        "in '{}': cannot assign to type alias '{}'",
+                        "{}: error: cannot assign to type alias '{}'",
                         self.current_file_path, name
                     ));
                 }
@@ -1267,13 +1287,13 @@ impl<'a> Checker<'a> {
                 if let Some(info) = self.lookup_binding(name.as_str()) {
                     if !info.is_mutable {
                         return Err(format!(
-                            "in '{}': cannot reassign to immutable constant '{}'",
+                            "{}: error: cannot reassign to immutable constant '{}'",
                             self.current_file_path, name
                         ));
                     }
                 } else {
                     return Err(format!(
-                        "in '{}': unknown variable '{}'",
+                        "{}: error: unknown variable '{}'",
                         self.current_file_path, name
                     ));
                 }
@@ -1285,19 +1305,19 @@ impl<'a> Checker<'a> {
                 let ptr_ty = self.resolve_type(&raw_ptr_ty)?;
                 let Type::Pointer { element, is_mut } = ptr_ty else {
                     return Err(format!(
-                        "in '{}': cannot dereference non-pointer type {:?} in assignment target",
+                        "{}: error: cannot dereference non-pointer type {} in assignment target",
                         self.current_file_path, ptr_ty
                     ));
                 };
                 if !is_mut {
                     return Err(format!(
-                        "in '{}': cannot mutate through immutable pointer '*{}'",
+                        "{}: error: cannot mutate through immutable pointer '*{}'",
                         self.current_file_path, Self::canonical_type_key(&element)
                     ));
                 }
                 if *element == Type::Opaque {
                     return Err(format!(
-                        "in '{}': cannot assign through untyped pointer '*opaque'",
+                        "{}: error: cannot assign through untyped pointer '*opaque'",
                         self.current_file_path
                     ));
                 }
@@ -1314,7 +1334,7 @@ impl<'a> Checker<'a> {
                     Type::Array { .. } => self.check_lvalue_mutability(base.as_ref()),
                     Type::Pointer { is_mut: true, .. } => Ok(()),
                     Type::Pointer { is_mut: false, .. } => Err(format!(
-                        "in '{}': cannot mutate through immutable pointer in assignment target",
+                        "{}: error: cannot mutate through immutable pointer in assignment target",
                         self.current_file_path
                     )),
                     other if self.is_slice_type(&other)? => {
@@ -1323,19 +1343,19 @@ impl<'a> Checker<'a> {
                             Ok(())
                         } else {
                             Err(format!(
-                                "in '{}': cannot mutate through immutable slice in assignment target",
+                                "{}: error: cannot mutate through immutable slice in assignment target",
                                 self.current_file_path
                             ))
                         }
                     }
                     other => Err(format!(
-                        "in '{}': cannot index type {:?} in assignment target",
+                        "{}: error: cannot index type {} in assignment target",
                         self.current_file_path, other
                     )),
                 }
             }
             _ => Err(format!(
-                "in '{}': invalid assignment target: expression is not an lvalue",
+                "{}: error: invalid assignment target: expression is not an lvalue",
                 self.current_file_path
             )),
         }
@@ -1360,7 +1380,7 @@ impl<'a> Checker<'a> {
 
             Expression::Record(fields) => {
                 let struct_fields = self.check_struct_fields(fields)?;
-                let generic_type = self.resolve_type(&Self::generic_type())?;
+                let generic_type = Self::generic_type();
                 for (field, struct_field) in fields.iter_mut().zip(struct_fields.iter()) {
                     let resolved_field_type = self.resolve_type(&struct_field.ty)?;
                     let coerced_type = self.coerce_expression_to_type(
@@ -1374,7 +1394,7 @@ impl<'a> Checker<'a> {
                         &self.alias_targets(),
                     ) {
                         return Err(format!(
-                            "in '{}': record field '@{}' has unsupported value type {:?}",
+                            "{}: error: record field '@{}' has unsupported value type {}",
                             self.current_file_path, field.name, resolved_field_type
                         ));
                     }
@@ -1394,7 +1414,7 @@ impl<'a> Checker<'a> {
             Expression::Identifier(name) => {
                 if self.scope.lookup_type_alias(name).is_some() {
                     return Err(format!(
-                        "in '{}': type alias '{}' cannot be used as an expression",
+                        "{}: error: type alias '{}' cannot be used as an expression",
                         self.current_file_path, name
                     ));
                 }
@@ -1402,7 +1422,7 @@ impl<'a> Checker<'a> {
                 if let Some(info) = self.lookup_binding(name) {
                     if info.is_mutable && !info.is_initialized {
                         return Err(format!(
-                            "in '{}': mutable variable '{}' may be read before it is initialized",
+                            "{}: error: mutable variable '{}' may be read before it is initialized",
                             self.current_file_path, name
                         ));
                     }
@@ -1430,7 +1450,7 @@ impl<'a> Checker<'a> {
                 }
 
                 Err(format!(
-                    "in '{}': unknown identifier '{}' is not defined in this module or imported",
+                    "{}: error: unknown identifier '{}' is not defined in this module or imported",
                     self.current_file_path, name
                 ))
             }
@@ -1472,7 +1492,7 @@ impl<'a> Checker<'a> {
             Expression::Return(expr) => {
                 let expected = self.current_function_return_type.clone().ok_or_else(|| {
                     format!(
-                        "in '{}': 'return' outside of function",
+                        "{}: error: 'return' outside of function",
                         self.current_file_path
                     )
                 })?;
@@ -1484,7 +1504,7 @@ impl<'a> Checker<'a> {
                 actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
                 if !self.are_types_compatible(&actual, &expected)? {
                     return Err(format!(
-                        "in '{}': return type mismatch: expected {:?}, found {:?}",
+                        "{}: error: return type mismatch: expected {}, found {}",
                         self.current_file_path, expected, actual
                     ));
                 }
@@ -1494,7 +1514,7 @@ impl<'a> Checker<'a> {
             Expression::Let { name, value } => {
                 if self.local_scopes.last().unwrap().contains_key(name) {
                     return Err(format!(
-                        "in '{}': variable '{}' already declared in this scope",
+                        "{}: error: variable '{}' already declared in this scope",
                         self.current_file_path, name
                     ));
                 }
@@ -1502,7 +1522,7 @@ impl<'a> Checker<'a> {
                 let resolved_ty = self.resolve_type(&raw_ty)?;
                 if resolved_ty == Type::Never {
                     return Err(format!(
-                        "in '{}': cannot bind variable '{}' to never expression",
+                        "{}: error: cannot bind variable '{}' to never expression",
                         self.current_file_path, name
                     ));
                 }
@@ -1520,7 +1540,7 @@ impl<'a> Checker<'a> {
             Expression::Var { name, ty, value } => {
                 if self.local_scopes.last().unwrap().contains_key(name) {
                     return Err(format!(
-                        "in '{}': variable '{}' already declared in this scope",
+                        "{}: error: variable '{}' already declared in this scope",
                         self.current_file_path, name
                     ));
                 }
@@ -1529,7 +1549,7 @@ impl<'a> Checker<'a> {
                     let resolved_ty = self.resolve_type(&raw_ty)?;
                     if resolved_ty == Type::Never {
                         return Err(format!(
-                            "in '{}': cannot bind variable '{}' to never expression",
+                            "{}: error: cannot bind variable '{}' to never expression",
                             self.current_file_path, name
                         ));
                     }
@@ -1541,7 +1561,7 @@ impl<'a> Checker<'a> {
                             self.coerce_expression_to_type(val, &resolved_ty, &res_annotated)?;
                         if !self.are_types_compatible(&coerced, &res_annotated)? {
                             return Err(format!(
-                                "in '{}': type mismatch for variable '{}': expected {:?}, found {:?}",
+                                "{}: error: type mismatch for variable '{}': expected {}, found {}",
                                 self.current_file_path, name, res_annotated, coerced
                             ));
                         }
@@ -1562,7 +1582,7 @@ impl<'a> Checker<'a> {
                     let resolved_ty = self.resolve_type(annotated_ty)?;
                     if resolved_ty == Type::Never {
                         return Err(format!(
-                            "in '{}': variable '{}' cannot be declared with type never",
+                            "{}: error: variable '{}' cannot be declared with type never",
                             self.current_file_path, name
                         ));
                     }
@@ -1577,7 +1597,7 @@ impl<'a> Checker<'a> {
                     );
                 } else {
                     return Err(format!(
-                        "in '{}': variable '{}' must specify either a type or an initial value",
+                        "{}: error: variable '{}' must specify either a type or an initial value",
                         self.current_file_path, name
                     ));
                 }
@@ -1591,19 +1611,19 @@ impl<'a> Checker<'a> {
 
                     if self.scope.lookup_definition(&name).is_some() {
                         return Err(format!(
-                            "in '{}': cannot assign to global constant '@{}'",
+                            "{}: error: cannot assign to global constant '@{}'",
                             self.current_file_path, name
                         ));
                     }
                     if self.scope.lookup_extern(&name).is_some() {
                         return Err(format!(
-                            "in '{}': cannot assign to external function '{}'",
+                            "{}: error: cannot assign to external function '{}'",
                             self.current_file_path, name
                         ));
                     }
                     if self.scope.lookup_type_alias(&name).is_some() {
                         return Err(format!(
-                            "in '{}': cannot assign to type alias '{}'",
+                            "{}: error: cannot assign to type alias '{}'",
                             self.current_file_path, name
                         ));
                     }
@@ -1611,14 +1631,14 @@ impl<'a> Checker<'a> {
                     if let Some(info) = self.lookup_binding(&name) {
                         if !info.is_mutable {
                             return Err(format!(
-                                "in '{}': cannot reassign to immutable constant '{}'",
+                                "{}: error: cannot reassign to immutable constant '{}'",
                                 self.current_file_path, name
                             ));
                         }
                         val_ty = self.coerce_expression_to_type(value, &val_ty, &info.ty)?;
                         if !self.are_types_compatible(&val_ty, &info.ty)? {
                             return Err(format!(
-                                "in '{}': type mismatch assigning to '{}': expected {:?}, found {:?}",
+                                "{}: error: type mismatch assigning to '{}': expected {}, found {}",
                                 self.current_file_path, name, info.ty, val_ty
                             ));
                         }
@@ -1643,19 +1663,19 @@ impl<'a> Checker<'a> {
                     let ptr_ty = self.resolve_type(&raw_ptr_ty)?;
                     let Type::Pointer { element, is_mut } = ptr_ty else {
                         return Err(format!(
-                            "in '{}': cannot dereference non-pointer type {:?} in assignment target",
+                            "{}: error: cannot dereference non-pointer type {} in assignment target",
                             self.current_file_path, ptr_ty
                         ));
                     };
                     if !is_mut {
                         return Err(format!(
-                            "in '{}': cannot mutate through immutable pointer '*{}'",
+                            "{}: error: cannot mutate through immutable pointer '*{}'",
                             self.current_file_path, Self::canonical_type_key(&element)
                         ));
                     }
                     if *element == Type::Opaque {
                         return Err(format!(
-                            "in '{}': cannot assign through untyped pointer '*opaque'",
+                            "{}: error: cannot assign through untyped pointer '*opaque'",
                             self.current_file_path
                         ));
                     }
@@ -1664,7 +1684,7 @@ impl<'a> Checker<'a> {
                     val_ty = self.coerce_expression_to_type(value, &val_ty, &target_ty)?;
                     if !self.are_types_compatible(&val_ty, &target_ty)? {
                         return Err(format!(
-                            "in '{}': type mismatch in pointer dereference assignment: expected {:?}, found {:?}",
+                            "{}: error: type mismatch in pointer dereference assignment: expected {}, found {}",
                             self.current_file_path, target_ty, val_ty
                         ));
                     }
@@ -1681,7 +1701,7 @@ impl<'a> Checker<'a> {
                                 .find(|f| f.name == field)
                                 .ok_or_else(|| {
                                     format!(
-                                        "in '{}': struct has no field named '{}'",
+                                        "{}: error: struct has no field named '{}'",
                                         self.current_file_path, field
                                     )
                                 })?;
@@ -1690,13 +1710,13 @@ impl<'a> Checker<'a> {
                         Type::Tuple(elements) => {
                             let idx: usize = field.parse().map_err(|_| {
                                 format!(
-                                    "in '{}': tuple access expects positive integer index, found '{}'",
+                                    "{}: error: tuple access expects positive integer index, found '{}'",
                                     self.current_file_path, field
                                 )
                             })?;
                             if idx == 0 || idx > elements.len() {
                                 return Err(format!(
-                                    "in '{}': tuple index {} out of bounds for tuple of length {}",
+                                    "{}: error: tuple index {} out of bounds for tuple of length {}",
                                     self.current_file_path, idx, elements.len()
                                 ));
                             }
@@ -1704,7 +1724,7 @@ impl<'a> Checker<'a> {
                         }
                         other => {
                             return Err(format!(
-                                "in '{}': cannot assign to field '{}' of non-struct type {:?}",
+                                "{}: error: cannot assign to field '{}' of non-struct type {}",
                                 self.current_file_path, field, other
                             ));
                         }
@@ -1723,7 +1743,7 @@ impl<'a> Checker<'a> {
                             });
                         } else {
                             return Err(format!(
-                                "in '{}': type mismatch assigning to field '{}': expected {:?}, found {:?}",
+                                "{}: error: type mismatch assigning to field '{}': expected {}, found {}",
                                 self.current_file_path, field, target_ty, val_ty
                             ));
                         }
@@ -1731,7 +1751,7 @@ impl<'a> Checker<'a> {
                     Ok(Type::Symbol("none".to_string()))
                 }
                 _ => Err(format!(
-                    "in '{}': invalid assignment target: only variables, pointer dereferences ('ptr.*'), and struct fields are supported as assignment targets",
+                    "{}: error: invalid assignment target: only variables, pointer dereferences ('ptr.*'), and struct fields are supported as assignment targets",
                     self.current_file_path
                 )),
             },
@@ -1746,7 +1766,7 @@ impl<'a> Checker<'a> {
 
                 if !Self::is_integer_type(&count_ty) {
                     return Err(format!(
-                        "in '{}': repeat count must be an integer, found {:?}",
+                        "{}: error: repeat count must be an integer, found {}",
                         self.current_file_path, count_ty
                     ));
                 }
@@ -1786,7 +1806,7 @@ impl<'a> Checker<'a> {
                     }
                     other => {
                         return Err(format!(
-                            "in '{}': for loop expects slice or array iterable, found {:?}",
+                            "{}: error: for loop expects slice or array iterable, found {}",
                             self.current_file_path, other
                         ));
                     }
@@ -1819,7 +1839,7 @@ impl<'a> Checker<'a> {
                     .unwrap_or(false);
                 if !has_else {
                     return Err(format!(
-                        "in '{}': if expression requires an explicit 'else' arm",
+                        "{}: error: if expression requires an explicit 'else' arm",
                         self.current_file_path
                     ));
                 }
@@ -1835,7 +1855,7 @@ impl<'a> Checker<'a> {
                             let cond_ty = self.type_of_expression(cond)?;
                             if !self.is_bool_type(&cond_ty)? {
                                 return Err(format!(
-                                    "in '{}': if condition must evaluate to Bool (:true | :false), found {:?}",
+                                    "{}: error: if condition must evaluate to Bool (:true | :false), found {}",
                                     self.current_file_path, cond_ty
                                 ));
                             }
@@ -1843,7 +1863,7 @@ impl<'a> Checker<'a> {
                         IfCondition::Else => {
                             if i != num_arms - 1 {
                                 return Err(format!(
-                                    "in '{}': fallback 'else' arm must be the final arm in if",
+                                    "{}: error: fallback 'else' arm must be the final arm in if",
                                     self.current_file_path
                                 ));
                             }
@@ -1896,7 +1916,7 @@ impl<'a> Checker<'a> {
 
                 if arms.is_empty() {
                     return Err(format!(
-                        "in '{}': match expression must have at least one arm",
+                        "{}: error: match expression must have at least one arm",
                         self.current_file_path
                     ));
                 }
@@ -1906,9 +1926,17 @@ impl<'a> Checker<'a> {
                     for (idx, arm) in arms.iter().enumerate() {
                         if let Some(raw_ty) = &arm.variant_type {
                             let resolved = self.resolve_type(raw_ty)?;
-                            if Self::types_compatible_with_aliases(&target_ty, &resolved, &aliases)
-                                || Self::types_compatible_with_aliases(&resolved, &target_ty, &aliases)
+                            let matches = if self.is_slice_type(&target_ty).unwrap_or(false)
+                                && self.is_slice_type(&resolved).unwrap_or(false)
                             {
+                                let t_elem = self.slice_element_type(&target_ty).unwrap();
+                                let r_elem = self.slice_element_type(&resolved).unwrap();
+                                Self::types_compatible_with_aliases(&t_elem, &r_elem, &aliases)
+                            } else {
+                                Self::types_compatible_with_aliases(&target_ty, &resolved, &aliases)
+                                    || Self::types_compatible_with_aliases(&resolved, &target_ty, &aliases)
+                            };
+                            if matches {
                                 matched_idx = Some(idx);
                                 break;
                             }
@@ -1920,7 +1948,7 @@ impl<'a> Checker<'a> {
 
                     let matched_idx = matched_idx.ok_or_else(|| {
                         format!(
-                            "in '{}': no match arm for type {:?}",
+                            "{}: error: no match arm for type {}",
                             self.current_file_path, target_ty
                         )
                     })?;
@@ -2052,9 +2080,14 @@ impl<'a> Checker<'a> {
                 }
 
                 if !unhandled.is_empty() {
+                    let missing = unhandled
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" | ");
                     return Err(format!(
-                        "in '{}': non-exhaustive match expression: missing cases for {:?}",
-                        self.current_file_path, unhandled
+                        "{}: error: non-exhaustive match expression: missing cases for {}",
+                        self.current_file_path, missing
                     ));
                 }
 
@@ -2084,7 +2117,7 @@ impl<'a> Checker<'a> {
             Expression::Array(elements) => {
                 if elements.is_empty() {
                     return Err(format!(
-                        "in '{}': cannot infer type of empty array",
+                        "{}: error: cannot infer type of empty array",
                         self.current_file_path
                     ));
                 }
@@ -2123,7 +2156,7 @@ impl<'a> Checker<'a> {
                 if *operator == UnaryOperator::Not {
                     if !self.is_bool_type(&ty)? {
                         return Err(format!(
-                            "in '{}': unary operator 'not' requires a boolean operand (:true | :false), found {:?}",
+                            "{}: error: unary operator 'not' requires a boolean operand (:true | :false), found {}",
                             self.current_file_path, ty
                         ));
                     }
@@ -2132,7 +2165,7 @@ impl<'a> Checker<'a> {
 
                 if !Self::is_integer_type(&ty) {
                     return Err(format!(
-                        "in '{}': unary operator {:?} requires an integer operand, found {:?}",
+                        "{}: error: unary operator {} requires an integer operand, found {}",
                         self.current_file_path, operator, ty
                     ));
                 }
@@ -2151,7 +2184,7 @@ impl<'a> Checker<'a> {
 
                 if !Self::is_integer_type(&left_type) || !Self::is_integer_type(&right_type) {
                     return Err(format!(
-                        "in '{}': binary operator {:?} requires integer operands",
+                        "{}: error: binary operator {} requires integer operands",
                         self.current_file_path, operator
                     ));
                 }
@@ -2176,7 +2209,7 @@ impl<'a> Checker<'a> {
 
                 if left_type != right_type {
                     return Err(format!(
-                        "in '{}': binary operator {:?} requires matching types, found {:?} and {:?}",
+                        "{}: error: binary operator {} requires matching types, found {} and {}",
                         self.current_file_path, operator, left_type, right_type
                     ));
                 }
@@ -2206,7 +2239,7 @@ impl<'a> Checker<'a> {
                         ComparisonOperator::Equal | ComparisonOperator::NotEqual
                     ) {
                         return Err(format!(
-                            "in '{}': booleans and symbols only support equality comparisons ('=' and '!=')",
+                            "{}: error: booleans and symbols only support equality comparisons ('=' and '!=')",
                             self.current_file_path
                         ));
                     }
@@ -2237,13 +2270,13 @@ impl<'a> Checker<'a> {
                         ComparisonOperator::Equal | ComparisonOperator::NotEqual
                     ) {
                         return Err(format!(
-                            "in '{}': symbols only support equality comparisons ('=' and '!=')",
+                            "{}: error: symbols only support equality comparisons ('=' and '!=')",
                             self.current_file_path
                         ));
                     }
                     if left_type != right_type {
                         return Err(format!(
-                            "in '{}': cannot compare distinct symbol types: {:?} and {:?}",
+                            "{}: error: cannot compare distinct symbol types: {} and {}",
                             self.current_file_path, left_type, right_type
                         ));
                     }
@@ -2272,7 +2305,7 @@ impl<'a> Checker<'a> {
 
                 if left_type != right_type {
                     return Err(format!(
-                        "in '{}': comparison operator requires matching types, found {:?} and {:?}",
+                        "{}: error: comparison operator requires matching types, found {} and {}",
                         self.current_file_path, left_type, right_type
                     ));
                 }
@@ -2312,7 +2345,7 @@ impl<'a> Checker<'a> {
                                     arm_mappings.push((s_v.clone(), target_member));
                                 } else {
                                     return Err(format!(
-                                        "in '{}': unsupported cast from {:?} to {:?}",
+                                        "{}: error: unsupported cast from {} to {}",
                                         self.current_file_path, source_type, resolved_target
                                     ));
                                 }
@@ -2370,13 +2403,20 @@ impl<'a> Checker<'a> {
                     return self.type_of_expression(expression);
                 }
 
-                if !Self::is_supported_cast_with_aliases(
+                if let Type::Union(target_vars) = &resolved_target {
+                    if Self::castable_union_variant_with_aliases(&source_type, target_vars, &self.alias_targets()).is_none() {
+                        return Err(format!(
+                            "{}: error: cannot uniquely promote {} into union {}",
+                            self.current_file_path, source_type, resolved_target
+                        ));
+                    }
+                } else if !Self::is_supported_cast_with_aliases(
                     &source_type,
                     &resolved_target,
                     &self.alias_targets(),
                 ) {
                     return Err(format!(
-                        "in '{}': unsupported cast from {:?} to {:?}",
+                        "{}: error: unsupported cast from {} to {}",
                         self.current_file_path, source_type, resolved_target
                     ));
                 }
@@ -2395,7 +2435,7 @@ impl<'a> Checker<'a> {
                     } => (parameters.clone(), *return_type.clone(), *is_variadic),
                     _ => {
                         return Err(format!(
-                            "in '{}': cannot call non-function type {:?}",
+                            "{}: error: cannot call non-function type {}",
                             self.current_file_path, target_type
                         ));
                     }
@@ -2404,7 +2444,7 @@ impl<'a> Checker<'a> {
                 if is_variadic {
                     if arguments.len() < param_types.len() {
                         return Err(format!(
-                            "in '{}': variadic call expects at least {} arguments, found {}",
+                            "{}: error: variadic call expects at least {} arguments, found {}",
                             self.current_file_path,
                             param_types.len(),
                             arguments.len()
@@ -2412,7 +2452,7 @@ impl<'a> Checker<'a> {
                     }
                 } else if arguments.len() != param_types.len() {
                     return Err(format!(
-                        "in '{}': call expects {} arguments, found {}",
+                        "{}: error: call expects {} arguments, found {}",
                         self.current_file_path,
                         param_types.len(),
                         arguments.len()
@@ -2426,7 +2466,7 @@ impl<'a> Checker<'a> {
 
                     if !self.are_types_compatible(&arg_ty, &res_expected)? {
                         return Err(format!(
-                            "in '{}': argument type mismatch: expected {:?}, found {:?}",
+                            "{}: error: argument type mismatch: expected {}, found {}",
                             self.current_file_path, res_expected, arg_ty
                         ));
                     }
@@ -2447,7 +2487,7 @@ impl<'a> Checker<'a> {
 
                 if !Self::is_integer_type(&index_type) {
                     return Err(format!(
-                        "in '{}': array index must be an integer",
+                        "{}: error: array index must be an integer",
                         self.current_file_path
                     ));
                 }
@@ -2460,7 +2500,7 @@ impl<'a> Checker<'a> {
                         Ok(elem)
                     }
                     other => Err(format!(
-                        "in '{}': cannot index value of type {:?}",
+                        "{}: error: cannot index value of type {}",
                         self.current_file_path, other
                     )),
                 }
@@ -2472,14 +2512,14 @@ impl<'a> Checker<'a> {
                     Type::Pointer { element, .. } => {
                         if *element == Type::Opaque {
                             return Err(format!(
-                                "in '{}': cannot dereference untyped pointer '*opaque'",
+                                "{}: error: cannot dereference untyped pointer '*opaque'",
                                 self.current_file_path
                             ));
                         }
                         Ok(*element)
                     }
                     other => Err(format!(
-                        "in '{}': cannot dereference non-pointer type {:?}",
+                        "{}: error: cannot dereference non-pointer type {}",
                         self.current_file_path, other
                     )),
                 }
@@ -2495,7 +2535,7 @@ impl<'a> Checker<'a> {
                             Ok(f.ty.clone())
                         } else {
                             Err(format!(
-                                "in '{}': struct has no field named '{}'",
+                                "{}: error: struct has no field named '{}'",
                                 self.current_file_path, field
                             ))
                         }
@@ -2503,13 +2543,13 @@ impl<'a> Checker<'a> {
                     Type::Tuple(elements) => {
                         let idx: usize = field.parse().map_err(|_| {
                             format!(
-                                "in '{}': tuple access expects positive integer index, found '{}'",
+                                "{}: error: tuple access expects positive integer index, found '{}'",
                                 self.current_file_path, field
                             )
                         })?;
                         if idx == 0 || idx > elements.len() {
                             return Err(format!(
-                                "in '{}': tuple index {} out of bounds for tuple of length {}",
+                                "{}: error: tuple index {} out of bounds for tuple of length {}",
                                 self.current_file_path, idx, elements.len()
                             ));
                         }
@@ -2522,12 +2562,12 @@ impl<'a> Checker<'a> {
                         }),
                         "len" => Ok(Type::USize),
                         _ => Err(format!(
-                            "in '{}': unknown array member '.{}'",
+                            "{}: error: unknown array member '.{}'",
                             self.current_file_path, field
                         )),
                     },
                     other => Err(format!(
-                        "in '{}': member access '.{}' unsupported on type {:?}",
+                        "{}: error: member access '.{}' unsupported on type {}",
                         self.current_file_path, field, other
                     )),
                 }
@@ -2546,14 +2586,14 @@ impl<'a> Checker<'a> {
                         match self.resolve_type(&pointer_type)? {
                             Type::Pointer { element, .. } if *element == Type::Opaque => {
                                 return Err(format!(
-                                    "in '{}': cannot dereference untyped pointer '*opaque'",
+                                    "{}: error: cannot dereference untyped pointer '*opaque'",
                                     self.current_file_path
                                 ));
                             }
                             Type::Pointer { element, .. } => *element,
                             other => {
                                 return Err(format!(
-                                    "in '{}': cannot take address of dereference of {:?}",
+                                    "{}: error: cannot take address of dereference of {}",
                                     self.current_file_path, other
                                 ));
                             }
@@ -2566,7 +2606,7 @@ impl<'a> Checker<'a> {
                             ty.clone()
                         } else {
                             return Err(format!(
-                                "in '{}': cannot take address of unknown variable '{}'",
+                                "{}: error: cannot take address of unknown variable '{}'",
                                 self.current_file_path, name
                             ));
                         }
@@ -2576,7 +2616,7 @@ impl<'a> Checker<'a> {
                     }
                     _ => {
                         return Err(format!(
-                            "in '{}': address-of requires an lvalue (variable, struct member, array index, or dereference)",
+                            "{}: error: address-of requires an lvalue (variable, struct member, array index, or dereference)",
                             self.current_file_path
                         ));
                     }
@@ -2617,7 +2657,7 @@ impl<'a> Checker<'a> {
                     Type::Tuple(elements) => {
                         if elements.is_empty() {
                             return Err(format!(
-                                "in '{}': '@slice' cannot be used on an empty tuple",
+                                "{}: error: '@slice' cannot be used on an empty tuple",
                                 self.current_file_path
                             ));
                         }
@@ -2625,7 +2665,7 @@ impl<'a> Checker<'a> {
                         for elem in &elements[1..] {
                             if !self.are_types_compatible(elem, first)? {
                                 return Err(format!(
-                                    "in '{}': '@slice' on tuple requires all elements to have compatible types, expected {:?}, found {:?}",
+                                    "{}: error: '@slice' on tuple requires all elements to have compatible types, expected {}, found {}",
                                     self.current_file_path, first, elem
                                 ));
                             }
@@ -2645,7 +2685,7 @@ impl<'a> Checker<'a> {
                         ]))
                     }
                     other => Err(format!(
-                        "in '{}': '@slice' requires an array literal or array value, found {:?}",
+                        "{}: error: '@slice' requires an array literal or array value, found {}",
                         self.current_file_path, other
                     )),
                 }
@@ -2684,6 +2724,84 @@ impl<'a> Checker<'a> {
         map
     }
 
+    pub fn types_equivalent_with_aliases(
+        t1: &Type,
+        t2: &Type,
+        aliases: &HashMap<String, Type>,
+    ) -> bool {
+        fn equivalent(
+            t1: &Type,
+            t2: &Type,
+            aliases: &HashMap<String, Type>,
+            visited: &mut HashSet<(Type, Type)>,
+        ) -> bool {
+            if t1 == t2 {
+                return true;
+            }
+            if t1 == &Type::Inferred || t2 == &Type::Inferred {
+                return true;
+            }
+            if t1 == &Type::Never || t2 == &Type::Never {
+                return false;
+            }
+            let pair = (t1.clone(), t2.clone());
+            if !visited.insert(pair) {
+                return true;
+            }
+
+            match (t1, t2) {
+                (Type::Alias(left), Type::Alias(right)) => {
+                    if left == right {
+                        true
+                    } else {
+                        match (aliases.get(left), aliases.get(right)) {
+                            (Some(l_ty), Some(r_ty)) => equivalent(l_ty, r_ty, aliases, visited),
+                            (Some(l_ty), None) => equivalent(l_ty, t2, aliases, visited),
+                            (None, Some(r_ty)) => equivalent(t1, r_ty, aliases, visited),
+                            (None, None) => false,
+                        }
+                    }
+                }
+                (Type::Alias(name), other) => {
+                    aliases.get(name).is_some_and(|target| equivalent(target, other, aliases, visited))
+                }
+                (other, Type::Alias(name)) => {
+                    aliases.get(name).is_some_and(|target| equivalent(other, target, aliases, visited))
+                }
+                (Type::Pointer { element: e1, is_mut: m1 }, Type::Pointer { element: e2, is_mut: m2 }) => {
+                    m1 == m2 && equivalent(e1, e2, aliases, visited)
+                }
+                (Type::Array { element: e1, size: s1 }, Type::Array { element: e2, size: s2 }) => {
+                    s1 == s2 && equivalent(e1, e2, aliases, visited)
+                }
+                (Type::Struct(f1), Type::Struct(f2)) => {
+                    f1.len() == f2.len()
+                        && f1.iter().zip(f2.iter()).all(|(a, b)| a.name == b.name && equivalent(&a.ty, &b.ty, aliases, visited))
+                }
+                (Type::Tuple(elems1), Type::Tuple(elems2)) => {
+                    elems1.len() == elems2.len()
+                        && elems1.iter().zip(elems2.iter()).all(|(a, b)| equivalent(a, b, aliases, visited))
+                }
+                (Type::Function { parameters: p1, return_type: r1, is_variadic: v1 },
+                 Type::Function { parameters: p2, return_type: r2, is_variadic: v2 }) => {
+                    v1 == v2
+                        && p1.len() == p2.len()
+                        && p1.iter().zip(p2.iter()).all(|(a, b)| equivalent(a, b, aliases, visited))
+                        && equivalent(r1, r2, aliases, visited)
+                }
+                (Type::Union(u1), Type::Union(u2)) => {
+                    u1.len() == u2.len()
+                        && u1.iter().all(|v1| u2.iter().any(|v2| equivalent(v1, v2, aliases, visited)))
+                        && u2.iter().all(|v2| u1.iter().any(|v1| equivalent(v1, v2, aliases, visited)))
+                }
+                _ => false,
+            }
+        }
+
+        let mut visited = HashSet::new();
+        equivalent(t1, t2, aliases, &mut visited)
+    }
+
     pub fn types_compatible_with_aliases(
         provided: &Type,
         expected: &Type,
@@ -2693,7 +2811,7 @@ impl<'a> Checker<'a> {
             provided: &Type,
             expected: &Type,
             aliases: &HashMap<String, Type>,
-            visited: &mut HashSet<(String, String)>,
+            visited: &mut HashSet<(Type, Type)>,
         ) -> bool {
             if provided == expected {
                 return true;
@@ -2708,26 +2826,27 @@ impl<'a> Checker<'a> {
             }
 
             if matches!(provided, Type::Alias(_)) || matches!(expected, Type::Alias(_)) {
-                let pair = (
-                    Checker::canonical_type_key(provided),
-                    Checker::canonical_type_key(expected),
-                );
+                let pair = (provided.clone(), expected.clone());
                 if !visited.insert(pair.clone()) {
                     return true;
                 }
                 let result = match (provided, expected) {
                     (Type::Alias(left), Type::Alias(right)) => {
-                        match (aliases.get(left), aliases.get(right)) {
-                            (Some(left_type), Some(right_type)) => {
-                                compatible(left_type, right_type, aliases, visited)
+                        if left == right {
+                            true
+                        } else {
+                            match (aliases.get(left), aliases.get(right)) {
+                                (Some(left_type), Some(right_type)) => {
+                                    compatible(left_type, right_type, aliases, visited)
+                                }
+                                (Some(left_type), None) => {
+                                    compatible(left_type, expected, aliases, visited)
+                                }
+                                (None, Some(right_type)) => {
+                                    compatible(provided, right_type, aliases, visited)
+                                }
+                                (None, None) => false,
                             }
-                            (Some(left_type), None) => {
-                                compatible(left_type, expected, aliases, visited)
-                            }
-                            (None, Some(right_type)) => {
-                                compatible(provided, right_type, aliases, visited)
-                            }
-                            (None, None) => false,
                         }
                     }
                     (Type::Alias(name), other) => aliases
@@ -2740,6 +2859,12 @@ impl<'a> Checker<'a> {
                 };
                 visited.remove(&pair);
                 return result;
+            }
+
+            if let Type::Union(_) = provided {
+                if !matches!(expected, Type::Union(_)) {
+                    return false;
+                }
             }
 
             if let Type::Union(expected_vars) = expected {
@@ -2789,13 +2914,13 @@ impl<'a> Checker<'a> {
                         is_mut: m2,
                     },
                 ) => {
-                    if m1 != m2 {
+                    if *m2 && !*m1 {
                         return false;
                     }
                     if **e1 == Type::Opaque || **e2 == Type::Opaque {
                         return true;
                     }
-                    compatible(e1, e2, aliases, visited)
+                    Checker::types_equivalent_with_aliases(e1, e2, aliases)
                 }
                 (
                     Type::Array {
@@ -2806,7 +2931,7 @@ impl<'a> Checker<'a> {
                         element: e2,
                         size: s2,
                     },
-                ) => s1 == s2 && compatible(e1, e2, aliases, visited),
+                ) => s1 == s2 && Checker::types_equivalent_with_aliases(e1, e2, aliases),
                 (
                     Type::Function {
                         parameters: p1,
@@ -2862,7 +2987,7 @@ impl<'a> Checker<'a> {
             source: &Type,
             target: &Type,
             aliases: &HashMap<String, Type>,
-            visited: &mut HashSet<(String, String)>,
+            visited: &mut HashSet<(Type, Type)>,
         ) -> bool {
             if source == target {
                 return true;
@@ -2873,10 +2998,7 @@ impl<'a> Checker<'a> {
             }
 
             if matches!(source, Type::Alias(_)) || matches!(target, Type::Alias(_)) {
-                let pair = (
-                    Checker::canonical_type_key(source),
-                    Checker::canonical_type_key(target),
-                );
+                let pair = (source.clone(), target.clone());
                 if !visited.insert(pair.clone()) {
                     return true;
                 }
@@ -2975,14 +3097,7 @@ impl<'a> Checker<'a> {
                     if **source == Type::Opaque || **target == Type::Opaque {
                         return true;
                     }
-                    let is_target_generic = match target.as_ref() {
-                        Type::Alias(name) => name == "Generic",
-                        other => aliases.get("Generic").is_some_and(|gen_ty| gen_ty == other),
-                    };
-                    if is_target_generic {
-                        return true;
-                    }
-                    return Checker::types_compatible_with_aliases(source, target, aliases);
+                    return Checker::types_equivalent_with_aliases(source, target, aliases);
                 }
                 (
                     Type::Function {
@@ -3056,6 +3171,14 @@ impl<'a> Checker<'a> {
             .iter()
             .enumerate()
             .filter_map(|(index, target)| {
+                if matches!(source, Type::Pointer { .. }) && Self::is_integer_type(target) {
+                    return None;
+                }
+                if matches!(source, Type::Pointer { .. }) && matches!(target, Type::Pointer { .. }) {
+                    if !Self::types_compatible_with_aliases(source, target, aliases) {
+                        return None;
+                    }
+                }
                 Self::is_supported_cast_with_aliases(source, target, aliases).then_some(index)
             })
             .collect();

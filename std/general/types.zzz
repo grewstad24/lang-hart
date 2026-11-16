@@ -1,4 +1,4 @@
-export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance } to .
+export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance, Error, ErrorAndReason } to .
 
 
 type String := Slice <u8>

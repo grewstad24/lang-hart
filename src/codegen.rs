@@ -189,7 +189,7 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        Err(format!("expected slice type, found {:?}", ty))
+        Err(format!("expected slice type, found {}", ty))
     }
 
     fn resolve_alias_root<'a>(&'a self, mut ty: &'a Type) -> Result<&'a Type, String> {
@@ -847,7 +847,7 @@ impl<'ctx> Codegen<'ctx> {
                         let ptr_type = self.binding_type(&ptr_binding)?;
                         let Type::Pointer { element, .. } = ptr_type else {
                             return Err(format!(
-                                "expected pointer type for dereference assignment, found {:?}",
+                                "expected pointer type for dereference assignment, found {}",
                                 ptr_type
                             ));
                         };
@@ -1088,7 +1088,7 @@ impl<'ctx> Codegen<'ctx> {
                             .into_int_value();
                         (elem_ty, len_val, ptr_val)
                     }
-                    other => return Err(format!("cannot iterate over type {:?}", other)),
+                    other => return Err(format!("cannot iterate over type {}", other)),
                 };
 
                 let current_block = self
@@ -1379,7 +1379,7 @@ impl<'ctx> Codegen<'ctx> {
         let pointer_type = self.binding_type(&pointer_binding)?;
         let Type::Pointer { element, .. } = pointer_type else {
             return Err(format!(
-                "cannot dereference non-pointer type {:?}",
+                "cannot dereference non-pointer type {}",
                 pointer_type
             ));
         };
@@ -1494,7 +1494,8 @@ impl<'ctx> Codegen<'ctx> {
         &mut self,
         fields: &[StructFieldInit],
     ) -> Result<Binding<'ctx>, String> {
-        let generic_type = self.resolve_alias_root(&Checker::generic_type())?.clone();
+        let generic_alias = Checker::generic_type();
+        let generic_type = self.resolve_alias_root(&generic_alias)?.clone();
         let key_type = Type::Alias("String".to_string());
         let key_llvm_type = self.llvm_type(&key_type)?;
         let generic_llvm_type = self.llvm_type(&generic_type)?;
@@ -1532,7 +1533,7 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|error| error.to_string())?;
 
             let value_binding = self.codegen_expression(&field.value)?;
-            let boxed_value = self.codegen_cast(value_binding, generic_type.clone())?;
+            let boxed_value = self.codegen_cast(value_binding, generic_alias.clone())?;
             let value = self.binding_basic_value(&boxed_value)?;
             let value_slot = unsafe {
                 self.builder
@@ -1841,7 +1842,7 @@ impl<'ctx> Codegen<'ctx> {
                         Checker::types_compatible_with_aliases(v, tv, &self.type_aliases)
                             && Checker::types_compatible_with_aliases(tv, v, &self.type_aliases)
                     })
-                    .ok_or_else(|| format!("variant {:?} not in union {:?}", v, target_type))?
+                    .ok_or_else(|| format!("variant {} not in union {}", v, target_type))?
                     as u8;
 
                 switch_cases.push((
@@ -1891,7 +1892,7 @@ impl<'ctx> Codegen<'ctx> {
                                 )
                         })
                         .ok_or_else(|| {
-                            format!("sub-variant {:?} not in union {:?}", iv, target_type)
+                            format!("sub-variant {} not in union {}", iv, target_type)
                         })? as u8;
                     mapping_cases.push((target_idx, inner_idx as u8));
                 }
@@ -2177,10 +2178,13 @@ impl<'ctx> Codegen<'ctx> {
                 }),
                 _ => Err(format!("unknown array member '.{}'", field)),
             },
-            other => Err(format!(
-                "member access '.{}' unsupported on {:?}",
-                field, other
-            )),
+            other => {
+                let ty = self.binding_type(&other)?;
+                Err(format!(
+                    "member access '.{}' unsupported on type {}",
+                    field, ty
+                ))
+            }
         }
     }
 
@@ -2201,7 +2205,7 @@ impl<'ctx> Codegen<'ctx> {
             let ty = self.resolve_alias_root(&b_ty)?;
             if ty != &element_type {
                 return Err(format!(
-                    "array literal elements have mismatched types: expected {:?}, found {:?}",
+                    "array literal elements have mismatched types: expected {}, found {}",
                     element_type, ty
                 ));
             }
@@ -2322,7 +2326,7 @@ impl<'ctx> Codegen<'ctx> {
 
         if left_type != right_type {
             return Err(format!(
-                "binary operands have different types: {:?} and {:?}",
+                "binary operands have different types: {} and {}",
                 left_type, right_type
             ));
         }
@@ -2384,7 +2388,7 @@ impl<'ctx> Codegen<'ctx> {
 
         if left_type != right_type {
             return Err(format!(
-                "comparison operands have different types: {:?} and {:?}",
+                "comparison operands have different types: {} and {}",
                 left_type, right_type
             ));
         }
@@ -2551,7 +2555,7 @@ impl<'ctx> Codegen<'ctx> {
         if !Checker::is_supported_cast_with_aliases(&source_type, &target_type, &self.type_aliases)
         {
             return Err(format!(
-                "unsupported cast from {:?} to {:?}",
+                "unsupported cast from {} to {}",
                 source_type, target_type
             ));
         }
@@ -2902,7 +2906,7 @@ impl<'ctx> Codegen<'ctx> {
                     )
                     .ok_or_else(|| {
                         format!(
-                            "cannot uniquely promote union variant {:?} into {:?}",
+                            "cannot uniquely promote union variant {} into {}",
                             source_variant, target_type
                         )
                     })?;
@@ -2943,7 +2947,7 @@ impl<'ctx> Codegen<'ctx> {
                 )
                 .ok_or_else(|| {
                     format!(
-                        "cannot uniquely promote {:?} into union {:?}",
+                        "cannot uniquely promote {} into union {}",
                         source_type, target_type
                     )
                 })?;
@@ -2991,7 +2995,7 @@ impl<'ctx> Codegen<'ctx> {
                 .collect();
             if candidates.is_empty() {
                 return Err(format!(
-                    "no variant of {:?} can be cast to {:?}",
+                    "no variant of {} can be cast to {}",
                     source_type, target_type
                 ));
             }
@@ -3306,7 +3310,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::Pointer { element, .. } => self.function_type_info(element),
             Type::Alias(_) => self.function_type_info(self.resolve_alias_root(ty)?),
             _ => Err(format!(
-                "type {:?} is not a function or function pointer",
+                "type {} is not a function or function pointer",
                 ty
             )),
         }
@@ -3428,7 +3432,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 self.binding_from_basic_value(&element, loaded)
             }
-            other => Err(format!("cannot index value of type {:?}", other)),
+            other => Err(format!("cannot index value of type {}", other)),
         }
     }
 
@@ -3559,7 +3563,7 @@ impl<'ctx> Codegen<'ctx> {
                             value: element_pointer,
                         })
                     }
-                    other => Err(format!("cannot take address of value of type {:?}", other)),
+                    other => Err(format!("cannot take address of value of type {}", other)),
                 }
             }
             Expression::Member { expression, field } => {

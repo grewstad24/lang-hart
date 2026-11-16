@@ -327,7 +327,7 @@ fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type,
             if let Some(ty) = infer_expr_type(inner, &HashMap::new(), _scope) {
                 return Ok(ty);
             }
-            Err(format!("could not determine type of '@typeOf' argument {:?}", inner))
+            Err(format!("could not determine type of '@typeOf' argument {}", inner))
         }
         Expression::Identifier(name) => Err(format!(
             "expected explicit 'type' keyword before type argument, found '{}' (use 'type {}')",
@@ -389,11 +389,11 @@ fn scan_and_rewrite_expression(
                         let sig = template
                             .signature
                             .as_ref()
-                            .ok_or_else(|| format!("meta fn '{}' has no signature", fn_name))?;
+                            .ok_or_else(|| format!("meta func '{}' has no signature", fn_name))?;
 
                         if arguments.len() != sig.parameters.len() {
                             return Err(format!(
-                                "meta fn '{}' expects {} arguments, found {}",
+                                "meta func '{}' expects {} arguments, found {}",
                                 fn_name,
                                 sig.parameters.len(),
                                 arguments.len()
@@ -1559,6 +1559,38 @@ pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) 
         return true;
     }
 
+    if let (Type::Struct(t_fields), Type::Struct(p_fields)) = (&resolved_target, &resolved_pattern) {
+        if t_fields.len() == p_fields.len() {
+            if t_fields.len() == 2
+                && t_fields[0].name == "ptr"
+                && t_fields[1].name == "len"
+                && p_fields[0].name == "ptr"
+                && p_fields[1].name == "len"
+            {
+                if let (
+                    Type::Pointer { element: t_elem, .. },
+                    Type::Pointer { element: p_elem, .. },
+                ) = (&t_fields[0].ty, &p_fields[0].ty)
+                {
+                    let p_res = resolve_type_alias_deep(p_elem, scope);
+                    if let Type::Alias(name) = &p_res {
+                        if name == "Generic" || name == "Printable" {
+                            return true;
+                        }
+                    }
+                    if let Type::Union(_) = &p_res {
+                        return type_matches_pattern(t_elem, &p_res, scope);
+                    }
+                    return type_matches_pattern(t_elem, p_elem, scope);
+                }
+            }
+        }
+    }
+
+    if let Type::Union(t_vars) = &resolved_target {
+        return t_vars.iter().all(|tv| type_matches_pattern(tv, pattern, scope));
+    }
+
     match &resolved_pattern {
         Type::Union(variants) => {
             variants.iter().any(|v| type_matches_pattern(target, v, scope))
@@ -1582,13 +1614,7 @@ pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) 
             }
             false
         }
-        _ => {
-            if let Type::Union(t_vars) = &resolved_target {
-                t_vars.iter().all(|tv| type_matches_pattern(tv, pattern, scope))
-            } else {
-                false
-            }
-        }
+        _ => false,
     }
 }
 

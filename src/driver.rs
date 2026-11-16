@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
@@ -17,6 +18,19 @@ use crate::syntax::{
 };
 
 pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
+
+fn format_duration(d: std::time::Duration) -> String {
+    let nanos = d.as_nanos();
+    if nanos < 1_000 {
+        format!("{}ns", nanos)
+    } else if nanos < 1_000_000 {
+        format!("{:.2}µs", d.as_secs_f64() * 1_000_000.0)
+    } else if nanos < 1_000_000_000 {
+        format!("{:.2}ms", d.as_secs_f64() * 1_000.0)
+    } else {
+        format!("{:.2}s", d.as_secs_f64())
+    }
+}
 
 pub fn get_snore_home_dir() -> Option<PathBuf> {
     if let Some(snore_home) = env::var_os("SNORE_HOME") {
@@ -136,9 +150,9 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                     .or_insert_with(|| (None, Vec::new()));
                 if entry.0.is_some() {
                     return Err(format!(
-                        "duplicate declaration of module '{}' in '{}'",
-                        name,
-                        path.display()
+                        "{}: error: duplicate declaration of module '{}'",
+                        path.display(),
+                        name
                     ));
                 }
                 entry.0 = Some((exports, imports, path.clone()));
@@ -294,7 +308,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         }),
         Expression::Cast { expression, ty } => Ok(Expression::Cast {
             expression: Box::new(canonicalize_expression(expression, checker)?),
-            ty: canonicalize_type(ty, checker)?,
+            ty: ty.clone(),
         }),
         Expression::Call { target, arguments } => {
             let mut resolved_args = Vec::with_capacity(arguments.len());
@@ -425,6 +439,8 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
 }
 
 pub fn compile_project(project_dir: &Path) -> Result<(), String> {
+    let total_start = Instant::now();
+
     let mut search_dirs = Vec::new();
     if let Some(snore_home) = get_snore_home_dir() {
         if snore_home.is_dir() {
@@ -433,15 +449,20 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     }
     search_dirs.push(project_dir.to_path_buf());
 
+    let step_start = Instant::now();
     let mut modules = discover_logical_modules(&search_dirs)?;
 
     if modules.is_empty() {
         return Err("no .zzz modules found to compile".to_string());
     }
+    println!("  [1/6] Parse & discover modules   ({})", format_duration(step_start.elapsed()));
 
+    let step_start = Instant::now();
     let resolver = ModuleResolver::new();
     let mut module_scopes = resolver.resolve_modules(&modules)?;
+    println!("  [2/6] Resolve module scopes      ({})", format_duration(step_start.elapsed()));
 
+    let step_start = Instant::now();
     crate::monomorphize::specialise_def_functions(&mut modules, &mut module_scopes)?;
     crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
     crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
@@ -493,14 +514,18 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
             }
         }
     }
+    println!("  [3/6] Specialise & monomorphize  ({})", format_duration(step_start.elapsed()));
 
+    let step_start = Instant::now();
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
         for file in &mut module.source_files {
             checker.check_file(file)?;
         }
     }
+    println!("  [4/6] Type check                 ({})", format_duration(step_start.elapsed()));
 
+    let step_start = Instant::now();
     let mut compiled_definitions: Vec<Definition> = Vec::new();
     let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
     let mut compiled_aliases: HashMap<String, TypeAlias> = HashMap::new();
@@ -538,7 +563,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 if def.name == "main" {
                     if def.is_def {
                         return Err(format!(
-                            "in '{}': entry point 'main' must be a function ('func'), never a 'def'",
+                            "{}: error: entry point 'main' must be a function ('func'), never a 'def'",
                             file.file_path
                         ));
                     }
@@ -548,7 +573,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                             && !matches!(**ret, Type::Symbol(ref name) if name == "none")
                         {
                             return Err(format!(
-                                "in '{}': entry point 'main' must return 's32' or ':none', found {:?}",
+                                "{}: error: entry point 'main' must return 's32' or ':none', found {}",
                                 file.file_path, ret
                             ));
                         }
@@ -598,7 +623,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     }
 
     if !has_main {
-        return Err("program error: missing entry point '@main'".to_string());
+        return Err("error: missing entry point 'main'".to_string());
     }
 
     let program = Program {
@@ -655,7 +680,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     if let Err(err) = module.print_to_file(ir_path) {
         return Err(format!("failed to write LLVM IR: {}", err));
     }
+    println!("  [5/6] Code generation            ({})", format_duration(step_start.elapsed()));
 
+    let step_start = Instant::now();
     let musl_lib = get_musl_lib_dir()?;
     let musl_lib_str = musl_lib
         .to_str()
@@ -685,7 +712,8 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         let message = format!("clang failed with status {}", status);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
+    println!("  [6/6] Linking                    ({})", format_duration(step_start.elapsed()));
 
-    println!("built main");
+    println!("Finished build in {}", format_duration(total_start.elapsed()));
     Ok(())
 }

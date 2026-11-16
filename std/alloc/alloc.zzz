@@ -9,7 +9,7 @@ decl mod alloc {
 extern func malloc( size: usize ) -> *mut opaque
 
 
-meta func contiguous_alloc( num: usize, T: type ) -> Slice <T> {
+meta func contiguous_alloc(num: usize, T: type) -> Slice <T> {
       return {
             ptr := malloc(num * @sizeOf T) as *T
             len := num
@@ -17,17 +17,17 @@ meta func contiguous_alloc( num: usize, T: type ) -> Slice <T> {
 }
 
 
-extern func free( ptr: *opaque ) -> :none
+extern func free(ptr: *opaque) -> :none
 
 
-extern func realloc( ptr: *opaque, new_size: usize ) -> *mut opaque
+extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
 
 
-meta func resize_alloc( T: type, ptr: *T, new_size: usize ) -> *T
+meta func resize_alloc(T: type, ptr: *T, new_size: usize) -> *T
 { realloc(ptr, new_size) as *T }
 
 
-meta func alloc( T: type ) -> *mut T
+meta func alloc(T: type) -> *mut T
 { malloc( @sizeOf T ) as *mut T }
 
 
