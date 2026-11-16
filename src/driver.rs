@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use inkwell::OptimizationLevel;
 use inkwell::context::Context;
-use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
+use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple};
 
 use crate::codegen::Codegen;
 use crate::sema::{Checker, ModuleResolver};
@@ -17,7 +17,8 @@ use crate::syntax::{
     Type, TypeAlias, format_error,
 };
 
-pub const DEFAULT_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
+pub const X86_64_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
+pub const AARCH64_TARGET_TRIPLE: &str = "aarch64-unknown-linux-musl";
 
 fn format_duration(d: std::time::Duration) -> String {
     let nanos = d.as_nanos();
@@ -29,6 +30,28 @@ fn format_duration(d: std::time::Duration) -> String {
         format!("{:.2}ms", d.as_secs_f64() * 1_000.0)
     } else {
         format!("{:.2}s", d.as_secs_f64())
+    }
+}
+
+fn run_tool_command(
+    cmd_path: &Path,
+    args: &[&str],
+    tmp_dir: &str,
+) -> std::io::Result<std::process::ExitStatus> {
+    match Command::new(cmd_path)
+        .env("TMPDIR", tmp_dir)
+        .args(args)
+        .status()
+    {
+        Err(err) if err.raw_os_error() == Some(8) => {
+            // Exec format error: try executing via `sh` (common for APE binaries on Linux when binfmt_misc is not active)
+            Command::new("sh")
+                .arg(cmd_path)
+                .env("TMPDIR", tmp_dir)
+                .args(args)
+                .status()
+        }
+        res => res,
     }
 }
 
@@ -51,24 +74,31 @@ pub fn get_snore_home_dir() -> Option<PathBuf> {
     default_home
 }
 
-fn get_musl_lib_dir() -> Result<PathBuf, String> {
-    let snore_home = get_snore_home_dir()
-        .ok_or_else(|| "could not resolve snore home directory (~/.snore)".to_string())?;
-    let musl_lib = snore_home.join("musl").join("lib");
-
-    let required_artifacts = ["libc.a", "crt1.o", "crti.o", "crtn.o"];
-    for artifact in &required_artifacts {
-        let path = musl_lib.join(artifact);
-        if !path.exists() {
-            return Err(format!(
-                "missing required musl artifact '{}' at '{}'. Build and install musl into '~/.snore/musl' first.",
-                artifact,
-                path.display()
-            ));
+fn get_cosmocc_dir() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("SNORE_COSMOCC") {
+        let p = PathBuf::from(path);
+        if p.join("bin").join("apelink").exists() {
+            return Ok(p);
         }
     }
-
-    Ok(musl_lib)
+    if let Some(snore_home) = get_snore_home_dir() {
+        let p = snore_home.join("cosmocc");
+        if p.join("bin").join("apelink").exists() {
+            return Ok(p);
+        }
+    }
+    let local_cosmo = env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".local").join("opt").join("cosmocc"));
+    if let Some(p) = local_cosmo {
+        if p.join("bin").join("apelink").exists() {
+            return Ok(p);
+        }
+    }
+    let vendor_cosmo = PathBuf::from("vendor").join("cosmocc");
+    if vendor_cosmo.join("bin").join("apelink").exists() {
+        return Ok(vendor_cosmo);
+    }
+    Err("could not find Cosmopolitan toolchain ('cosmocc'). Ensure it is installed in '~/.snore/cosmocc' or '~/.local/opt/cosmocc'.".to_string())
 }
 
 pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, String> {
@@ -634,16 +664,18 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     };
 
     Target::initialize_all(&InitializationConfig::default());
-    let target_triple = TargetTriple::create(DEFAULT_TARGET_TRIPLE);
-    let target = Target::from_triple(&target_triple).map_err(|error| {
+
+    // 1. x86_64 target machine
+    let x86_triple = TargetTriple::create(X86_64_TARGET_TRIPLE);
+    let x86_target = Target::from_triple(&x86_triple).map_err(|error| {
         format!(
             "failed to initialize target '{}': {}",
-            DEFAULT_TARGET_TRIPLE, error
+            X86_64_TARGET_TRIPLE, error
         )
     })?;
-    let target_machine = target
+    let x86_target_machine = x86_target
         .create_target_machine(
-            &target_triple,
+            &x86_triple,
             "generic",
             "",
             OptimizationLevel::Default,
@@ -653,14 +685,33 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         .ok_or_else(|| {
             format!(
                 "failed to create target machine for '{}'",
-                DEFAULT_TARGET_TRIPLE
+                X86_64_TARGET_TRIPLE
             )
         })?;
 
-    let context = Context::create();
-    let codegen = Codegen::new(&context, "main", &target_machine);
-
-    let module = codegen.generate(&program)?;
+    // 2. aarch64 target machine
+    let aarch64_triple = TargetTriple::create(AARCH64_TARGET_TRIPLE);
+    let aarch64_target = Target::from_triple(&aarch64_triple).map_err(|error| {
+        format!(
+            "failed to initialize target '{}': {}",
+            AARCH64_TARGET_TRIPLE, error
+        )
+    })?;
+    let aarch64_target_machine = aarch64_target
+        .create_target_machine(
+            &aarch64_triple,
+            "generic",
+            "",
+            OptimizationLevel::Default,
+            RelocMode::Static,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| {
+            format!(
+                "failed to create target machine for '{}'",
+                AARCH64_TARGET_TRIPLE
+            )
+        })?;
 
     let main_span = program
         .definitions
@@ -671,47 +722,128 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
             _ => None,
         });
 
-    if let Err(err) = module.verify() {
-        let message = format!("LLVM verification failed: {}", err);
+    // Generate x86_64 module & object file
+    let context_x86 = Context::create();
+    let codegen_x86 = Codegen::new(&context_x86, "main_x86", &x86_target_machine);
+    let module_x86 = codegen_x86.generate(&program)?;
+    if let Err(err) = module_x86.verify() {
+        let message = format!("LLVM verification failed (x86_64): {}", err);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
+    let obj_path_x86 = Path::new("main.x86_64.o");
+    x86_target_machine
+        .write_to_file(&module_x86, FileType::Object, obj_path_x86)
+        .map_err(|err| format!("failed to write x86_64 object file: {}", err))?;
+
+    // Generate aarch64 module & object file
+    let context_aarch64 = Context::create();
+    let codegen_aarch64 = Codegen::new(&context_aarch64, "main_aarch64", &aarch64_target_machine);
+    let module_aarch64 = codegen_aarch64.generate(&program)?;
+    if let Err(err) = module_aarch64.verify() {
+        let message = format!("LLVM verification failed (aarch64): {}", err);
+        return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
+    }
+    let obj_path_aarch64 = Path::new("main.aarch64.o");
+    aarch64_target_machine
+        .write_to_file(&module_aarch64, FileType::Object, obj_path_aarch64)
+        .map_err(|err| format!("failed to write aarch64 object file: {}", err))?;
 
     let ir_path = Path::new("main.ll");
-    if let Err(err) = module.print_to_file(ir_path) {
-        return Err(format!("failed to write LLVM IR: {}", err));
-    }
+    let _ = module_x86.print_to_file(ir_path);
     println!("  [5/6] Code generation            ({})", format_duration(step_start.elapsed()));
 
     let step_start = Instant::now();
-    let musl_lib = get_musl_lib_dir()?;
-    let musl_lib_str = musl_lib
-        .to_str()
-        .ok_or_else(|| "invalid UTF-8 in musl library path".to_string())?;
-    let target_argument = format!("--target={}", DEFAULT_TARGET_TRIPLE);
+    let cosmo_dir = get_cosmocc_dir()?;
+    let cosmo_bin = cosmo_dir.join("bin");
 
-    let status = Command::new("clang")
-        .args([
-            target_argument.as_str(),
-            "-O3",
+    let x86_cc = cosmo_bin.join("x86_64-unknown-cosmo-cc");
+    let aarch64_cc = cosmo_bin.join("aarch64-unknown-cosmo-cc");
+    let apelink = cosmo_bin.join("apelink");
+    let ape_x86 = cosmo_bin.join("ape-x86_64.elf");
+    let ape_aarch64 = cosmo_bin.join("ape-aarch64.elf");
+    let ape_m1 = cosmo_bin.join("ape-m1.c");
+
+    let elf_path_x86 = Path::new("main.x86_64.elf");
+    let elf_path_aarch64 = Path::new("main.aarch64.elf");
+    let tmp_dir = env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+
+    let status_x86 = run_tool_command(
+        &x86_cc,
+        &[
             "-static",
-            "-B",
-            musl_lib_str,
-            "-L",
-            musl_lib_str,
-            "main.ll",
+            "-O3",
+            obj_path_x86.to_str().unwrap(),
             "-o",
-            "main",
-        ])
-        .status()
+            elf_path_x86.to_str().unwrap(),
+        ],
+        &tmp_dir,
+    )
+    .map_err(|error| {
+        let message = format!("failed to execute x86_64-unknown-cosmo-cc: {}", error);
+        main_span.map_or(message.clone(), |span| format_error(span, &message))
+    })?;
+
+    if !status_x86.success() {
+        let message = format!("x86_64-unknown-cosmo-cc failed with status {}", status_x86);
+        return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
+    }
+
+    let status_aarch64 = run_tool_command(
+        &aarch64_cc,
+        &[
+            "-static",
+            "-O3",
+            obj_path_aarch64.to_str().unwrap(),
+            "-o",
+            elf_path_aarch64.to_str().unwrap(),
+        ],
+        &tmp_dir,
+    )
+    .map_err(|error| {
+        let message = format!("failed to execute aarch64-unknown-cosmo-cc: {}", error);
+        main_span.map_or(message.clone(), |span| format_error(span, &message))
+    })?;
+
+    if !status_aarch64.success() {
+        let message = format!("aarch64-unknown-cosmo-cc failed with status {}", status_aarch64);
+        return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
+    }
+
+    let mut apelink_args: Vec<&str> = Vec::new();
+    let ape_x86_str = ape_x86.to_str().unwrap();
+    let ape_aarch64_str = ape_aarch64.to_str().unwrap();
+    let ape_m1_str = ape_m1.to_str().unwrap();
+
+    if ape_x86.exists() {
+        apelink_args.extend(["-l", ape_x86_str]);
+    }
+    if ape_aarch64.exists() {
+        apelink_args.extend(["-l", ape_aarch64_str]);
+    }
+    if ape_m1.exists() {
+        apelink_args.extend(["-M", ape_m1_str]);
+    }
+
+    let elf_x86_str = elf_path_x86.to_str().unwrap();
+    let elf_aarch64_str = elf_path_aarch64.to_str().unwrap();
+    apelink_args.extend(["-o", "main", elf_x86_str, elf_aarch64_str]);
+
+    let status_apelink = run_tool_command(&apelink, &apelink_args, &tmp_dir)
         .map_err(|error| {
-            let message = format!("failed to execute clang: {}", error);
+            let message = format!("failed to execute apelink: {}", error);
             main_span.map_or(message.clone(), |span| format_error(span, &message))
         })?;
 
-    if !status.success() {
-        let message = format!("clang failed with status {}", status);
+    if !status_apelink.success() {
+        let message = format!("apelink failed with status {}", status_apelink);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
+
+    let _ = fs::remove_file(obj_path_x86);
+    let _ = fs::remove_file(obj_path_aarch64);
+    let _ = fs::remove_file(elf_path_x86);
+    let _ = fs::remove_file(elf_path_aarch64);
+
     println!("  [6/6] Linking                    ({})", format_duration(step_start.elapsed()));
 
     println!("Finished build in {}", format_duration(total_start.elapsed()));
