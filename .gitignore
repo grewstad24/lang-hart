@@ -1,5 +1,4 @@
 # Rust
-
 /target
 **/*.rs.bk
 *.bc
@@ -15,3 +14,7 @@ target/
 *.dll
 editors/zed/grammars/snore/
 editors/zed/grammars/hart/
+
+# Cosmopolitan toolchain
+/vendor/cosmocc/
+/vendor/cosmopolitan/
