@@ -1,0 +1,35 @@
+export {
+      { rcNew, rcDrop, rcShare } to .reman,
+      { rcDrop, rcShare, rcNew, RcBlock } to .extend.reman
+}
+
+type RcBlock := {
+      refcount: usize,
+      sink: func(*opaque) -> :none,
+      value: *opaque
+}
+
+def rcNew(value, sink_fn: func(*opaque) -> :none) {
+      ptr := alloc(type RcBlock)
+      ptr.*.refcount := 1 as usize
+      ptr.*.sink := sink_fn
+      ptr.*.value := value as *opaque
+      return ptr
+}
+
+def rcShare(rc: RcBlock) {
+      rc.*.refcount := rc.*.refcount + 1 as usize
+      return rc
+}
+
+def rcDrop(rc) {
+      if {
+            rc.*.refcount <= 1 as usize => {
+                  rc.*.sink(rc.*.value)
+                  free(rc as *opaque)
+            }
+            else => {
+                  rc.*.refcount := rc.*.refcount - 1 as usize
+            }
+      }
+}

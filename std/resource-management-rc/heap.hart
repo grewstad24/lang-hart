@@ -1,0 +1,19 @@
+decl mod reman_heap {
+      import { .heap, .reman }
+      export {
+            { rcHeapNew, rcFree } to .reman.heap
+      }
+}
+
+def rcHeapNew(value) {
+      ptr := alloc(type RcBlock)
+      ptr.*.refcount := 1 as usize
+      ptr.*.sink := free
+      ptr.*.value := value as *opaque
+      return ptr
+}
+
+def rcMalloc(size: usize) {
+      mem := malloc(size)
+      return rcNew(mem)
+}

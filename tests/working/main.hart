@@ -1,5 +1,9 @@
-import { .print }
+import { .print, .heap, .reman.heap }
 
 func main() -> :none {
+      r := rcMalloc(64 as usize)
+      rcShare(r)
+      rcDrop(r)
+      rcDrop(r)
       print("Hello, World!")
 }

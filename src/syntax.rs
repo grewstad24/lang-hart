@@ -1153,6 +1153,7 @@ impl Lexer {
             "type" => Token::TypeKeyword,
             "extern" => Token::Extern,
             "func" => Token::FnKeyword,
+            "fn" => Token::FnKeyword,
             "def" => Token::Def,
             "if" => Token::If,
             "else" => Token::Else,
@@ -2201,18 +2202,16 @@ impl Parser {
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
             let param_name = self.expect_field_name()?;
             self.skip_newlines();
-            if self.is(Token::Colon) || self.is(Token::ColonColon) {
-                return Err(format_error(
-                    self.current_span(),
-                    &format!(
-                        "type annotations are not allowed on 'def' parameters; remove type annotation on '{}'",
-                        param_name
-                    ),
-                ));
-            }
+            let ty = if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                self.advance();
+                self.skip_newlines();
+                self.parse_type()?
+            } else {
+                Type::Inferred
+            };
             parameters.push(Parameter {
                 name: param_name,
-                ty: Type::Inferred,
+                ty,
             });
             self.skip_newlines();
             if self.is(Token::Comma) {
@@ -2223,19 +2222,20 @@ impl Parser {
         self.expect(Token::RParen)?;
 
         self.skip_newlines();
-        if self.is(Token::Arrow) {
-            return Err(format_error(
-                self.current_span(),
-                "return type annotations are not allowed on 'def' functions",
-            ));
-        }
+        let return_type = if self.is(Token::Arrow) {
+            self.advance();
+            self.skip_newlines();
+            self.parse_type()?
+        } else {
+            Type::Inferred
+        };
 
         self.skip_newlines();
         let body = self.parse_block()?;
 
         let signature = Signature {
             parameters,
-            return_type: Box::new(Type::Inferred),
+            return_type: Box::new(return_type),
             is_variadic: false,
         };
 
@@ -2988,6 +2988,10 @@ impl Parser {
             fields.push(StructFieldInit { name, value });
 
             self.skip_newlines();
+            if self.is(Token::Comma) {
+                self.advance();
+                self.skip_newlines();
+            }
         }
 
         if closing_token != Token::Eof {
@@ -3507,6 +3511,56 @@ impl Parser {
                 }
                 self.expect(Token::RBrace)?;
                 Ok(Type::Struct(fields))
+            }
+            Token::FnKeyword => {
+                self.advance();
+                self.expect(Token::LParen)?;
+                self.skip_newlines();
+                let mut parameters = Vec::new();
+                let mut is_variadic = false;
+                while !self.is(Token::RParen) && !self.is(Token::Eof) {
+                    if self.is(Token::DotDotDot) {
+                        self.advance();
+                        is_variadic = true;
+                        self.skip_newlines();
+                        break;
+                    }
+                    let mut lookahead = self.cursor + 1;
+                    while lookahead < self.tokens.len() && self.tokens[lookahead] == Token::Newline {
+                        lookahead += 1;
+                    }
+                    let is_named = self.tokens.get(lookahead) == Some(&Token::Colon)
+                        || self.tokens.get(lookahead) == Some(&Token::ColonColon);
+                    let ty = if is_named {
+                        let _ = self.expect_field_name()?;
+                        self.skip_newlines();
+                        self.advance(); // consume ':'
+                        self.skip_newlines();
+                        self.parse_type()?
+                    } else {
+                        self.parse_type()?
+                    };
+                    parameters.push(ty);
+                    self.skip_newlines();
+                    if self.is(Token::Comma) {
+                        self.advance();
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(Token::RParen)?;
+                self.skip_newlines();
+                let return_type = if self.is(Token::Arrow) {
+                    self.advance();
+                    self.skip_newlines();
+                    self.parse_type()?
+                } else {
+                    Type::Symbol("none".to_string())
+                };
+                Ok(Type::Function {
+                    parameters,
+                    return_type: Box::new(return_type),
+                    is_variadic,
+                })
             }
             token => Err(format!("expected type, found {}", token)),
         }

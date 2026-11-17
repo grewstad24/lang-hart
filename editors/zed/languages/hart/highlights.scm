@@ -45,6 +45,9 @@
 (parameter
   name: (identifier) @variable.parameter)
 
+(def_parameter
+  name: (identifier) @variable.parameter)
+
 (def_parameter_list
   (identifier) @variable.parameter)
 

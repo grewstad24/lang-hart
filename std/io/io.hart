@@ -1,3 +1,5 @@
 decl mod io {
-        export { fflush, read, write } to .io.raw
+        import { .heap }
 }
+
+extern func fopen(path: *u8, mode: *u8) -> *opaque

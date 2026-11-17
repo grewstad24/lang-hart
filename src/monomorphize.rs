@@ -302,14 +302,14 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
 fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type, String> {
     match arg {
         Expression::Spanned { expression, .. } => extract_type_argument(expression, _scope),
-        Expression::Type(ty) => Ok(ty.clone()),
+        Expression::Type(ty) => Ok(resolve_type_alias_deep(ty, _scope)),
         Expression::TypeOf(inner) => {
             if let Expression::Type(ty) = crate::syntax::unspanned_expression(inner) {
-                return Ok(ty.clone());
+                return Ok(resolve_type_alias_deep(ty, _scope));
             }
             if let Expression::Identifier(name) = crate::syntax::unspanned_expression(inner) {
                 if let Some(alias) = _scope.lookup_type_alias(name) {
-                    return Ok(Type::Alias(alias.name.clone()));
+                    return Ok(resolve_type_alias_deep(&alias.target, _scope));
                 }
                 match name.as_str() {
                     "s16" => return Ok(Type::S16),
@@ -325,7 +325,7 @@ fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type,
                 }
             }
             if let Some(ty) = infer_expr_type(inner, &HashMap::new(), _scope) {
-                return Ok(ty);
+                return Ok(resolve_type_alias_deep(&ty, _scope));
             }
             Err(format!("could not determine type of '@typeOf' argument {}", inner))
         }
@@ -636,6 +636,16 @@ pub fn monomorphize_modules(
                             originating_file: item.originating_file.clone(),
                         },
                     );
+                }
+            }
+        }
+
+        for (module, scope) in modules.iter().zip(module_scopes.iter_mut()) {
+            for file in &module.source_files {
+                for def in &file.definitions {
+                    if let Some(prov) = scope.definitions.get_mut(&def.name) {
+                        prov.item = def.clone();
+                    }
                 }
             }
         }
@@ -1163,12 +1173,28 @@ pub(crate) fn infer_expr_type_with_generated(
             }
             if let Some(prov) = scope.definitions.get(name) {
                 if let Some(sig) = &prov.item.signature {
-                    if *sig.return_type != Type::Inferred {
-                        return Some(*sig.return_type.clone());
-                    }
+                    return Some(Type::Function {
+                        parameters: sig.parameters.iter().map(|p| p.ty.clone()).collect(),
+                        return_type: sig.return_type.clone(),
+                        is_variadic: sig.is_variadic,
+                    });
                 } else {
                     return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
                 }
+            }
+            if let Some(ext) = scope.lookup_extern(name) {
+                return Some(Type::Function {
+                    parameters: ext.signature.parameters.iter().map(|p| p.ty.clone()).collect(),
+                    return_type: ext.signature.return_type.clone(),
+                    is_variadic: ext.signature.is_variadic,
+                });
+            }
+            if let Some(ext) = scope.extern_functions.get(name) {
+                return Some(Type::Function {
+                    parameters: ext.item.signature.parameters.iter().map(|p| p.ty.clone()).collect(),
+                    return_type: ext.item.signature.return_type.clone(),
+                    is_variadic: ext.item.signature.is_variadic,
+                });
             }
             if let Some(alias) = scope.lookup_type_alias(name) {
                 return Some(Type::Alias(alias.name.clone()));
@@ -1400,6 +1426,8 @@ pub(crate) fn infer_expr_type_with_generated(
                     if let Some(sig) = &g.specialized_def.signature {
                         if *sig.return_type != Type::Inferred {
                             return Some(*sig.return_type.clone());
+                        } else {
+                            return infer_expr_type_with_generated(&g.specialized_def.value, &HashMap::new(), scope, generated);
                         }
                     }
                 }
@@ -1419,6 +1447,8 @@ pub(crate) fn infer_expr_type_with_generated(
                     } else if let Some(sig) = &prov.item.signature {
                         if *sig.return_type != Type::Inferred {
                             return Some(*sig.return_type.clone());
+                        } else {
+                            return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
                         }
                     } else {
                         return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
@@ -1694,7 +1724,16 @@ fn scan_and_monomorphize_def(
             scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
 
             if let Some(fn_name) = unwrap_identifier_name(target) {
-                if let Some((originating_file, template)) = def_templates.get(&fn_name) {
+                let template_opt = if let Some(prov) = scope.definitions.get(&fn_name) {
+                    if prov.item.is_def {
+                        Some((prov.originating_file.clone(), prov.item.clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    def_templates.get(&fn_name).cloned()
+                };
+                if let Some((originating_file, template)) = template_opt {
                     let sig = template
                         .signature
                         .as_ref()
@@ -2015,6 +2054,16 @@ pub fn specialise_def_functions(
                             originating_file: item.originating_file.clone(),
                         },
                     );
+                }
+            }
+        }
+
+        for (module, scope) in modules.iter().zip(module_scopes.iter_mut()) {
+            for file in &module.source_files {
+                for def in &file.definitions {
+                    if let Some(prov) = scope.definitions.get_mut(&def.name) {
+                        prov.item = def.clone();
+                    }
                 }
             }
         }

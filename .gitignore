@@ -15,4 +15,3 @@ target/
 *.dll
 editors/zed/grammars/snore/
 editors/zed/grammars/hart/
-parser.c

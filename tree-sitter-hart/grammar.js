@@ -151,12 +151,18 @@ module.exports = grammar({
       'def',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.def_parameter_list),
+      optional(seq('->', field('return_type', $._type))),
       field('body', $.block)
+    ),
+
+    def_parameter: $ => seq(
+      field('name', $.identifier),
+      optional(seq(':', field('type', $._type)))
     ),
 
     def_parameter_list: $ => seq(
       '(',
-      commaSep($.identifier),
+      commaSep($.def_parameter),
       optional(','),
       ')'
     ),
@@ -194,8 +200,23 @@ module.exports = grammar({
       $.struct_type,
       $.tuple_type,
       $.union_type,
+      $.function_type,
       $.symbol_literal,
       $.parenthesized_type,
+    ),
+
+    function_type: $ => seq(
+      choice('func', 'fn'),
+      '(',
+      optional(seq(
+        commaSep(choice(
+          seq(optional(seq($.identifier, ':')), $._type),
+          $.variadic_parameter
+        )),
+        optional(',')
+      )),
+      ')',
+      optional(seq('->', field('return_type', $._type)))
     ),
 
     generic_type: $ => prec(PREC.PRIMARY, seq(

@@ -1,7 +1,6 @@
 decl mod alloc {
       export {
-            { alloc, heap_new, resize_alloc, alloc_vector, Vector, resize_vector } to .heap,
-            { malloc, free, realloc } to .heap.raw_libc
+            { heap_new, free } to .heap,
       }
 }
 

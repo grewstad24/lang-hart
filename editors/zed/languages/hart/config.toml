@@ -1,6 +1,6 @@
 name = "Hart"
 grammar = "hart"
-path_suffixes = ["hart"]
+path_suffixes = ["hart", "zzz"]
 line_comments = ["# "]
 tab_size = 6
 hard_tabs = false
