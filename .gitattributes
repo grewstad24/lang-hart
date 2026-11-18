@@ -1,0 +1,9 @@
+# Generated tree-sitter parser and schema files
+tree-sitter-hart/src/parser.c linguist-generated
+tree-sitter-hart/src/tree_sitter/* linguist-generated
+tree-sitter-hart/src/grammar.json linguist-generated
+tree-sitter-hart/src/node-types.json linguist-generated
+
+# Compiled WebAssembly grammars
+*.wasm linguist-generated
+

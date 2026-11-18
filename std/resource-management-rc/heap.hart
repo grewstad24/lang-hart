@@ -1,7 +1,7 @@
 decl mod reman_heap {
-      import { .heap, .reman }
+      import { .heap, .reman, .extend.reman }
       export {
-            { rcHeapNew, rcFree } to .reman.heap
+            { rcHeapNew, rcMalloc, rcFree } to .reman.heap
       }
 }
 
@@ -15,5 +15,9 @@ def rcHeapNew(value) {
 
 def rcMalloc(size: usize) {
       mem := malloc(size)
-      return rcNew(mem)
+      return rcNew(mem, free)
+}
+
+def rcFree(rc) {
+      rcDrop(rc)
 }

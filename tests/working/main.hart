@@ -1,4 +1,4 @@
-import { .print, .heap, .reman.heap }
+import { .print, .heap, .reman, .reman.heap }
 
 func main() -> :none {
       r := rcMalloc(64 as usize)

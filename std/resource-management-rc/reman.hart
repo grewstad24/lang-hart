@@ -1,6 +1,9 @@
-export {
-      { rcNew, rcDrop, rcShare } to .reman,
-      { rcDrop, rcShare, rcNew, RcBlock } to .extend.reman
+decl mod reman {
+      import { .heap }
+      export {
+            { rcNew, rcDrop, rcShare } to .reman,
+            { rcDrop, rcShare, rcNew, RcBlock } to .extend.reman
+      }
 }
 
 type RcBlock := {
@@ -17,7 +20,7 @@ def rcNew(value, sink_fn: func(*opaque) -> :none) {
       return ptr
 }
 
-def rcShare(rc: RcBlock) {
+def rcShare(rc) {
       rc.*.refcount := rc.*.refcount + 1 as usize
       return rc
 }

@@ -15,9 +15,4 @@ target/
 editors/zed/grammars/hart/
 
 # vendor toolchains
-/vendor
-/vendor
-
-# generated files
-/tree-sitter-hart/src/parser.c
-/tree-sitter-hart/src/tree_sitter/
+/vendor/
