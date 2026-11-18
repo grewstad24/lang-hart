@@ -14,7 +14,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://codeberg.org/grewstad/snore.git",
+    "url": "https://github.com/grewstad24/lang-hart.git",
     "directory": "tree-sitter-hart"
   },
   "files": [

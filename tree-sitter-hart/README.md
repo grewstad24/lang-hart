@@ -1,6 +1,6 @@
 # tree-sitter-hart
 
-Tree-sitter grammar for the [Hart](https://codeberg.org/grewstad/snore) programming language (`.hart` files).
+Tree-sitter grammar for the [Hart](https://github.com/grewstad24/lang-hart) programming language (`.hart` files).
 
 ## Features
 
@@ -29,6 +29,6 @@ npm test
 To parse a file:
 
 ```bash
-npx tree-sitter parse path/to/file.zzz
+npx tree-sitter parse path/to/file.hart
 ```
 

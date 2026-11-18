@@ -5,7 +5,7 @@ description = "Hart grammar for tree-sitter"
 license = "MIT"
 edition = "2021"
 authors = ["grewstad"]
-repository = "https://codeberg.org/grewstad/snore"
+repository = "https://github.com/grewstad24/lang-hart"
 
 [dependencies]
 tree-sitter-language = "0.1"

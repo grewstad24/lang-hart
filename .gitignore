@@ -12,9 +12,12 @@ target/
 *.dylib
 *.so
 *.dll
-editors/zed/grammars/snore/
 editors/zed/grammars/hart/
 
-# Cosmopolitan toolchain
-/vendor/cosmocc/
-/vendor/cosmopolitan/
+# vendor toolchains
+/vendor
+/vendor
+
+# generated files
+/tree-sitter-hart/src/parser.c
+/tree-sitter-hart/src/tree_sitter/

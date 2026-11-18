@@ -4,9 +4,9 @@ version = "0.1.3"
 schema_version = 1
 authors = ["Arihan Bhor"]
 description = "Hart language support"
-repository = "https://codeberg.org/grewstad/snore"
+repository = "https://github.com/grewstad24/lang-hart"
 
 [grammars.hart]
-repository = "https://codeberg.org/grewstad/snore"
+repository = "https://github.com/grewstad24/lang-hart"
 path = "tree-sitter-hart"
 rev = "main"
