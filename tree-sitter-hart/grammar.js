@@ -232,8 +232,7 @@ module.exports = grammar({
       's16', 's32', 's64',
       'u8', 'u16', 'u32', 'u64',
       'usize', 'ssize',
-      'opaque', 'never',
-      'type'
+      'opaque', 'never'
     ),
 
     type_identifier: $ => token(/[a-zA-Z_][a-zA-Z0-9_]*/),
@@ -407,12 +406,12 @@ module.exports = grammar({
       '}'
     ),
 
-    if_arm: $ => seq(
+    if_arm: $ => prec.right(PREC.CALL + 2, seq(
       field('condition', choice($._expression, 'else')),
       '=>',
       field('body', $._expression),
       optional(choice(',', ';'))
-    ),
+    )),
 
     switch_expression: $ => seq(
       'switch',
@@ -422,12 +421,12 @@ module.exports = grammar({
       '}'
     ),
 
-    switch_arm: $ => seq(
+    switch_arm: $ => prec.right(PREC.CALL + 2, seq(
       field('value', choice($._expression, 'else')),
       '=>',
       field('body', $._expression),
       optional(choice(',', ';'))
-    ),
+    )),
 
     match_expression: $ => seq(
       'match',
@@ -441,12 +440,12 @@ module.exports = grammar({
       '}'
     ),
 
-    match_arm: $ => seq(
+    match_arm: $ => prec.right(PREC.CALL + 2, seq(
       field('pattern', choice($._type, 'else')),
       '=>',
       field('body', $._expression),
       optional(choice(',', ';'))
-    ),
+    )),
 
     repeat_expression: $ => prec.right(seq(
       'repeat',

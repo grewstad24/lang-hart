@@ -7,13 +7,10 @@
   "to"
   "from"
   "func"
-  "fn"
   "def"
-  "meta"
   "extern"
   "type"
   "const"
-  "val"
   "if"
   "else"
   "switch"
@@ -25,8 +22,6 @@
   "as"
   "mut"
 ] @keyword
-
-"not" @keyword.operator
 
 ; Types
 (primitive_type) @type.builtin
@@ -81,9 +76,7 @@
 
 ; Builtins / Intrinsics
 "@record" @attribute
-"@struct" @attribute
 "@sizeOf" @function.macro
-"@typeOf" @function.macro
 "@slice" @function.macro
 "@atom" @function.macro
 "@generalise" @function.macro
@@ -94,10 +87,10 @@
   ":"
   "->"
   "=>"
-  ".."
   "."
   "*"
   "&"
+  "&mut"
   "|"
   "+"
   "-"

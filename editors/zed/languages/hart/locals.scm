@@ -1,6 +1,7 @@
 ; Scopes
 (block) @local.scope
 (function_definition) @local.scope
+(def_definition) @local.scope
 (if_arm) @local.scope
 (switch_arm) @local.scope
 (match_arm) @local.scope
@@ -11,10 +12,16 @@
 (function_definition
   name: (function_identifier) @local.definition)
 
+(def_definition
+  name: (function_identifier) @local.definition)
+
 (extern_function_declaration
   name: (function_identifier) @local.definition)
 
 (parameter
+  name: (identifier) @local.definition)
+
+(def_parameter
   name: (identifier) @local.definition)
 
 (mut_declaration

@@ -1,6 +1,9 @@
 (function_definition
   name: (function_identifier) @name) @item
 
+(def_definition
+  name: (function_identifier) @name) @item
+
 (extern_function_declaration
   name: (function_identifier) @name) @item
 

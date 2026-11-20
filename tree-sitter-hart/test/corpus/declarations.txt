@@ -8,11 +8,11 @@ decl mod io {
     export { read, write } to .io.raw
 }
 
-fn add(a: s32, b: s32) -> s32 {
+func add(a: s32, b: s32) -> s32 {
     a + b
 }
 
-extern fn write(fd: s32, buf: *u8, len: u64) -> s64
+extern func write(fd: s32, buf: *u8, len: u64) -> s64
 
 ---
 
@@ -62,11 +62,11 @@ Types
 type String := Slice <u8>
 type Integer := s32 | s64 | u32 | u64
 type Node := *{
-    val: s32
+    val: s32,
     next: *Node
 }
-meta type ResizeableArray<T> := {
-    arr: *T
+type ResizeableArray<T> := {
+    arr: *T,
     len: usize
 }
 
@@ -138,12 +138,15 @@ decl mod print {
         target: (namespace_path)))))
 
 ==================
-Val declarations and mutable pointers
+Const declarations, generic defs, and mutable pointers
 ==================
 
-val MAX_SIZE := 1024
-meta fn resize(T: type, vec: *mut Vector<T>, len: usize) -> *T {
+const MAX_SIZE := 1024
+def resize(vec, len) {
     realloc(vec, len)
+}
+func identity(x: *mut u8) -> *u8 {
+    x
 }
 
 ---
@@ -152,27 +155,27 @@ meta fn resize(T: type, vec: *mut Vector<T>, len: usize) -> *T {
   (const_declaration
     name: (identifier)
     value: (integer_literal))
-  (function_definition
+  (def_definition
     name: (function_identifier)
-    parameters: (parameter_list
-      (parameter
-        name: (identifier)
-        type: (primitive_type))
-      (parameter
-        name: (identifier)
-        type: (pointer_type
-          (generic_type
-            name: (type_identifier)
-            type_arguments: (type_arguments
-              (type_identifier)))))
-      (parameter
-        name: (identifier)
-        type: (primitive_type)))
-    return_type: (pointer_type
-      (type_identifier))
+    parameters: (def_parameter_list
+      (def_parameter
+        name: (identifier))
+      (def_parameter
+        name: (identifier)))
     body: (block
       (call_expression
         function: (function_identifier)
         arguments: (argument_list
           (identifier)
-          (identifier))))))
+          (identifier)))))
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (pointer_type
+          (primitive_type))))
+    return_type: (pointer_type
+      (primitive_type))
+    body: (block
+      (identifier))))

@@ -2,8 +2,8 @@
 Loops and Matches
 ==================
 
-fn main() -> :none {
-    let arr := [1, 2, 3]
+func main() -> :none {
+    mut arr := [1, 2, 3]
 
     for arr using elem {
         print(elem)
@@ -32,10 +32,9 @@ fn main() -> :none {
     parameters: (parameter_list)
     return_type: (symbol_literal)
     body: (block
-      (identifier)
-      (assignment_expression
-        left: (identifier)
-        right: (array_literal
+      (mut_declaration
+        name: (identifier)
+        value: (array_literal
           (integer_literal)
           (integer_literal)
           (integer_literal)))
