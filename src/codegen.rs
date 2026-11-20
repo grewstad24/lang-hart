@@ -16,7 +16,7 @@ use crate::sema::Checker;
 use crate::syntax::{
     BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
     IfCondition, MatchArm, Program, Signature, StructFieldInit, StructFieldType, Type,
-    UnaryOperator, format_error, unspanned_expression,
+    format_error, unspanned_expression,
 };
 
 #[derive(Debug, Clone)]
@@ -1222,10 +1222,6 @@ impl<'ctx> Codegen<'ctx> {
                 arms,
             } => self.codegen_match_expression(target, binding_name, arms),
             Expression::Array(elements) => self.codegen_array_literal(elements),
-            Expression::Unary { operator, operand } => {
-                let operand = self.codegen_expression(operand)?;
-                self.codegen_unary(operator.clone(), &operand)
-            }
             Expression::Binary {
                 left,
                 operator,
@@ -1254,6 +1250,13 @@ impl<'ctx> Codegen<'ctx> {
             Expression::AddressOf { expression, is_mut } => {
                 let binding = self.codegen_address_of(expression)?;
                 match binding {
+                    Binding::Pointer {
+                        ty: Type::Function { .. },
+                        value,
+                    } => Ok(Binding::Pointer {
+                        ty: self.binding_type(&binding)?,
+                        value,
+                    }),
                     Binding::Pointer {
                         ty: Type::Pointer { element, .. },
                         value,
@@ -1377,12 +1380,24 @@ impl<'ctx> Codegen<'ctx> {
     fn codegen_dereference(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         let pointer_binding = self.codegen_expression(expression)?;
         let pointer_type = self.binding_type(&pointer_binding)?;
+        if matches!(pointer_type, Type::Function { .. }) {
+            return Ok(pointer_binding);
+        }
         let Type::Pointer { element, .. } = pointer_type else {
             return Err(format!(
                 "cannot dereference non-pointer type {}",
                 pointer_type
             ));
         };
+        if matches!(element.as_ref(), Type::Function { .. }) {
+            return Ok(Binding::Pointer {
+                ty: *element,
+                value: match pointer_binding {
+                    Binding::Pointer { value, .. } => value,
+                    _ => return Err("expected pointer binding for dereference".to_string()),
+                },
+            });
+        }
         if *element == Type::Opaque {
             return Err("cannot dereference untyped pointer '*opaque'".to_string());
         }
@@ -2068,10 +2083,10 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     Type::Tuple(elements) => {
                         let idx: usize = field.parse().map_err(|_| format!("unknown tuple field '{}'", field))?;
-                        if idx == 0 || idx > elements.len() {
+                        if idx >= elements.len() {
                             return Err(format!("tuple index {} out of bounds", idx));
                         }
-                        (idx - 1, elements[idx - 1].clone())
+                        (idx, elements[idx].clone())
                     }
                     _ => return Err("expected struct or tuple type".to_string()),
                 };
@@ -2255,64 +2270,6 @@ impl<'ctx> Codegen<'ctx> {
             value: loaded,
             storage: Some(backing_alloca),
         })
-    }
-
-    fn codegen_unary(
-        &mut self,
-        operator: UnaryOperator,
-        operand: &Binding<'ctx>,
-    ) -> Result<Binding<'ctx>, String> {
-        if operator == UnaryOperator::Not {
-            let cond_val = match operand {
-                Binding::Union { value, .. } => {
-                    let tag = self
-                        .builder
-                        .build_extract_value(*value, 0, "cond_tag")
-                        .map_err(|e| e.to_string())?
-                        .into_int_value();
-                    self.builder
-                        .build_int_compare(
-                            IntPredicate::EQ,
-                            tag,
-                            self.context.i8_type().const_int(1, false),
-                            "is_true",
-                        )
-                        .map_err(|e| e.to_string())?
-                }
-                Binding::Symbol { name, .. } => {
-                    if name == "true" {
-                        self.context.bool_type().const_int(1, false)
-                    } else {
-                        self.context.bool_type().const_int(0, false)
-                    }
-                }
-                _ => return Err("expected Bool value for 'not'".to_string()),
-            };
-
-            let zero = self.context.bool_type().const_zero();
-            let inverted = self
-                .builder
-                .build_int_compare(IntPredicate::EQ, cond_val, zero, "nottmp")
-                .map_err(|error| error.to_string())?;
-
-            return self.bool_binding(inverted);
-        }
-
-        let ty = self.binding_type(operand)?;
-        let value = self.binding_int_value(operand)?;
-
-        match operator {
-            UnaryOperator::Plus => Ok(Binding::Integer { ty, value }),
-            UnaryOperator::Minus => {
-                let value = self
-                    .builder
-                    .build_int_neg(value, "negtmp")
-                    .map_err(|error| error.to_string())?;
-
-                Ok(Binding::Integer { ty, value })
-            }
-            UnaryOperator::Not => unreachable!(),
-        }
     }
 
     fn codegen_binary(
@@ -3467,7 +3424,34 @@ impl<'ctx> Codegen<'ctx> {
                     });
                 }
 
-                Err(format!("unknown variable '{}'", name))
+                if let Some(func) = self.module.get_function(name) {
+                    let sig = if let Some(sig) = self.extern_functions.get(name) {
+                        Some(sig.clone())
+                    } else if let Some(sig) = self.function_signatures.get(name) {
+                        Some(sig.clone())
+                    } else {
+                        None
+                    };
+                    let fn_ty = if let Some(sig) = &sig {
+                        Type::Function {
+                            parameters: sig.parameters.iter().map(|p| p.ty.clone()).collect(),
+                            return_type: sig.return_type.clone(),
+                            is_variadic: sig.is_variadic,
+                        }
+                    } else {
+                        Type::Function {
+                            parameters: Vec::new(),
+                            return_type: Box::new(Type::Never),
+                            is_variadic: false,
+                        }
+                    };
+                    return Ok(Binding::Pointer {
+                        ty: fn_ty,
+                        value: func.as_global_value().as_pointer_value(),
+                    });
+                }
+
+                Err(format!("unknown variable or function '{}'", name))
             }
             Expression::Index { expression, index } => {
                 let binding = self.codegen_expression(expression)?;

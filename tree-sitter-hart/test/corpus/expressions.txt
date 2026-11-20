@@ -23,7 +23,7 @@ fn test() {
     let casted := el as s64
     let sl := @slice s
     let u := "\u{2714}"
-    obj ..process(1, 2)
+    obj.process(1, 2)
 }
 
 ---

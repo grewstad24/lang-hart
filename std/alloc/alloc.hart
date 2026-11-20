@@ -11,8 +11,8 @@ extern func malloc( size: usize ) -> *mut opaque
 
 meta func contiguous_alloc(num: usize, T: type) -> Slice <T> {
       return {
-            ptr := malloc(num * @sizeOf T) as *T
-            len := num
+            ptr: malloc(num * @sizeOf T),
+            len: num,
       }
 }
 
@@ -24,11 +24,11 @@ extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
 
 
 meta func resize_alloc(T: type, ptr: *T, new_size: usize) -> *T
-{ realloc(ptr, new_size) as *T }
+{ realloc(ptr, new_size) }
 
 
 meta func alloc(T: type) -> *mut T
-{ malloc( @sizeOf T ) as *mut T }
+{ malloc( @sizeOf T ) }
 
 
 def heap_new(a) {

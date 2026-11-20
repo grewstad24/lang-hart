@@ -207,9 +207,6 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
             substitute_expression(target, substitutions);
             substitute_expression(value, substitutions);
         }
-        Expression::Unary { operand, .. } => {
-            substitute_expression(operand, substitutions);
-        }
         Expression::Binary { left, right, .. } => {
             substitute_expression(left, substitutions);
             substitute_expression(right, substitutions);
@@ -365,6 +362,67 @@ pub(crate) struct GeneratedSpecialization {
     specialized_def: Definition,
 }
 
+fn receiver_has_field(
+    receiver: &Expression,
+    field: &str,
+    local_types: &HashMap<String, Type>,
+    scope: &ModuleScope,
+    generated: &[GeneratedSpecialization],
+) -> bool {
+    let unspanned = crate::syntax::unspanned_expression(receiver);
+    if let Expression::Member { .. } = unspanned {
+        if let Some(ty) = infer_expr_type_with_generated(receiver, local_types, scope, generated) {
+            let resolved = resolve_type_alias_deep(&ty, scope);
+            return match resolved {
+                Type::Struct(fields) => fields.iter().any(|f| f.name == field),
+                Type::Pointer { element, .. } => {
+                    let elem_res = resolve_type_alias_deep(&element, scope);
+                    if let Type::Struct(fields) = elem_res {
+                        fields.iter().any(|f| f.name == field)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+        }
+    }
+    if let Some(ty) = infer_expr_type_with_generated(receiver, local_types, scope, generated) {
+        let resolved = resolve_type_alias_deep(&ty, scope);
+        match resolved {
+            Type::Struct(fields) => fields.iter().any(|f| f.name == field),
+            Type::Pointer { element, .. } => {
+                let elem_res = resolve_type_alias_deep(&element, scope);
+                if let Type::Struct(fields) = elem_res {
+                    fields.iter().any(|f| f.name == field)
+                } else {
+                    false
+                }
+            }
+            Type::Tuple(elements) => {
+                if let Ok(idx) = field.parse::<usize>() {
+                    idx < elements.len()
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
+fn is_function_in_scope<V>(
+    name: &str,
+    scope: &ModuleScope,
+    def_templates: &HashMap<String, V>,
+) -> bool {
+    scope.definitions.contains_key(name)
+        || scope.lookup_extern(name).is_some()
+        || def_templates.contains_key(name)
+}
+
 fn scan_and_rewrite_expression(
     expr: &mut Expression,
     scope: &ModuleScope,
@@ -376,6 +434,23 @@ fn scan_and_rewrite_expression(
             scan_and_rewrite_expression(expression, scope, generated, changed)?;
         }
         Expression::Call { target, arguments } => {
+            if let Expression::Member { expression: receiver, field } = target.as_mut() {
+                if is_function_in_scope(field, scope, &HashMap::<String, ()>::new())
+                    && !receiver_has_field(receiver, field, &HashMap::new(), scope, generated)
+                {
+                    let field_name = field.clone();
+                    let recv = *receiver.clone();
+                    let mut new_args = vec![recv];
+                    new_args.append(arguments);
+                    *expr = Expression::Call {
+                        target: Box::new(Expression::Identifier(field_name)),
+                        arguments: new_args,
+                    };
+                    *changed = true;
+                    return scan_and_rewrite_expression(expr, scope, generated, changed);
+                }
+            }
+
             // First rewrite inner arguments and target
             for arg in arguments.iter_mut() {
                 scan_and_rewrite_expression(arg, scope, generated, changed)?;
@@ -467,9 +542,6 @@ fn scan_and_rewrite_expression(
         }
         Expression::Member { expression, .. } => {
             scan_and_rewrite_expression(expression, scope, generated, changed)?;
-        }
-        Expression::Unary { operand, .. } => {
-            scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
         Expression::Binary { left, right, .. } => {
             scan_and_rewrite_expression(left, scope, generated, changed)?;
@@ -783,9 +855,6 @@ fn concretize_expression(
         Expression::Assign { target, value } => {
             concretize_expression(target, templates, generated, changed)?;
             concretize_expression(value, templates, generated, changed)?;
-        }
-        Expression::Unary { operand, .. } => {
-            concretize_expression(operand, templates, generated, changed)?;
         }
         Expression::Binary { left, right, .. } => {
             concretize_expression(left, templates, generated, changed)?;
@@ -1289,13 +1358,7 @@ pub(crate) fn infer_expr_type_with_generated(
                         fields.iter().find(|f| f.name == *field).map(|f| f.ty.clone())
                     }
                     Type::Tuple(elements) => {
-                        field.parse::<usize>().ok().and_then(|idx| {
-                            if idx > 0 && idx <= elements.len() {
-                                elements.get(idx - 1).cloned()
-                            } else {
-                                elements.get(idx).cloned()
-                            }
-                        })
+                        field.parse::<usize>().ok().and_then(|idx| elements.get(idx).cloned())
                     }
                     Type::GenericInstance { name, type_arguments } if name == "Slice" => {
                         if field == "len" {
@@ -1348,13 +1411,6 @@ pub(crate) fn infer_expr_type_with_generated(
         }
         Expression::Binary { left, .. } => infer_expr_type_with_generated(left, local_types, scope, generated),
         Expression::Comparison { .. } => Some(Type::Alias("Bool".to_string())),
-        Expression::Unary { operator, operand } => {
-            if operator == &crate::syntax::UnaryOperator::Not {
-                Some(Type::Alias("Bool".to_string()))
-            } else {
-                infer_expr_type_with_generated(operand, local_types, scope, generated)
-            }
-        }
         Expression::Block(exprs) => {
             let mut block_locals = local_types.clone();
             let mut returned_type = None;
@@ -1461,6 +1517,12 @@ pub(crate) fn infer_expr_type_with_generated(
                     return Some(*ext.item.signature.return_type.clone());
                 }
             }
+            if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
+                let resolved = resolve_type_alias_deep(&target_ty, scope);
+                if let Type::Function { return_type, .. } = resolved {
+                    return Some(*return_type);
+                }
+            }
             None
         }
         _ => None,
@@ -1560,9 +1622,6 @@ fn resolve_typeof_in_expr(
         }
         Expression::Return(e) | Expression::Discard(e) | Expression::Slice(e) => {
             resolve_typeof_in_expr(e, local_types, scope);
-        }
-        Expression::Unary { operand, .. } => {
-            resolve_typeof_in_expr(operand, local_types, scope);
         }
         Expression::Binary { left, right, .. } | Expression::Comparison { left, right, .. } => {
             resolve_typeof_in_expr(left, local_types, scope);
@@ -1718,6 +1777,23 @@ fn scan_and_monomorphize_def(
             *local_types = orig_locals;
         }
         Expression::Call { target, arguments } => {
+            if let Expression::Member { expression: receiver, field } = target.as_mut() {
+                if is_function_in_scope(field, scope, def_templates)
+                    && !receiver_has_field(receiver, field, local_types, scope, generated)
+                {
+                    let field_name = field.clone();
+                    let recv = *receiver.clone();
+                    let mut new_args = vec![recv];
+                    new_args.append(arguments);
+                    *expr = Expression::Call {
+                        target: Box::new(Expression::Identifier(field_name)),
+                        arguments: new_args,
+                    };
+                    *changed = true;
+                    return scan_and_monomorphize_def(expr, scope, def_templates, local_types, generated, changed);
+                }
+            }
+
             for arg in arguments.iter_mut() {
                 scan_and_monomorphize_def(arg, scope, def_templates, local_types, generated, changed)?;
             }
@@ -1908,9 +1984,6 @@ fn scan_and_monomorphize_def(
                 scan_and_monomorphize_def(&mut arm.body, scope, def_templates, local_types, generated, changed)?;
                 *local_types = orig_locals;
             }
-        }
-        Expression::Unary { operand, .. } => {
-            scan_and_monomorphize_def(operand, scope, def_templates, local_types, generated, changed)?;
         }
         Expression::Binary { left, right, .. } | Expression::Comparison { left, right, .. } => {
             scan_and_monomorphize_def(left, scope, def_templates, local_types, generated, changed)?;

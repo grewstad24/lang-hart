@@ -1,0 +1,33 @@
+export { not, and, or, xor, nand, nor, xnor, neg } to .
+
+def neg(x) { 0 - x }
+
+def not(x) {
+      match x {
+            :true => :false,
+            :false => :true,
+      }}
+
+def and(a, b) {
+      match a {
+            :true => b,
+            :false => :false,
+      }}
+
+def or(a, b) {
+      match a {
+            :true => :true,
+            :false => b,
+      }}
+
+def xor(a, b) {
+      match a {
+            :true => not(b),
+            :false => b,
+      }}
+
+def nand(a, b) { not(and(a, b)) }
+
+def nor(a, b) { not(or(a, b)) }
+
+def xnor(a, b) { not(xor(a, b)) }

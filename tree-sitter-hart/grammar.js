@@ -21,7 +21,6 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$.argument_list, $.tuple_literal],
-    [$.address_of_expression],
     [$.mut_declaration, $.assignment_expression],
   ],
 
@@ -41,7 +40,7 @@ module.exports = grammar({
     ),
 
     const_declaration: $ => prec.right(PREC.ASSIGN, seq(
-      choice('const', 'val'),
+      'const',
       field('name', $.identifier),
       optional(seq(':', field('type', $._type))),
       ':=',
@@ -122,7 +121,6 @@ module.exports = grammar({
 
     // Type Definitions
     type_definition: $ => seq(
-      optional('meta'),
       'type',
       field('name', $.type_identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -140,7 +138,7 @@ module.exports = grammar({
     // Functions
     function_definition: $ => seq(
       optional('meta'),
-      choice('func', 'fn'),
+      'func',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
       optional(seq('->', field('return_type', $._type))),
@@ -169,7 +167,7 @@ module.exports = grammar({
 
     extern_function_declaration: $ => seq(
       'extern',
-      choice('func', 'fn'),
+      'func',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
       optional(seq('->', field('return_type', $._type)))
@@ -206,7 +204,7 @@ module.exports = grammar({
     ),
 
     function_type: $ => seq(
-      choice('func', 'fn'),
+      'func',
       '(',
       optional(seq(
         commaSep(choice(
@@ -298,7 +296,6 @@ module.exports = grammar({
       $.const_declaration,
       $.mut_declaration,
       $.binary_expression,
-      $.unary_expression,
       $.cast_expression,
       $.call_expression,
       $.method_call_expression,
@@ -357,11 +354,6 @@ module.exports = grammar({
       ));
     },
 
-    unary_expression: $ => prec(PREC.UNARY, seq(
-      field('operator', choice('+', '-', 'not')),
-      field('operand', $._expression)
-    )),
-
     cast_expression: $ => prec.left(PREC.CAST, seq(
       field('expression', $._expression),
       'as',
@@ -380,19 +372,10 @@ module.exports = grammar({
       '*'
     )),
 
-    address_of_expression: $ => choice(
-      prec(PREC.POSTFIX, seq(
-        field('expression', $._expression),
-        '.',
-        '&',
-        optional('mut')
-      )),
-      prec(PREC.UNARY, seq(
-        '&',
-        optional('mut'),
-        field('expression', $._expression)
-      ))
-    ),
+    address_of_expression: $ => prec(PREC.POSTFIX, seq(
+      field('expression', $._expression),
+      choice(seq('.', '&mut'), seq('.', '&'))
+    )),
 
     index_expression: $ => prec(PREC.POSTFIX, seq(
       field('expression', $._expression),
@@ -406,9 +389,9 @@ module.exports = grammar({
       field('arguments', $.argument_list)
     )),
 
-    method_call_expression: $ => prec(PREC.CALL, seq(
+    method_call_expression: $ => prec(PREC.CALL + 1, seq(
       field('receiver', $._expression),
-      '..',
+      '.',
       field('method', alias($.identifier, $.function_identifier)),
       field('arguments', $.argument_list)
     )),
@@ -472,16 +455,14 @@ module.exports = grammar({
       'repeat',
       field('count', $._expression),
       optional(seq('using', field('binder', $.identifier))),
-      optional('=>'),
-      field('body', $._expression)
+      field('body', $.block)
     )),
 
     for_expression: $ => prec.right(seq(
       'for',
       field('iterable', $._expression),
       optional(seq('using', field('binder', $.identifier))),
-      optional('=>'),
-      field('body', $._expression)
+      field('body', $.block)
     )),
 
     return_expression: $ => prec.right(seq(
@@ -530,19 +511,10 @@ module.exports = grammar({
       ')'
     )),
 
-    struct_literal: $ => prec(PREC.PRIMARY, choice(
-      seq(
-        '{',
-        repeat1(seq($.struct_field_init, optional(','))),
-        '}'
-      ),
-      seq(
-        '@struct',
-        choice(
-          seq('{', repeat(seq($.struct_field_init, optional(','))), '}'),
-          seq('(', repeat(seq($.struct_field_init, optional(','))), ')')
-        )
-      )
+    struct_literal: $ => prec(PREC.PRIMARY, seq(
+      '{',
+      repeat1(seq($.struct_field_init, optional(','))),
+      '}'
     )),
 
     tuple_literal: $ => choice(
@@ -558,7 +530,7 @@ module.exports = grammar({
 
     struct_field_init: $ => prec(PREC.ASSIGN + 1, seq(
       field('name', $.identifier),
-      ':=',
+      ':',
       field('value', $._expression)
     )),
 

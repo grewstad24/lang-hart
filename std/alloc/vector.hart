@@ -1,6 +1,6 @@
 mod alloc
 
-meta type Vector <T> := {
+type Vector <T> := {
       arr: Slice <T>
       capacity: usize
 }
@@ -11,8 +11,8 @@ Vector<T> | :zeroLengthError
       return if {
             len = 0 => :zeroLengthError
             else => {
-                  arr := contiguous_alloc(len * 2, type T)
-                  capacity := len * 2
+                  arr: contiguous_alloc(len * 2, type T),
+                  capacity: len * 2,
             }
       }
 }
@@ -20,7 +20,7 @@ Vector<T> | :zeroLengthError
 meta func resize_vector( T: type, vec: *mut Vector <T>, new_len: usize ) -> :none {
       if {
             vec.*.capacity < new_len => {
-                  vec.*.capacity := new_len * 2 as usize
+                  vec.*.capacity := new_len * 2
                   vec.*.arr.ptr :=
                         resize_alloc(type T, vec.*.arr.ptr, vec.*.capacity * @sizeOf T)
             }

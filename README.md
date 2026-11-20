@@ -1,36 +1,12 @@
-# Hart
+Hart: Modern and practical development for fast and portable programs
 
-## What is this project?
-
-Hart is a compiled, general-purpose programming language focused on combining portable execution, dynamic ergonomics and simple syntax found in interpreted languages with the performance and safety found in systems languages.
-
-## Why does it exist?
-
-Hart was created to remove the choice between performance and ergonomics when writing a program. It achieves many features of interpreted languages like "Build Once, Run Anywhere" and dynamic-ish typing while keeping a solid performance and compile-time safety profile.
-
-## What can it do?
-
-- Hart compiles code to the APE format, leveraging the Cosmopolitan libc toolchain to allow a program to be compiled once and be run on any supported operating system and CPU architecture.
-
-- Hart uses lazy function specialisation to provide ergonomics similar to dynamic typing.
-  ```
-  import { .print }
-
-  def add(a, b) { a + b }
-
-  func main() -> :none {
-        println(add(1, 2))
-        println(add(1 as u16, 2 as u16))
-  }
-  ```
-  The add function automatically specialises to two concrete implementations for each set of types. Output:
-  ```
-  3
-  3
-  ```
+## Why choose Hart?
+- Performance: Hart produces compiled binaries without a garbage collector or managed runtime, and compiles using LLVM. 
+- Reliability: Hart features a powerful static type system and an exception-less error model.
+- Portability: Hart leverages the Cosmopolitan toolchain to compile code to the APE format, allowing a single binary to run on any supported OS and CPU without a virtual machine.
+- Productivity: Hart has a small, uniform and consistent syntax combined with predictable semantics.
 
 ## How do I install and use it?
-
 Hart is not currently in a usable or viable state. It is missing a large amount of basic functionality.
 
 ## How can I contribute?

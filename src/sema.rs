@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
     MatchArm, NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit,
-    StructFieldType, Type, TypeAlias, UnaryOperator, format_error, unspanned_expression,
+    StructFieldType, Type, TypeAlias, format_error, unspanned_expression,
     unspanned_expression_mut,
 };
 
@@ -902,19 +902,25 @@ impl<'a> Checker<'a> {
         Ok(struct_fields)
     }
 
-    fn coerce_expression_to_type(
-        &mut self,
+    /// Enforced semantics: whenever there is a type mismatch, and there is a supported cast
+    /// between the mismatched type and the expected type where only one possible cast would
+    /// make it correct, that cast will be inserted implicitly.
+    pub fn try_coerce_unambiguous(
+        &self,
         expr: &mut Expression,
         actual_ty: &Type,
         expected_ty: &Type,
-    ) -> Result<Type, String> {
+    ) -> Result<Option<Type>, String> {
         let res_actual = self.resolve_type(actual_ty)?;
         let res_expected = self.resolve_type(expected_ty)?;
 
         if res_actual == res_expected {
-            return Ok(res_actual);
+            return Ok(Some(res_actual));
         }
 
+        let aliases = self.alias_targets();
+
+        // 1. Literal integer to expected integer type
         if matches!(unspanned_expression(expr), Expression::Integer(_))
             && Self::is_integer_type(&res_actual)
             && Self::is_integer_type(&res_expected)
@@ -924,37 +930,170 @@ impl<'a> Checker<'a> {
                 expression: Box::new(orig),
                 ty: expected_ty.clone(),
             };
-            return Ok(res_expected);
+            return Ok(Some(res_expected));
         }
 
-        if Self::types_compatible_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
+        // 2. Types compatible with aliases
+        if Self::types_compatible_with_aliases(&res_actual, &res_expected, &aliases) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
                 ty: expected_ty.clone(),
             };
-            return Ok(res_expected);
+            return Ok(Some(res_expected));
         }
 
+        // 3. Expected is a union: if exactly one variant is supported, insert cast
         if let Type::Union(target_vars) = &res_expected {
-            if Self::castable_union_variant_with_aliases(&res_actual, target_vars, &self.alias_targets()).is_some() {
+            if let Some(_variant_idx) = Self::castable_union_variant_with_aliases(&res_actual, target_vars, &aliases) {
                 let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
                 *expr = Expression::Cast {
                     expression: Box::new(orig),
                     ty: expected_ty.clone(),
                 };
-                return Ok(res_expected);
+                return Ok(Some(res_expected));
             }
-        } else if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &self.alias_targets()) {
+            return Ok(None);
+        }
+
+        // 4. Expected is a single concrete type (unambiguous target):
+        // If there is a supported cast between the mismatched type and the expected type,
+        // only this single cast makes it correct. Insert it implicitly.
+        if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &aliases) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
                 ty: expected_ty.clone(),
             };
-            return Ok(res_expected);
+            return Ok(Some(res_expected));
+        }
+
+        Ok(None)
+    }
+
+    fn coerce_expression_to_type(
+        &mut self,
+        expr: &mut Expression,
+        actual_ty: &Type,
+        expected_ty: &Type,
+    ) -> Result<Type, String> {
+        let res_actual = self.resolve_type(actual_ty)?;
+        let res_expected = self.resolve_type(expected_ty)?;
+
+        if let Some(coerced) = self.try_coerce_unambiguous(expr, &res_actual, &res_expected)? {
+            return Ok(coerced);
         }
 
         Ok(res_actual)
+    }
+
+    fn coerce_binary_operands_unambiguous(
+        &self,
+        left: &mut Expression,
+        left_type: &mut Type,
+        right: &mut Expression,
+        right_type: &mut Type,
+    ) -> bool {
+        if left_type == right_type {
+            return true;
+        }
+
+        let aliases = self.alias_targets();
+
+        let right_is_lit = matches!(unspanned_expression(right), Expression::Integer(_));
+        let left_is_lit = matches!(unspanned_expression(left), Expression::Integer(_));
+
+        if right_is_lit && !left_is_lit && Self::is_supported_cast_with_aliases(right_type, left_type, &aliases) {
+            let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
+            *right = Expression::Cast {
+                expression: Box::new(orig),
+                ty: left_type.clone(),
+            };
+            *right_type = left_type.clone();
+            return true;
+        }
+
+        if left_is_lit && !right_is_lit && Self::is_supported_cast_with_aliases(left_type, right_type, &aliases) {
+            let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
+            *left = Expression::Cast {
+                expression: Box::new(orig),
+                ty: right_type.clone(),
+            };
+            *left_type = right_type.clone();
+            return true;
+        }
+
+        let can_cast_left_to_right = Self::is_supported_cast_with_aliases(left_type, right_type, &aliases);
+        let can_cast_right_to_left = Self::is_supported_cast_with_aliases(right_type, left_type, &aliases);
+
+        if can_cast_left_to_right && !can_cast_right_to_left {
+            let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
+            *left = Expression::Cast {
+                expression: Box::new(orig),
+                ty: right_type.clone(),
+            };
+            *left_type = right_type.clone();
+            return true;
+        }
+
+        if can_cast_right_to_left && !can_cast_left_to_right {
+            let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
+            *right = Expression::Cast {
+                expression: Box::new(orig),
+                ty: left_type.clone(),
+            };
+            *right_type = left_type.clone();
+            return true;
+        }
+
+        if Self::is_integer_type(left_type) && Self::is_integer_type(right_type) {
+            let w_left = Self::integer_bit_width(left_type);
+            let w_right = Self::integer_bit_width(right_type);
+            if let (Some(wl), Some(wr)) = (w_left, w_right) {
+                if wl < wr {
+                    let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
+                    *left = Expression::Cast {
+                        expression: Box::new(orig),
+                        ty: right_type.clone(),
+                    };
+                    *left_type = right_type.clone();
+                    return true;
+                } else if wr < wl {
+                    let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
+                    *right = Expression::Cast {
+                        expression: Box::new(orig),
+                        ty: left_type.clone(),
+                    };
+                    *right_type = left_type.clone();
+                    return true;
+                }
+            }
+        }
+
+        if matches!(left_type, Type::Pointer { .. }) && matches!(right_type, Type::Pointer { .. }) {
+            let left_comp = Self::types_compatible_with_aliases(left_type, right_type, &aliases);
+            let right_comp = Self::types_compatible_with_aliases(right_type, left_type, &aliases);
+            if left_comp && !right_comp {
+                let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
+                *left = Expression::Cast {
+                    expression: Box::new(orig),
+                    ty: right_type.clone(),
+                };
+                *left_type = right_type.clone();
+                return true;
+            }
+            if right_comp && !left_comp {
+                let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
+                *right = Expression::Cast {
+                    expression: Box::new(orig),
+                    ty: left_type.clone(),
+                };
+                *right_type = left_type.clone();
+                return true;
+            }
+        }
+
+        false
     }
 
     fn predeclare_scope_signatures(&mut self) {
@@ -1710,17 +1849,17 @@ impl<'a> Checker<'a> {
                         Type::Tuple(elements) => {
                             let idx: usize = field.parse().map_err(|_| {
                                 format!(
-                                    "{}: error: tuple access expects positive integer index, found '{}'",
+                                    "{}: error: tuple access expects unsigned integer index, found '{}'",
                                     self.current_file_path, field
                                 )
                             })?;
-                            if idx == 0 || idx > elements.len() {
+                            if idx >= elements.len() {
                                 return Err(format!(
                                     "{}: error: tuple index {} out of bounds for tuple of length {}",
                                     self.current_file_path, idx, elements.len()
                                 ));
                             }
-                            self.resolve_type(&elements[idx - 1])?
+                            self.resolve_type(&elements[idx])?
                         }
                         other => {
                             return Err(format!(
@@ -1735,18 +1874,10 @@ impl<'a> Checker<'a> {
                     let mut val_ty = self.type_of_expression(value)?;
                     val_ty = self.coerce_expression_to_type(value, &val_ty, &target_ty)?;
                     if !self.are_types_compatible(&val_ty, &target_ty)? {
-                        if Self::is_supported_cast_with_aliases(&val_ty, &target_ty, &self.alias_targets()) {
-                            let orig = std::mem::replace(value.as_mut(), Expression::Symbol("false".to_string()));
-                            *value = Box::new(Expression::Cast {
-                                expression: Box::new(orig),
-                                ty: target_ty.clone(),
-                            });
-                        } else {
-                            return Err(format!(
-                                "{}: error: type mismatch assigning to field '{}': expected {}, found {}",
-                                self.current_file_path, field, target_ty, val_ty
-                            ));
-                        }
+                        return Err(format!(
+                            "{}: error: type mismatch assigning to field '{}': expected {}, found {}",
+                            self.current_file_path, field, target_ty, val_ty
+                        ));
                     }
                     Ok(Type::Symbol("none".to_string()))
                 }
@@ -2149,29 +2280,6 @@ impl<'a> Checker<'a> {
                 })
             }
 
-            Expression::Unary { operator, operand } => {
-                let raw_ty = self.type_of_expression(operand)?;
-                let ty = self.resolve_type(&raw_ty)?;
-
-                if *operator == UnaryOperator::Not {
-                    if !self.is_bool_type(&ty)? {
-                        return Err(format!(
-                            "{}: error: unary operator 'not' requires a boolean operand (:true | :false), found {}",
-                            self.current_file_path, ty
-                        ));
-                    }
-                    return Ok(Self::bool_type());
-                }
-
-                if !Self::is_integer_type(&ty) {
-                    return Err(format!(
-                        "{}: error: unary operator {} requires an integer operand, found {}",
-                        self.current_file_path, operator, ty
-                    ));
-                }
-                Ok(ty)
-            }
-
             Expression::Binary {
                 left,
                 operator,
@@ -2190,21 +2298,12 @@ impl<'a> Checker<'a> {
                 }
 
                 if left_type != right_type {
-                    if matches!(unspanned_expression(right), Expression::Integer(_)) {
-                        let orig = std::mem::replace(right.as_mut(), Expression::Symbol("false".to_string()));
-                        *right = Box::new(Expression::Cast {
-                            expression: Box::new(orig),
-                            ty: left_type.clone(),
-                        });
-                        right_type = left_type.clone();
-                    } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
-                        let orig = std::mem::replace(left.as_mut(), Expression::Symbol("false".to_string()));
-                        *left = Box::new(Expression::Cast {
-                            expression: Box::new(orig),
-                            ty: right_type.clone(),
-                        });
-                        left_type = right_type.clone();
-                    }
+                    self.coerce_binary_operands_unambiguous(
+                        left.as_mut(),
+                        &mut left_type,
+                        right.as_mut(),
+                        &mut right_type,
+                    );
                 }
 
                 if left_type != right_type {
@@ -2284,23 +2383,12 @@ impl<'a> Checker<'a> {
                 }
 
                 if left_type != right_type {
-                    if Self::is_integer_type(&left_type) && Self::is_integer_type(&right_type) {
-                        if matches!(unspanned_expression(right), Expression::Integer(_)) {
-                            let orig = std::mem::replace(right.as_mut(), Expression::Symbol("false".to_string()));
-                            *right = Box::new(Expression::Cast {
-                                expression: Box::new(orig),
-                                ty: left_type.clone(),
-                            });
-                            right_type = left_type.clone();
-                        } else if matches!(unspanned_expression(left), Expression::Integer(_)) {
-                            let orig = std::mem::replace(left.as_mut(), Expression::Symbol("false".to_string()));
-                            *left = Box::new(Expression::Cast {
-                                expression: Box::new(orig),
-                                ty: right_type.clone(),
-                            });
-                            left_type = right_type.clone();
-                        }
-                    }
+                    self.coerce_binary_operands_unambiguous(
+                        left.as_mut(),
+                        &mut left_type,
+                        right.as_mut(),
+                        &mut right_type,
+                    );
                 }
 
                 if left_type != right_type {
@@ -2424,6 +2512,56 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Call { target, arguments } => {
+                if let Expression::Member { expression: receiver, field } = target.as_mut() {
+                    let is_fn_in_scope = self.scope.definitions.contains_key(field)
+                        || self.scope.lookup_extern(field).is_some()
+                        || self.resolved_definitions.contains_key(field);
+
+                    let has_field = if let Ok(raw_recv_ty) = self.type_of_expression(receiver) {
+                        if let Ok(res_recv_ty) = self.resolve_type(&raw_recv_ty) {
+                            match res_recv_ty {
+                                Type::Struct(flds) => flds.iter().any(|f| f.name == *field),
+                                Type::Pointer { element, .. } => {
+                                    if let Ok(elem_ty) = self.resolve_type(&element) {
+                                        if let Type::Struct(flds) = elem_ty {
+                                            flds.iter().any(|f| f.name == *field)
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                }
+                                Type::Tuple(elements) => {
+                                    if let Ok(idx) = field.parse::<usize>() {
+                                        idx < elements.len()
+                                    } else {
+                                        false
+                                    }
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_fn_in_scope && !has_field {
+                        // UFCS fallback: receiver.method(args...) -> method(receiver, args...)
+                        let field_name = field.clone();
+                        let recv = *receiver.clone();
+                        let mut new_args = vec![recv];
+                        new_args.append(arguments);
+                        *expression = Expression::Call {
+                            target: Box::new(Expression::Identifier(field_name)),
+                            arguments: new_args,
+                        };
+                        return self.type_of_expression(expression);
+                    }
+                }
+
                 let raw_target_ty = self.type_of_expression(target)?;
                 let target_type = self.resolve_type(&raw_target_ty)?;
 
@@ -2518,6 +2656,7 @@ impl<'a> Checker<'a> {
                         }
                         Ok(*element)
                     }
+                    Type::Function { .. } => Ok(raw_pointer_type),
                     other => Err(format!(
                         "{}: error: cannot dereference non-pointer type {}",
                         self.current_file_path, other
@@ -2543,17 +2682,17 @@ impl<'a> Checker<'a> {
                     Type::Tuple(elements) => {
                         let idx: usize = field.parse().map_err(|_| {
                             format!(
-                                "{}: error: tuple access expects positive integer index, found '{}'",
+                                "{}: error: tuple access expects unsigned integer index, found '{}'",
                                 self.current_file_path, field
                             )
                         })?;
-                        if idx == 0 || idx > elements.len() {
+                        if idx >= elements.len() {
                             return Err(format!(
                                 "{}: error: tuple index {} out of bounds for tuple of length {}",
                                 self.current_file_path, idx, elements.len()
                             ));
                         }
-                        Ok(elements[idx - 1].clone())
+                        Ok(elements[idx].clone())
                     }
                     Type::Array { element, .. } => match field.as_str() {
                         "ptr" => Ok(Type::Pointer {
@@ -2603,10 +2742,26 @@ impl<'a> Checker<'a> {
                         if let Some(info) = self.lookup_binding(name) {
                             info.ty
                         } else if let Some(ty) = self.resolved_definitions.get(name) {
-                            ty.clone()
+                            return Ok(ty.clone());
+                        } else if self.scope.definitions.contains_key(name) {
+                            let def_ty = self.resolve_definition(name)?;
+                            return Ok(def_ty);
+                        } else if let Some(ext) = self.scope.lookup_extern(name) {
+                            let param_types = ext
+                                .signature
+                                .parameters
+                                .iter()
+                                .map(|p| self.resolve_type(&p.ty))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let ret_ty = self.resolve_type(ext.signature.return_type.as_ref())?;
+                            return Ok(Type::Function {
+                                parameters: param_types,
+                                return_type: Box::new(ret_ty),
+                                is_variadic: ext.signature.is_variadic,
+                            });
                         } else {
                             return Err(format!(
-                                "{}: error: cannot take address of unknown variable '{}'",
+                                "{}: error: cannot take address of unknown variable or function '{}'",
                                 self.current_file_path, name
                             ));
                         }
@@ -2974,6 +3129,16 @@ impl<'a> Checker<'a> {
         )
     }
 
+    pub fn integer_bit_width(ty: &Type) -> Option<u32> {
+        match ty {
+            Type::U8 => Some(8),
+            Type::S16 | Type::U16 => Some(16),
+            Type::S32 | Type::U32 => Some(32),
+            Type::S64 | Type::U64 | Type::USize | Type::SSize => Some(64),
+            _ => None,
+        }
+    }
+
     pub fn is_supported_cast(source: &Type, target: &Type) -> bool {
         Self::is_supported_cast_with_aliases(source, target, &HashMap::new())
     }
@@ -3049,14 +3214,15 @@ impl<'a> Checker<'a> {
 
             match (source, target) {
                 (Type::Struct(source_fields), Type::Struct(target_fields)) => {
-                    return source_fields.len() == target_fields.len()
-                        && source_fields
+                    if source_fields.len() != target_fields.len() {
+                        return false;
+                    }
+                    return target_fields.iter().all(|target| {
+                        source_fields
                             .iter()
-                            .zip(target_fields)
-                            .all(|(source, target)| {
-                                source.name == target.name
-                                    && supported(&source.ty, &target.ty, aliases, visited)
-                            });
+                            .find(|source| source.name == target.name)
+                            .is_some_and(|source| supported(&source.ty, &target.ty, aliases, visited))
+                    });
                 }
                 (Type::Tuple(source_elems), Type::Tuple(target_elems)) => {
                     return source_elems.len() == target_elems.len()

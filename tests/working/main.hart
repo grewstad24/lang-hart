@@ -1,9 +1,35 @@
 import { .print, .heap, .reman, .reman.heap }
 
+func double_num(n: s32) -> s32 {
+    return n + n
+}
+
+func apply_fn(x: s32, f: func(s32) -> s32) -> s32 {
+    return f(x)
+}
+
+type Runner := {
+    step: func(s32) -> s32
+}
+
 func main() -> :none {
       r := rcMalloc(64 as usize)
       rcShare(r)
       rcDrop(r)
       rcDrop(r)
+
+      # UFCS chaining with '.'
+      val := 10.neg().neg()
+      println(val)
+
+      # Higher-order function passed directly, called directly with f(x)
+      res := apply_fn(21, double_num)
+      println(res)
+
+      # Struct field holding function pointer: field has higher priority than UFCS
+      mut runner: Runner := { step: double_num }
+      res2 := runner.step(25)
+      println(res2)
+
       print("Hello, World!")
 }

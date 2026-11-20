@@ -17,33 +17,33 @@ const styleReset := "\u{1B}[0m"
 
 def pprint_bool(z) {
       match z {
-            :true => @slice [ styleGreen, "✔ true", styleReset ] ..print()
-            :false => @slice [ styleRed, "✘ false", styleReset ] ..print()
+            :true => @slice [ styleGreen, "✔ true", styleReset ].print()
+            :false => @slice [ styleRed, "✘ false", styleReset ].print()
       }
 }
 
 def pprint_atom(z, err) {
       match err {
-            :false => @slice [ styleMagenta, styleItalic, styleBold, z.str, styleReset ] ..print()
-            :true => @slice [ styleBrightRed, styleItalic, styleBold, z.str, styleReset ] ..print()
+            :false => @slice [ styleMagenta, styleItalic, styleBold, z.str, styleReset ].print()
+            :true => @slice [ styleBrightRed, styleItalic, styleBold, z.str, styleReset ].print()
       }
 }
 
 def pprint_string(z) {
-      @slice [ styleYellow, "'", z, "'", styleReset ] ..print()
+      @slice [ styleYellow, "'", z, "'", styleReset ].print()
 }
 
 def pprint_integer(z) {
-      @slice [ styleCyan, z, styleReset ] ..print()
+      @slice [ styleCyan, z, styleReset ].print()
 }
 
 def pprint_voidance(z, indent_level) {
       match z using v {
-            :none => @slice [ styleDim, "∅ none", styleReset ] ..print()
-            :error => @slice [ styleBrightRed, "‼ error", styleReset ] ..print()
+            :none => @slice [ styleDim, "∅ none", styleReset ].print()
+            :error => @slice [ styleBrightRed, "‼ error", styleReset ].print()
             ErrorAndReason => {
-                  @slice [ styleBrightRed, "‼ error ", styleReset] ..print()
-                  internal_pprint(v.2, indent_level + 1, :true)
+                  @slice [ styleBrightRed, "‼ error ", styleReset].print()
+                  internal_pprint(v.1, indent_level + 1, :true)
             }
       }
 }
@@ -57,7 +57,7 @@ def pprint_array( z, indent_level, err ) {
             switch indent_level {
                   0 => :none
                   else => {
-                        repeat indent_level print(( :softTab, 6 as u32 ))
+                        repeat indent_level { print(( :softTab, 6 )) }
                         match err {
                               :false => print("• ")
                               else => print(@slice [styleBrightRed, "• ", styleReset])
@@ -88,7 +88,7 @@ def pprint_record( item, indent_level, err ) {
       }
       rec := item
       repeat rec.*.len using i {
-            repeat indent_level print(( :softTab, 6 as u32 ))
+            repeat indent_level { print(( :softTab, 6 )) }
             k := rec.*.key[i]
             v := rec.*.val[i]
             match err {

@@ -25,7 +25,7 @@ type Bool := :true | :false
 
 type Atom := { str: String }
 
-meta type Slice <T> := {
+type Slice <T> := {
       ptr: *T
       len: usize
 }

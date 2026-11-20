@@ -14,25 +14,25 @@ type RcBlock := {
 
 def rcNew(value, sink_fn: func(*opaque) -> :none) {
       ptr := alloc(type RcBlock)
-      ptr.*.refcount := 1 as usize
+      ptr.*.refcount := 1
       ptr.*.sink := sink_fn
-      ptr.*.value := value as *opaque
+      ptr.*.value := value
       return ptr
 }
 
 def rcShare(rc) {
-      rc.*.refcount := rc.*.refcount + 1 as usize
+      rc.*.refcount := rc.*.refcount + 1
       return rc
 }
 
 def rcDrop(rc) {
       if {
-            rc.*.refcount <= 1 as usize => {
+            rc.*.refcount <= 1 => {
                   rc.*.sink(rc.*.value)
-                  free(rc as *opaque)
+                  free(rc)
             }
             else => {
-                  rc.*.refcount := rc.*.refcount - 1 as usize
+                  rc.*.refcount := rc.*.refcount - 1
             }
       }
 }

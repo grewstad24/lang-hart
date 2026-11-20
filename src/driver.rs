@@ -304,10 +304,6 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Tuple(resolved))
         }
-        Expression::Unary { operator, operand } => Ok(Expression::Unary {
-            operator: operator.clone(),
-            operand: Box::new(canonicalize_expression(operand, checker)?),
-        }),
         Expression::Binary {
             left,
             operator,

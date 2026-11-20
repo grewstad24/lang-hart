@@ -7,9 +7,9 @@ decl mod reman_heap {
 
 def rcHeapNew(value) {
       ptr := alloc(type RcBlock)
-      ptr.*.refcount := 1 as usize
+      ptr.*.refcount := 1
       ptr.*.sink := free
-      ptr.*.value := value as *opaque
+      ptr.*.value := value
       return ptr
 }
 
