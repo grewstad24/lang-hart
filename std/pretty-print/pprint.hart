@@ -5,6 +5,7 @@ decl mod pprint {
 
 def pprint( item ) {
       internal_pprint(item, 0, :false)
+      print(:nl)
 }
 
 def internal_pprint( item, indent_level, err ) {

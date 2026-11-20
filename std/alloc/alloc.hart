@@ -1,38 +1,12 @@
 decl mod alloc {
       export {
-            { alloc, heap_new, resize_alloc, alloc_vector, Vector, resize_vector, free, malloc } to .heap,
+            { free, malloc, realloc, Vector } to .heap,
             { malloc, free, realloc } to .heap.raw_libc
       }
 }
 
-
 extern func malloc( size: usize ) -> *mut opaque
-
-
-meta func contiguous_alloc(num: usize, T: type) -> Slice <T> {
-      return {
-            ptr: malloc(num * @sizeOf T),
-            len: num,
-      }
-}
-
 
 extern func free(ptr: *opaque) -> :none
 
-
 extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
-
-
-meta func resize_alloc(T: type, ptr: *T, new_size: usize) -> *T
-{ realloc(ptr, new_size) }
-
-
-meta func alloc(T: type) -> *mut T
-{ malloc( @sizeOf T ) }
-
-
-def heap_new(a) {
-      ptr := alloc(@typeOf a)
-      ptr.* := a
-      return ptr
-}

@@ -82,7 +82,6 @@ pub struct StructFieldInit {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Opaque,
-    MetaType,
     Never,
     S16,
     S32,
@@ -156,7 +155,6 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Type::Opaque => write!(f, "opaque"),
-            Type::MetaType => write!(f, "type"),
             Type::Never => write!(f, "never"),
             Type::S16 => write!(f, "s16"),
             Type::S32 => write!(f, "s32"),
@@ -364,10 +362,8 @@ impl fmt::Display for Expression {
             Expression::Assign { target, value } => write!(f, "{} = {}", target, value),
             Expression::Repeat { count, .. } => write!(f, "repeat {}", count),
             Expression::For { iterable, .. } => write!(f, "for {}", iterable),
-            Expression::SizeOf(ty) => write!(f, "@sizeOf {}", ty),
-            Expression::TypeOf(expr) => write!(f, "@typeOf {}", expr),
+            Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
             Expression::Slice(expr) => write!(f, "@slice {}", expr),
-            Expression::Type(ty) => write!(f, "type {}", ty),
         }
     }
 }
@@ -510,10 +506,8 @@ pub enum Expression {
         binder: Option<String>,
         body: Box<Expression>,
     },
-    SizeOf(Type),
-    TypeOf(Box<Expression>),
+    SizeOf(Box<Expression>),
     Slice(Box<Expression>),
-    Type(Type),
 }
 
 pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
@@ -541,7 +535,6 @@ pub struct Definition {
     pub name: String,
     pub signature: Option<Signature>,
     pub value: Expression,
-    pub is_meta: bool,
     pub is_def: bool,
 }
 
@@ -674,7 +667,6 @@ pub enum Token {
     As,
     Repeat,
     For,
-    Meta,
     Mut,
     Decl,
     Mod,
@@ -754,7 +746,6 @@ impl fmt::Display for Token {
             Token::As => write!(f, "'as'"),
             Token::Repeat => write!(f, "'repeat'"),
             Token::For => write!(f, "'for'"),
-            Token::Meta => write!(f, "'meta'"),
             Token::Mut => write!(f, "'mut'"),
             Token::Decl => write!(f, "'decl'"),
             Token::Mod => write!(f, "'mod'"),
@@ -1139,7 +1130,6 @@ impl Lexer {
             "ssize" => Token::TypeSSize,
             "repeat" => Token::Repeat,
             "for" => Token::For,
-            "meta" => Token::Meta,
             "mut" => Token::Mut,
             "decl" => Token::Decl,
             "mod" => Token::Mod,
@@ -1448,10 +1438,6 @@ impl Parser {
             Token::For => {
                 self.advance();
                 Ok("for".to_string())
-            }
-            Token::Meta => {
-                self.advance();
-                Ok("meta".to_string())
             }
             Token::Decl => {
                 self.advance();
@@ -1844,20 +1830,6 @@ impl Parser {
                     let def = self.parse_def_definition()?;
                     definitions.push(def);
                 }
-                Token::Meta => {
-                    self.advance(); // consume 'meta'
-                    self.skip_newlines();
-                    if self.is(Token::FnKeyword) {
-                        let mut def = self.parse_fn_definition()?;
-                        def.is_meta = true;
-                        definitions.push(def);
-                    } else {
-                        return Err(format!(
-                            "expected 'func' after 'meta', found {}",
-                            self.peek()
-                        ));
-                    }
-                }
                 Token::TypeKeyword => {
                     self.advance(); // consume 'type'
                     self.skip_newlines();
@@ -1904,7 +1876,6 @@ impl Parser {
                         name,
                         signature: None,
                         value,
-                        is_meta: false,
                         is_def: false,
                     });
                 }
@@ -2072,7 +2043,6 @@ impl Parser {
             name,
             signature: Some(signature),
             value: body,
-            is_meta: false,
             is_def: false,
         })
     }
@@ -2134,7 +2104,6 @@ impl Parser {
             name,
             signature: Some(signature),
             value: body,
-            is_meta: false,
             is_def: true,
         })
     }
@@ -2392,7 +2361,6 @@ impl Parser {
                 | Token::As
                 | Token::Repeat
                 | Token::For
-                | Token::Meta
                 | Token::Decl
                 | Token::Mod
                 | Token::Export
@@ -2435,7 +2403,6 @@ impl Parser {
                 | Token::As
                 | Token::Repeat
                 | Token::For
-                | Token::Meta
                 | Token::Decl
                 | Token::Mod
                 | Token::Export
@@ -2487,8 +2454,8 @@ impl Parser {
                 let tag = self.expect_identifier()?;
                 self.skip_newlines();
                 if tag == "sizeOf" {
-                    let ty = self.parse_type()?;
-                    return Ok(Expression::SizeOf(ty));
+                    let operand = self.parse_unary()?;
+                    return Ok(Expression::SizeOf(Box::new(operand)));
                 }
                 if tag == "slice" {
                     let operand = self.parse_primary()?;
@@ -2518,13 +2485,9 @@ impl Parser {
                         }),
                     };
                 }
-                if tag == "typeOf" {
-                    let operand = self.parse_primary()?;
-                    return Ok(Expression::TypeOf(Box::new(operand)));
-                }
                 if tag != "record" {
                     return Err(format!(
-                        "unknown tag '@{}', expected '@record', '@sizeOf', '@slice', '@atom', '@generalise', or '@typeOf'",
+                        "unknown tag '@{}', expected '@record', '@sizeOf', '@slice', '@atom', or '@generalise'",
                         tag
                     ));
                 }
@@ -2566,13 +2529,8 @@ impl Parser {
                 let elements = self.parse_argument_list(Token::RBracket)?;
                 Ok(Expression::Array(elements))
             }
-            Token::TypeKeyword => {
-                self.advance();
-                self.skip_newlines();
-                let ty = self.parse_type()?;
-                Ok(Expression::Type(ty))
-            }
-            Token::TypeS16
+            Token::TypeKeyword
+            | Token::TypeS16
             | Token::TypeS32
             | Token::TypeS64
             | Token::TypeU8
@@ -2584,7 +2542,7 @@ impl Parser {
             | Token::TypeOpaque => {
                 let tok = self.peek().clone();
                 return Err(format!(
-                    "unexpected type token '{}' in expression position; pass types explicitly using 'type <Type>' (e.g. 'type s32')",
+                    "unexpected type token '{}' in expression position",
                     tok
                 ));
             }
@@ -3117,10 +3075,6 @@ impl Parser {
             Token::TypeOpaque => {
                 self.advance();
                 Ok(Type::Opaque)
-            }
-            Token::TypeKeyword => {
-                self.advance();
-                Ok(Type::MetaType)
             }
             Token::Star => {
                 self.advance();

@@ -1,4 +1,7 @@
 decl mod io {
+        export {
+                { fopen, read, write, fflush } to .io
+        }
         import { .heap }
 }
 

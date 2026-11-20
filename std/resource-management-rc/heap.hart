@@ -6,11 +6,7 @@ decl mod reman_heap {
 }
 
 def rcHeapNew(value) {
-      ptr := alloc(type RcBlock)
-      ptr.*.refcount := 1
-      ptr.*.sink := free
-      ptr.*.value := value
-      return ptr
+      return rcNew(value, free)
 }
 
 def rcMalloc(size: usize) {

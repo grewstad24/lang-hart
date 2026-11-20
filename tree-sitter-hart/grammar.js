@@ -137,7 +137,6 @@ module.exports = grammar({
 
     // Functions
     function_definition: $ => seq(
-      optional('meta'),
       'func',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
@@ -314,8 +313,6 @@ module.exports = grammar({
       $.atom_expression,
       $.generalise_expression,
       $.sizeof_expression,
-      $.typeof_expression,
-      $.type_literal,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
       $.tuple_literal,
@@ -472,17 +469,7 @@ module.exports = grammar({
 
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',
-      field('type', $._type)
-    )),
-
-    typeof_expression: $ => prec(PREC.PRIMARY, seq(
-      '@typeOf',
       field('value', $._expression)
-    )),
-
-    type_literal: $ => prec(PREC.PRIMARY, seq(
-      'type',
-      field('type', $._type)
     )),
 
     record_literal: $ => prec(PREC.PRIMARY, seq(

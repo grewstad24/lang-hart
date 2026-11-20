@@ -13,10 +13,13 @@ type RcBlock := {
 }
 
 def rcNew(value, sink_fn: func(*opaque) -> :none) {
-      ptr := alloc(type RcBlock)
-      ptr.*.refcount := 1
-      ptr.*.sink := sink_fn
-      ptr.*.value := value
+      mut block: RcBlock := {
+            refcount: 1,
+            sink: sink_fn,
+            value: value
+      }
+      mut ptr: *mut RcBlock := malloc(@sizeOf block)
+      ptr.* := block
       return ptr
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::sema::ModuleScope;
 use crate::syntax::{
-    Definition, Expression, LogicalModule, Parameter, StructFieldType, Type, TypeAlias,
+    Definition, Expression, LogicalModule, StructFieldType, Type, TypeAlias,
 };
 
 pub fn mangle_type(ty: &Type) -> String {
@@ -10,7 +10,6 @@ pub fn mangle_type(ty: &Type) -> String {
         Type::Never => "never".to_string(),
         Type::Inferred => "inferred".to_string(),
         Type::Opaque => "opaque".to_string(),
-        Type::MetaType => "metatype".to_string(),
         Type::U8 => "u8".to_string(),
         Type::U16 => "u16".to_string(),
         Type::U32 => "u32".to_string(),
@@ -171,22 +170,11 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::Spanned { expression, .. } => {
             substitute_expression(expression, substitutions);
         }
-        Expression::Identifier(name) => {
-            if let Some(concrete) = substitutions.get(name) {
-                *expr = Expression::Type(concrete.clone());
-            }
-        }
-        Expression::SizeOf(ty) => {
-            *ty = substitute_type(ty, substitutions);
-        }
-        Expression::TypeOf(expr) => {
-            substitute_expression(expr, substitutions);
+        Expression::SizeOf(inner) => {
+            substitute_expression(inner, substitutions);
         }
         Expression::Slice(expr) => {
             substitute_expression(expr, substitutions);
-        }
-        Expression::Type(ty) => {
-            *ty = substitute_type(ty, substitutions);
         }
         Expression::Cast { expression, ty } => {
             substitute_expression(expression, substitutions);
@@ -290,49 +278,10 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
                 substitute_expression(el, substitutions);
             }
         }
-        Expression::Integer(_)
+        Expression::Identifier(_)
+        | Expression::Integer(_)
         | Expression::String(_)
         | Expression::Symbol(_) => {}
-    }
-}
-
-fn extract_type_argument(arg: &Expression, _scope: &ModuleScope) -> Result<Type, String> {
-    match arg {
-        Expression::Spanned { expression, .. } => extract_type_argument(expression, _scope),
-        Expression::Type(ty) => Ok(resolve_type_alias_deep(ty, _scope)),
-        Expression::TypeOf(inner) => {
-            if let Expression::Type(ty) = crate::syntax::unspanned_expression(inner) {
-                return Ok(resolve_type_alias_deep(ty, _scope));
-            }
-            if let Expression::Identifier(name) = crate::syntax::unspanned_expression(inner) {
-                if let Some(alias) = _scope.lookup_type_alias(name) {
-                    return Ok(resolve_type_alias_deep(&alias.target, _scope));
-                }
-                match name.as_str() {
-                    "s16" => return Ok(Type::S16),
-                    "s32" => return Ok(Type::S32),
-                    "s64" => return Ok(Type::S64),
-                    "u8" => return Ok(Type::U8),
-                    "u16" => return Ok(Type::U16),
-                    "u32" => return Ok(Type::U32),
-                    "u64" => return Ok(Type::U64),
-                    "usize" => return Ok(Type::USize),
-                    "ssize" => return Ok(Type::SSize),
-                    _ => {}
-                }
-            }
-            if let Some(ty) = infer_expr_type(inner, &HashMap::new(), _scope) {
-                return Ok(resolve_type_alias_deep(&ty, _scope));
-            }
-            Err(format!("could not determine type of '@typeOf' argument {}", inner))
-        }
-        Expression::Identifier(name) => Err(format!(
-            "expected explicit 'type' keyword before type argument, found '{}' (use 'type {}')",
-            name, name
-        )),
-        _ => {
-            Err("expected explicit 'type' keyword for type argument (e.g. 'type s32')".to_string())
-        }
     }
 }
 
@@ -456,85 +405,6 @@ fn scan_and_rewrite_expression(
                 scan_and_rewrite_expression(arg, scope, generated, changed)?;
             }
             scan_and_rewrite_expression(target, scope, generated, changed)?;
-
-            if let Some(fn_name) = unwrap_identifier_name(target) {
-                if let Some(def_prov) = scope.definitions.get(&fn_name) {
-                    if def_prov.item.is_meta {
-                        let template = &def_prov.item;
-                        let sig = template
-                            .signature
-                            .as_ref()
-                            .ok_or_else(|| format!("meta func '{}' has no signature", fn_name))?;
-
-                        if arguments.len() != sig.parameters.len() {
-                            return Err(format!(
-                                "meta func '{}' expects {} arguments, found {}",
-                                fn_name,
-                                sig.parameters.len(),
-                                arguments.len()
-                            ));
-                        }
-
-                        let mut substitutions = HashMap::new();
-                        let mut type_arg_mangles = Vec::new();
-
-                        for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
-                            if param.ty == Type::MetaType {
-                                let type_arg = extract_type_argument(arg, scope)?;
-                                type_arg_mangles.push(mangle_type(&type_arg));
-                                substitutions.insert(param.name.clone(), type_arg);
-                            }
-                        }
-
-                        let mangled_suffix = type_arg_mangles.join("__");
-                        let mangled_name =
-                            sanitize_identifier(&format!("{}__{}", fn_name, mangled_suffix));
-
-                        // Instantiate specialization
-                        let mut specialized_def = template.clone();
-                        specialized_def.name = mangled_name.clone();
-                        specialized_def.is_meta = false;
-
-                        if let Some(spec_sig) = &mut specialized_def.signature {
-                            let mut new_params = Vec::new();
-                            for p in &spec_sig.parameters {
-                                if p.ty != Type::MetaType {
-                                    new_params.push(Parameter {
-                                        name: p.name.clone(),
-                                        ty: substitute_type(&p.ty, &substitutions),
-                                    });
-                                }
-                            }
-                            spec_sig.parameters = new_params;
-                            spec_sig.return_type =
-                                Box::new(substitute_type(&spec_sig.return_type, &substitutions));
-                        }
-
-                        substitute_expression(&mut specialized_def.value, &substitutions);
-
-                        generated.push(GeneratedSpecialization {
-                            base_name: fn_name.clone(),
-                            originating_file: def_prov.originating_file.clone(),
-                            specialized_def,
-                        });
-
-                        // Rewrite call site
-                        rewrite_target_identifier(target, mangled_name);
-
-                        // Remove meta arguments
-                        let old_args = std::mem::take(arguments);
-                        let mut new_args = Vec::new();
-                        for (arg, param) in old_args.into_iter().zip(sig.parameters.iter()) {
-                            if param.ty != Type::MetaType {
-                                new_args.push(arg);
-                            }
-                        }
-                        *arguments = new_args;
-
-                        *changed = true;
-                    }
-                }
-            }
         }
         Expression::Index { expression, index } => {
             scan_and_rewrite_expression(expression, scope, generated, changed)?;
@@ -628,12 +498,10 @@ fn scan_and_rewrite_expression(
                 scan_and_rewrite_expression(el, scope, generated, changed)?;
             }
         }
-        Expression::TypeOf(inner) => {
+        Expression::SizeOf(inner) => {
             scan_and_rewrite_expression(inner, scope, generated, changed)?;
         }
-        Expression::SizeOf(_)
-        | Expression::Type(_)
-        | Expression::Identifier(_)
+        Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
         | Expression::Symbol(_) => {}
@@ -653,7 +521,7 @@ pub fn monomorphize_modules(
         iterations += 1;
         if iterations > 128 {
             return Err(
-                "monomorphization depth limit exceeded (possible cyclic meta function recursion)"
+                "monomorphization depth limit exceeded (possible cyclic function recursion)"
                     .to_string(),
             );
         }
@@ -663,7 +531,7 @@ pub fn monomorphize_modules(
         for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
             for file in &mut module.source_files {
                 for def in &mut file.definitions {
-                    if def.is_meta || def.is_def {
+                    if def.is_def {
                         continue;
                     }
                     scan_and_rewrite_expression(
@@ -696,7 +564,7 @@ pub fn monomorphize_modules(
                 }
             }
 
-            // Insert provenance into every module scope that knows about the base meta function
+            // Insert provenance into every module scope that knows about the base function
             for scope in module_scopes.iter_mut() {
                 if scope.definitions.contains_key(&item.base_name)
                     && !scope.definitions.contains_key(&spec_name)
@@ -825,17 +693,11 @@ fn concretize_expression(
         Expression::Spanned { expression, .. } => {
             concretize_expression(expression, templates, generated, changed)?;
         }
-        Expression::SizeOf(ty) => {
-            concretize_type(ty, templates, generated, changed)?;
-        }
-        Expression::TypeOf(operand) => {
+        Expression::SizeOf(operand) => {
             concretize_expression(operand, templates, generated, changed)?;
         }
         Expression::Slice(operand) => {
             concretize_expression(operand, templates, generated, changed)?;
-        }
-        Expression::Type(ty) => {
-            concretize_type(ty, templates, generated, changed)?;
         }
         Expression::Cast { expression, ty } => {
             concretize_expression(expression, templates, generated, changed)?;
@@ -1219,8 +1081,7 @@ pub(crate) fn infer_expr_type_with_generated(
                 Some(Type::Symbol(name.clone()))
             }
         }
-        Expression::Type(ty) => Some(ty.clone()),
-        Expression::TypeOf(inner) => infer_expr_type_with_generated(inner, local_types, scope, generated),
+        Expression::SizeOf(_) => Some(Type::USize),
         Expression::Identifier(name) => {
             if let Some(ty) = local_types.get(name) {
                 return Some(ty.clone());
@@ -1476,7 +1337,7 @@ pub(crate) fn infer_expr_type_with_generated(
                 Some(Type::Symbol("none".to_string()))
             }
         }
-        Expression::Call { target, arguments } => {
+        Expression::Call { target, .. } => {
             if let Some(fn_name) = unwrap_identifier_name(target) {
                 if let Some(g) = generated.iter().rev().find(|g| g.specialized_def.name == fn_name) {
                     if let Some(sig) = &g.specialized_def.signature {
@@ -1488,19 +1349,7 @@ pub(crate) fn infer_expr_type_with_generated(
                     }
                 }
                 if let Some(prov) = scope.definitions.get(&fn_name) {
-                    if prov.item.is_meta {
-                        if let Some(sig) = &prov.item.signature {
-                            let mut substitutions = HashMap::new();
-                            for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
-                                if param.ty == Type::MetaType {
-                                    if let Ok(type_arg) = extract_type_argument(arg, scope) {
-                                        substitutions.insert(param.name.clone(), type_arg);
-                                    }
-                                }
-                            }
-                            return Some(substitute_type(&sig.return_type, &substitutions));
-                        }
-                    } else if let Some(sig) = &prov.item.signature {
+                    if let Some(sig) = &prov.item.signature {
                         if *sig.return_type != Type::Inferred {
                             return Some(*sig.return_type.clone());
                         } else {
@@ -1530,115 +1379,6 @@ pub(crate) fn infer_expr_type_with_generated(
 }
 
 
-
-fn resolve_typeof_in_expr(
-    expr: &mut Expression,
-    local_types: &HashMap<String, Type>,
-    scope: &ModuleScope,
-) {
-    match expr {
-        Expression::Spanned { expression, .. } => {
-            resolve_typeof_in_expr(expression, local_types, scope);
-        }
-        Expression::TypeOf(inner) => {
-            if let Some(ty) = infer_expr_type(inner, local_types, scope) {
-                *expr = Expression::Type(ty);
-                return;
-            }
-            let inner_unspanned = crate::syntax::unspanned_expression(inner);
-            if let Expression::Identifier(name) = inner_unspanned {
-                if name == "T" && local_types.len() == 1 {
-                    let ty = local_types.values().next().unwrap().clone();
-                    *expr = Expression::Type(ty);
-                    return;
-                }
-                if let Some(alias) = scope.lookup_type_alias(name) {
-                    *expr = Expression::Type(Type::Alias(alias.name.clone()));
-                    return;
-                }
-                match name.as_str() {
-                    "s16" => {
-                        *expr = Expression::Type(Type::S16);
-                        return;
-                    }
-                    "s32" => {
-                        *expr = Expression::Type(Type::S32);
-                        return;
-                    }
-                    "s64" => {
-                        *expr = Expression::Type(Type::S64);
-                        return;
-                    }
-                    "u8" => {
-                        *expr = Expression::Type(Type::U8);
-                        return;
-                    }
-                    "u16" => {
-                        *expr = Expression::Type(Type::U16);
-                        return;
-                    }
-                    "u32" => {
-                        *expr = Expression::Type(Type::U32);
-                        return;
-                    }
-                    "u64" => {
-                        *expr = Expression::Type(Type::U64);
-                        return;
-                    }
-                    "usize" => {
-                        *expr = Expression::Type(Type::USize);
-                        return;
-                    }
-                    "ssize" => {
-                        *expr = Expression::Type(Type::SSize);
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Expression::Call { target, arguments } => {
-            resolve_typeof_in_expr(target, local_types, scope);
-            for arg in arguments {
-                resolve_typeof_in_expr(arg, local_types, scope);
-            }
-        }
-        Expression::Let { value, .. } => {
-            resolve_typeof_in_expr(value, local_types, scope);
-        }
-        Expression::Var { value, .. } => {
-            if let Some(v) = value {
-                resolve_typeof_in_expr(v, local_types, scope);
-            }
-        }
-        Expression::Assign { target, value } => {
-            resolve_typeof_in_expr(target, local_types, scope);
-            resolve_typeof_in_expr(value, local_types, scope);
-        }
-        Expression::Block(exprs) => {
-            for e in exprs {
-                resolve_typeof_in_expr(e, local_types, scope);
-            }
-        }
-        Expression::Return(e) | Expression::Discard(e) | Expression::Slice(e) => {
-            resolve_typeof_in_expr(e, local_types, scope);
-        }
-        Expression::Binary { left, right, .. } | Expression::Comparison { left, right, .. } => {
-            resolve_typeof_in_expr(left, local_types, scope);
-            resolve_typeof_in_expr(right, local_types, scope);
-        }
-        Expression::Index { expression, index } => {
-            resolve_typeof_in_expr(expression, local_types, scope);
-            resolve_typeof_in_expr(index, local_types, scope);
-        }
-        Expression::Member { expression, .. }
-        | Expression::AddressOf { expression, .. }
-        | Expression::Dereference(expression) => {
-            resolve_typeof_in_expr(expression, local_types, scope);
-        }
-        _ => {}
-    }
-}
 
 pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) -> bool {
     let resolved_target = resolve_type_alias_deep(target, scope);
@@ -1849,7 +1589,6 @@ fn scan_and_monomorphize_def(
                         let mut specialized_def = template.clone();
                         specialized_def.name = mangled_name.clone();
                         specialized_def.is_def = false;
-                        specialized_def.is_meta = false;
 
                         let mut param_types_map = HashMap::new();
                         if let Some(spec_sig) = &mut specialized_def.signature {
@@ -1860,8 +1599,6 @@ fn scan_and_monomorphize_def(
                                 param_types_map.insert(p.name.clone(), p.ty.clone());
                             }
                         }
-
-                        resolve_typeof_in_expr(&mut specialized_def.value, &param_types_map, scope);
 
                         if let Some(spec_sig) = &mut specialized_def.signature {
                             if *spec_sig.return_type == Type::Inferred {
@@ -1991,7 +1728,7 @@ fn scan_and_monomorphize_def(
         }
         Expression::Cast { expression, .. }
         | Expression::Slice(expression)
-        | Expression::TypeOf(expression)
+        | Expression::SizeOf(expression)
         | Expression::AddressOf { expression, .. }
         | Expression::Dereference(expression)
         | Expression::Discard(expression)
@@ -2027,9 +1764,7 @@ fn scan_and_monomorphize_def(
             scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
             scan_and_monomorphize_def(value, scope, def_templates, local_types, generated, changed)?;
         }
-        Expression::SizeOf(_)
-        | Expression::Type(_)
-        | Expression::Identifier(_)
+        Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
         | Expression::Symbol(_) => {}

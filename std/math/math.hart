@@ -1,4 +1,8 @@
-export { add, sub, mul, div } to .math
+decl mod math {
+      export {
+            { add, sub, mul, div } to .math
+      }
+}
 
 def add(a, b) { a + b }
 

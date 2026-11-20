@@ -1271,14 +1271,15 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
             Expression::Dereference(expression) => self.codegen_dereference(expression),
-            Expression::SizeOf(ty) => {
-                let size = self.llvm_type_size(ty)?;
+            Expression::SizeOf(inner) => {
+                let binding = self.codegen_expression(inner)?;
+                let ty = self.binding_type(&binding)?;
+                let size = self.llvm_type_size(&ty)?;
                 Ok(Binding::Integer {
                     ty: Type::USize,
                     value: self.ptr_sized_int_type().const_int(size, false),
                 })
             }
-            Expression::TypeOf(_) => Ok(self.symbol_binding("none")),
             Expression::Slice(expr) => {
                 let binding = self.codegen_expression(expr)?;
                 let (elem_ty, size, storage_ptr) = match &binding {
@@ -1373,7 +1374,6 @@ impl<'ctx> Codegen<'ctx> {
                     storage: None,
                 })
             }
-            Expression::Type(_) => Ok(self.symbol_binding("none")),
         }
     }
 
@@ -3723,8 +3723,8 @@ impl<'ctx> Codegen<'ctx> {
                 ty: ty.clone(),
                 value: value.into_pointer_value(),
             }),
-            Type::Opaque | Type::MetaType => {
-                Err("opaque or meta type has no runtime representation".to_string())
+            Type::Opaque => {
+                Err("opaque type has no runtime representation".to_string())
             }
         }
     }
@@ -3902,8 +3902,8 @@ impl<'ctx> Codegen<'ctx> {
             Type::Pointer { .. } | Type::Function { .. } => {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
-            Type::Opaque | Type::MetaType => {
-                Err("opaque or meta type has no runtime representation".to_string())
+            Type::Opaque => {
+                Err("opaque type has no runtime representation".to_string())
             }
         }
     }
@@ -3956,8 +3956,8 @@ impl<'ctx> Codegen<'ctx> {
                 .ptr_type(AddressSpace::default())
                 .const_null()
                 .into()),
-            Type::Opaque | Type::MetaType => {
-                Err("opaque or meta type has no zero value".to_string())
+            Type::Opaque => {
+                Err("opaque type has no zero value".to_string())
             }
         }
     }

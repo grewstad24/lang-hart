@@ -1,4 +1,4 @@
-import { .print, .heap, .reman, .reman.heap }
+import { .print, .heap, .reman, .reman.heap, .print.pretty, .math, .io }
 
 func double_num(n: s32) -> s32 {
     return n + n
@@ -30,6 +30,24 @@ func main() -> :none {
       mut runner: Runner := { step: double_num }
       res2 := runner.step(25)
       println(res2)
+
+      # @sizeOf operating on value
+      sz := @sizeOf val
+      println(sz as s32)
+      sz2 := @sizeOf runner
+      println(sz2 as s32)
+
+      b := :true.not()
+      println(b)
+      b2 := :true.and(:false)
+      println(b2)
+      b3 := :true.or(:false)
+      println(b3)
+
+      pprint("Testing pprint")
+      pprint(@record { a: 1, b: 2 })
+      sum := add(5, 7)
+      println(sum)
 
       print("Hello, World!")
 }

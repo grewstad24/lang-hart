@@ -447,10 +447,8 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
                 arms: resolved_arms,
             })
         }
-        Expression::SizeOf(ty) => Ok(Expression::SizeOf(canonicalize_type(ty, checker)?)),
-        Expression::TypeOf(expr) => Ok(Expression::TypeOf(Box::new(canonicalize_expression(expr, checker)?))),
+        Expression::SizeOf(expr) => Ok(Expression::SizeOf(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
-        Expression::Type(ty) => Ok(Expression::Type(canonicalize_type(ty, checker)?)),
     }
 }
 
@@ -570,7 +568,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     .or_insert(resolved_alias);
             }
             for def in &file.definitions {
-                if def.is_meta || def.is_def {
+                if def.is_def {
                     continue;
                 }
                 let resolved_sig = def
@@ -606,7 +604,6 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                         name: "main".to_string(),
                         signature: resolved_sig,
                         value: resolved_value,
-                        is_meta: false,
                         is_def: false,
                     });
                     continue;
@@ -620,7 +617,6 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     name: def.name.clone(),
                     signature: resolved_sig,
                     value: resolved_value,
-                    is_meta: false,
                     is_def: false,
                 });
             }

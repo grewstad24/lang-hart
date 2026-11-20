@@ -575,7 +575,6 @@ impl<'a> Checker<'a> {
         match ty {
             Type::Opaque => "00_opaque".to_string(),
             Type::Inferred => "00_inferred".to_string(),
-            Type::MetaType => "00_metatype".to_string(),
             Type::Never => "00_never".to_string(),
             Type::U8 => "02_u8".to_string(),
             Type::U16 => "03_u16".to_string(),
@@ -1103,7 +1102,7 @@ impl<'a> Checker<'a> {
         }
 
         for (name, prov) in &self.scope.definitions {
-            if prov.item.is_meta || prov.item.is_def {
+            if prov.item.is_def {
                 continue;
             }
             if let Some(sig) = &prov.item.signature {
@@ -1165,7 +1164,7 @@ impl<'a> Checker<'a> {
                 self.current_file_path
             ));
         }
-        if def.is_meta || def.is_def {
+        if def.is_def {
             return Ok(());
         }
 
@@ -1324,11 +1323,10 @@ impl<'a> Checker<'a> {
             )
         })?;
 
-        if def.is_meta || def.is_def {
+        if def.is_def {
             return Err(format!(
-                "{}: error: {} function '{}' cannot be referenced as a runtime value",
+                "{}: error: 'def' function '{}' cannot be referenced as a runtime value",
                 self.current_file_path,
-                if def.is_meta { "meta" } else { "def" },
                 name
             ));
         }
@@ -2782,13 +2780,10 @@ impl<'a> Checker<'a> {
                 })
             }
 
-            Expression::SizeOf(ty) => {
-                self.validate_user_type(ty)?;
-                let _ = self.resolve_type(ty);
+            Expression::SizeOf(inner) => {
+                let _ = self.type_of_expression(inner)?;
                 Ok(Type::USize)
             }
-
-            Expression::TypeOf(_) => Ok(Type::MetaType),
 
             Expression::Slice(expr) => {
                 let ty = self.type_of_expression(expr)?;
@@ -2844,11 +2839,6 @@ impl<'a> Checker<'a> {
                         self.current_file_path, other
                     )),
                 }
-            }
-
-            Expression::Type(ty) => {
-                self.validate_user_type(ty)?;
-                Ok(Type::MetaType)
             }
         }
     }

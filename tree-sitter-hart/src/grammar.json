@@ -726,18 +726,6 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "STRING",
-              "value": "meta"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
           "type": "STRING",
           "value": "func"
         },
@@ -1833,14 +1821,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "typeof_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "type_literal"
-        },
-        {
-          "type": "SYMBOL",
           "name": "parenthesized_expression"
         },
         {
@@ -2880,52 +2860,10 @@
           },
           {
             "type": "FIELD",
-            "name": "type",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_type"
-            }
-          }
-        ]
-      }
-    },
-    "typeof_expression": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "@typeOf"
-          },
-          {
-            "type": "FIELD",
             "name": "value",
             "content": {
               "type": "SYMBOL",
               "name": "_expression"
-            }
-          }
-        ]
-      }
-    },
-    "type_literal": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "type"
-          },
-          {
-            "type": "FIELD",
-            "name": "type",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_type"
             }
           }
         ]
