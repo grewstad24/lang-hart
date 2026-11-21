@@ -306,6 +306,8 @@ module.exports = grammar({
       $.match_expression,
       $.repeat_expression,
       $.return_expression,
+      $.break_expression,
+      $.continue_expression,
       $.record_literal,
       $.slice_expression,
       $.atom_expression,
@@ -460,6 +462,10 @@ module.exports = grammar({
       'return',
       optional($._expression)
     )),
+
+    break_expression: $ => seq('break'),
+
+    continue_expression: $ => seq('continue'),
 
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',

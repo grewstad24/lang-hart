@@ -3,10 +3,11 @@ decl mod io {
             File,
             open_file, create_file, append_file,
             stdin, stdout, stderr,
-            copy, copy_to, stream,
+            copy, copy_to, stream, copy_stream, stream_fd,
             read_file, write_file, append_to_file,
             is_ok, is_err, close_file, write_data, read_all,
-            open, close, read, write, lseek
+            open, close, read, write, lseek,
+            defaultBufferSize
       } to .io
       import { .heap }
 }

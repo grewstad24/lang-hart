@@ -1,4 +1,4 @@
-import { .print }
+import { .print, .io }
 
 func main(args: Slice<String>) -> :none {
       println("--- testing repeat while ---")
@@ -33,4 +33,132 @@ func main(args: Slice<String>) -> :none {
             count_until := count_until + 1
       }
       println(@slice [ "until executed times: ", count_until ])
+
+      println("--- testing break in while ---")
+      mut k := 0
+      repeat while :true {
+            if {
+                  k >= 3 => break
+                  else => :none
+            }
+            println(@slice [ "break while k = ", k ])
+            k := k + 1
+      }
+
+      println("--- testing continue in while ---")
+      mut c := 0
+      repeat while c < 4 {
+            c := c + 1
+            if {
+                  c = 2 => continue
+                  else => :none
+            }
+            println(@slice [ "continue while c = ", c ])
+      }
+
+      println("--- testing break and continue in repeat N ---")
+      repeat 5 using idx {
+            if {
+                  idx = 1 as usize => continue
+                  idx = 3 as usize => break
+                  else => :none
+            }
+            println(@slice [ "repeat N idx = ", idx as s32 ])
+      }
+
+      println("--- testing break and continue in repeat for ---")
+      mut numbers := [ 100, 200, 300, 400 ]
+      repeat for numbers using num {
+            if {
+                  num = 200 => continue
+                  num = 400 => break
+                  else => :none
+            }
+            println(@slice [ "for num = ", num ])
+      }
+
+      println("--- testing stdlib file write and read with loops ---")
+      mut w_res := write_file("test_loop_io.txt", "Hello from looped I/O!")
+      match w_res {
+            :ok => println("write succeeded")
+            (:error, :open_failed) => println("write open failed")
+            else => println("write other")
+      }
+      mut content := read_file("test_loop_io.txt")
+      match content using ct {
+            String => println(@slice [ "read file content: ", ct ])
+            (:error, :open_failed) => println("error: open failed")
+            (:error, :seek_failed) => println("error: seek failed")
+            else => println("other error")
+      }
+
+      println("--- testing str_eq ---")
+      if {
+            str_eq("hello", "hello") => println("str_eq identical: true")
+            else => println("str_eq identical: false")
+      }
+      if {
+            str_eq("hello", "world") => println("str_eq different: true")
+            else => println("str_eq different: false")
+      }
+
+      println("--- testing io stream_fd (repeat until) ---")
+      mut read_file_handle := open_file("test_loop_io.txt")
+      if {
+            read_file_handle.is_ok() => {
+                  read_file_handle.stream(64 as usize, on_chunk)
+                  read_file_handle.close_file()
+            }
+            else => println("failed to open for streaming")
+      }
+
+      println("--- testing stdin, stdout, stderr constants ---")
+      println(@slice [ "stdin.fd = ", stdin.fd ])
+      println(@slice [ "stdout.fd = ", stdout.fd ])
+      println(@slice [ "stderr.fd = ", stderr.fd ])
+
+      println("--- testing early return from nested block and loops ---")
+      println(@slice [ "early_return_nested_block(42) = ", early_return_nested_block(42) ])
+      println(@slice [ "early_return_nested_block(15) = ", early_return_nested_block(15) ])
+      println(@slice [ "early_return_nested_block(5) = ", early_return_nested_block(5) ])
+      println(@slice [ "early_return_from_loop(3) = ", early_return_from_loop(3) ])
+      println(@slice [ "early_return_from_loop(99) = ", early_return_from_loop(99) ])
+      println(@slice [ "early_return_from_while(7) = ", early_return_from_while(7) ])
+      println(@slice [ "early_return_from_while(50) = ", early_return_from_while(50) ])
 }
+
+func on_chunk(chunk: String) -> :none {
+      println(@slice [ "streamed chunk: '", chunk, "'" ])
+}
+
+def early_return_nested_block(val: s32) {
+      if {
+            val > 10 => {
+                  if {
+                        val = 42 => return 100
+                        else => return 200
+                  }
+            }
+            else => :none
+      }
+      0 }
+
+def early_return_from_loop(target: s32) {
+      repeat 10 using i {
+            if {
+                  (i as s32) = target => return (i as s32) * 10
+                  else => :none
+            }
+      }
+      0 - 1 }
+
+def early_return_from_while(target: s32) {
+      mut cur := 0
+      repeat while cur < 20 {
+            if {
+                  cur = target => return cur * 5
+                  else => :none
+            }
+            cur := cur + 1
+      }
+      0 - 99 }

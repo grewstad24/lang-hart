@@ -34,17 +34,13 @@ def xnor(a, b) { not(xor(a, b)) }
 
 def str_eq(a, b) {
       if {
-            a.len != b.len => :false
-            else => {
-                  mut equal: Bool := :true
-                  repeat a.len using i {
-                        if {
-                              a[i] != b[i] => {
-                                    equal := :false
-                              }
-                              else => :none
-                        }
-                  }
-                  return equal
+            a.len != b.len => return :false
+            else => :none
+      }
+      repeat a.len using i {
+            if {
+                  a[i] != b[i] => return :false
+                  else => :none
             }
-      }}
+      }
+      :true }

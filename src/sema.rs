@@ -427,6 +427,8 @@ pub struct Checker<'a> {
     local_scopes: Vec<HashMap<String, BindingInfo>>,
     symbol_table: HashMap<String, u32>,
     current_function_return_type: Option<Type>,
+    is_return_inferred: bool,
+    loop_depth: usize,
     counter: usize,
 }
 
@@ -479,6 +481,8 @@ impl<'a> Checker<'a> {
             local_scopes: Vec::new(),
             symbol_table: HashMap::new(),
             current_function_return_type: None,
+            is_return_inferred: false,
+            loop_depth: 0,
             counter: 0,
         };
 
@@ -1216,9 +1220,13 @@ impl<'a> Checker<'a> {
             let old_return_type = self
                 .current_function_return_type
                 .replace(expected_return.clone());
+            let old_is_return_inferred = self.is_return_inferred;
+            self.is_return_inferred = expected_return == Type::Inferred;
+
             let body_ty_res = self.type_of_expression(&mut def.value);
             let captured_return = self.current_function_return_type.take();
             self.current_function_return_type = old_return_type;
+            self.is_return_inferred = old_is_return_inferred;
             self.exit_scope();
 
             let mut body_ty = body_ty_res?;
@@ -1232,13 +1240,16 @@ impl<'a> Checker<'a> {
                     ));
                 }
             } else if expected_return == Type::Inferred {
-                let deduced = match captured_return {
-                    Some(t) if t != Type::Inferred => t,
-                    _ => {
-                        if body_ty == Type::Never {
+                let deduced = match (captured_return, body_ty) {
+                    (Some(ret), body) if ret != Type::Inferred && body != Type::Never => {
+                        self.unify_to_sum_type(&[ret, body])?
+                    }
+                    (Some(ret), _) if ret != Type::Inferred => ret,
+                    (_, body) => {
+                        if body == Type::Never {
                             Type::Symbol("none".to_string())
                         } else {
-                            body_ty.clone()
+                            body
                         }
                     }
                 };
@@ -1641,8 +1652,13 @@ impl<'a> Checker<'a> {
                     )
                 })?;
                 let mut actual = self.type_of_expression(expr)?;
-                if expected == Type::Inferred {
-                    self.current_function_return_type = Some(actual);
+                if self.is_return_inferred {
+                    if expected == Type::Inferred {
+                        self.current_function_return_type = Some(actual);
+                    } else {
+                        let unified = self.unify_to_sum_type(&[expected, actual])?;
+                        self.current_function_return_type = Some(unified);
+                    }
                     return Ok(Type::Never);
                 }
                 actual = self.coerce_expression_to_type(expr, &actual, &expected)?;
@@ -1650,6 +1666,26 @@ impl<'a> Checker<'a> {
                     return Err(format!(
                         "{}: error: return type mismatch: expected {}, found {}",
                         self.current_file_path, expected, actual
+                    ));
+                }
+                Ok(Type::Never)
+            }
+
+            Expression::Break => {
+                if self.loop_depth == 0 {
+                    return Err(format!(
+                        "{}: error: 'break' outside of loop",
+                        self.current_file_path
+                    ));
+                }
+                Ok(Type::Never)
+            }
+
+            Expression::Continue => {
+                if self.loop_depth == 0 {
+                    return Err(format!(
+                        "{}: error: 'continue' outside of loop",
+                        self.current_file_path
                     ));
                 }
                 Ok(Type::Never)
@@ -1920,7 +1956,9 @@ impl<'a> Checker<'a> {
                     );
                 }
 
+                self.loop_depth += 1;
                 let body_result = self.type_of_expression(body);
+                self.loop_depth -= 1;
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
                 Ok(Type::Symbol("none".to_string()))
@@ -1938,7 +1976,9 @@ impl<'a> Checker<'a> {
                 }
 
                 let scopes_before_loop = self.local_scopes.clone();
+                self.loop_depth += 1;
                 let body_result = self.type_of_expression(body);
+                self.loop_depth -= 1;
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
                 Ok(Type::Symbol("none".to_string()))
@@ -1946,7 +1986,9 @@ impl<'a> Checker<'a> {
 
             Expression::RepeatUntil { condition, body } => {
                 let scopes_before_loop = self.local_scopes.clone();
+                self.loop_depth += 1;
                 let body_result = self.type_of_expression(body);
+                self.loop_depth -= 1;
                 let raw_cond_ty = self.type_of_expression(condition)?;
                 let cond_ty = self.resolve_type(&raw_cond_ty)?;
 
@@ -1997,7 +2039,9 @@ impl<'a> Checker<'a> {
                     );
                 }
 
+                self.loop_depth += 1;
                 let body_result = self.type_of_expression(body);
+                self.loop_depth -= 1;
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
                 Ok(Type::Symbol("none".to_string()))
@@ -3327,6 +3371,12 @@ impl<'a> Checker<'a> {
 
             if matches!(source, Type::Pointer { .. } | Type::Function { .. })
                 && Checker::is_integer_type(target)
+            {
+                return true;
+            }
+
+            if Checker::is_integer_type(source)
+                && matches!(target, Type::Pointer { .. } | Type::Function { .. })
             {
                 return true;
             }

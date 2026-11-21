@@ -66,6 +66,12 @@ struct GlobalVar<'ctx> {
     pointer: PointerValue<'ctx>,
 }
 
+#[derive(Clone, Copy)]
+struct LoopContext<'ctx> {
+    continue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    break_bb: inkwell::basic_block::BasicBlock<'ctx>,
+}
+
 pub struct Codegen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -79,6 +85,8 @@ pub struct Codegen<'ctx> {
     extern_functions: HashMap<String, Signature>,
     function_signatures: HashMap<String, Signature>,
     type_aliases: HashMap<String, Type>,
+    current_function_return_type: Option<Type>,
+    loop_stack: Vec<LoopContext<'ctx>>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -103,6 +111,8 @@ impl<'ctx> Codegen<'ctx> {
             extern_functions: HashMap::new(),
             function_signatures: HashMap::new(),
             type_aliases: HashMap::new(),
+            current_function_return_type: None,
+            loop_stack: Vec::new(),
             string_counter: 0,
             branch_counter: 0,
         }
@@ -332,9 +342,11 @@ impl<'ctx> Codegen<'ctx> {
             if let Expression::Record(fields) = unspanned_expression(&def.value) {
                 let ty = self.resolve_alias_root(&Checker::record_type())?.clone();
                 let llvm_type = self.llvm_type(&ty)?;
+                let global_name = format!("hart.record.{}", def.name);
                 let global =
                     self.module
-                        .add_global(llvm_type, Some(AddressSpace::default()), &def.name);
+                        .add_global(llvm_type, Some(AddressSpace::default()), &global_name);
+                global.set_linkage(inkwell::module::Linkage::Internal);
                 global.set_initializer(&self.zero_value(&ty)?);
                 self.global_vars.insert(
                     def.name.clone(),
@@ -360,9 +372,12 @@ impl<'ctx> Codegen<'ctx> {
                 let binding = self.codegen_expression(&def.value)?;
                 let ty = self.binding_type(&binding)?;
                 let llvm_ty = self.llvm_type(&ty)?;
+                let global_name = format!("hart.const.{}", def.name);
                 let global =
                     self.module
-                        .add_global(llvm_ty, Some(AddressSpace::default()), &def.name);
+                        .add_global(llvm_ty, Some(AddressSpace::default()), &global_name);
+                global.set_linkage(inkwell::module::Linkage::Internal);
+                global.set_constant(true);
 
                 let init_val = match self.binding_basic_value(&binding) {
                     Ok(val) => val,
@@ -453,6 +468,10 @@ impl<'ctx> Codegen<'ctx> {
 
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
+        let previous_return_type = self.current_function_return_type.take();
+        if let Some(sig) = signature {
+            self.current_function_return_type = Some((*sig.return_type).clone());
+        }
         let stack_ptr = self.enter_scope()?;
 
         if let Some(sig) = signature {
@@ -515,6 +534,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
+        self.current_function_return_type = previous_return_type;
         Ok(())
     }
 
@@ -529,6 +549,12 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.position_at_end(entry);
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
+        let previous_return_type = self.current_function_return_type.take();
+        if let Some(sig) = &main_def.signature {
+            self.current_function_return_type = Some((*sig.return_type).clone());
+        } else {
+            self.current_function_return_type = Some(Type::S32);
+        }
         let stack_ptr = self.enter_scope()?;
 
         for (name, fields) in std::mem::take(&mut self.pending_global_records) {
@@ -723,6 +749,7 @@ impl<'ctx> Codegen<'ctx> {
 
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
+        self.current_function_return_type = previous_return_type;
         Ok(())
     }
 
@@ -911,9 +938,41 @@ impl<'ctx> Codegen<'ctx> {
                 Ok(self.symbol_binding("none"))
             }
             Expression::Return(expr) => {
-                let binding = self.codegen_expression(expr)?;
+                let mut binding = self.codegen_expression(expr)?;
+                if let Some(target_ty) = self.current_function_return_type.clone() {
+                    if target_ty != Type::Never && target_ty != Type::Inferred {
+                        let actual_ty = self.binding_type(&binding)?;
+                        if actual_ty != target_ty {
+                            if let Ok(cast_val) = self.codegen_cast(binding.clone(), target_ty) {
+                                binding = cast_val;
+                            }
+                        }
+                    }
+                }
                 self.exit_current_scope()?;
                 self.build_return(&binding)?;
+                Ok(self.symbol_binding("none"))
+            }
+            Expression::Break => {
+                let loop_ctx = self
+                    .loop_stack
+                    .last()
+                    .ok_or_else(|| "cannot break outside of loop".to_string())?;
+                let break_bb = loop_ctx.break_bb;
+                self.builder
+                    .build_unconditional_branch(break_bb)
+                    .map_err(|e| e.to_string())?;
+                Ok(self.symbol_binding("none"))
+            }
+            Expression::Continue => {
+                let loop_ctx = self
+                    .loop_stack
+                    .last()
+                    .ok_or_else(|| "cannot continue outside of loop".to_string())?;
+                let continue_bb = loop_ctx.continue_bb;
+                self.builder
+                    .build_unconditional_branch(continue_bb)
+                    .map_err(|e| e.to_string())?;
                 Ok(self.symbol_binding("none"))
             }
             Expression::Let { name, value } => {
@@ -1103,6 +1162,9 @@ impl<'ctx> Codegen<'ctx> {
                 let body_bb = self
                     .context
                     .append_basic_block(current_fn, &format!("repeat.body.{}", id));
+                let step_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("repeat.step.{}", id));
                 let merge_bb = self
                     .context
                     .append_basic_block(current_fn, &format!("repeat.merge.{}", id));
@@ -1179,7 +1241,12 @@ impl<'ctx> Codegen<'ctx> {
                     );
                 }
 
+                self.loop_stack.push(LoopContext {
+                    continue_bb: step_bb,
+                    break_bb: merge_bb,
+                });
                 self.codegen_expression(body)?;
+                self.loop_stack.pop();
 
                 if binder.is_some() {
                     self.local_scopes.pop();
@@ -1187,27 +1254,33 @@ impl<'ctx> Codegen<'ctx> {
 
                 if let Some(bb) = self.builder.get_insert_block() {
                     if bb.get_terminator().is_none() {
-                        let cur = self
-                            .builder
-                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
-                            .map_err(|e| e.to_string())?
-                            .into_int_value();
-                        let next = self
-                            .builder
-                            .build_int_add(
-                                cur,
-                                self.ptr_sized_int_type().const_int(1, false),
-                                "next_i",
-                            )
-                            .map_err(|e| e.to_string())?;
                         self.builder
-                            .build_store(counter_alloca, next)
-                            .map_err(|e| e.to_string())?;
-                        self.builder
-                            .build_unconditional_branch(cond_bb)
+                            .build_unconditional_branch(step_bb)
                             .map_err(|e| e.to_string())?;
                     }
                 }
+
+                // --- Step Block ---
+                self.builder.position_at_end(step_bb);
+                let cur = self
+                    .builder
+                    .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+                let next = self
+                    .builder
+                    .build_int_add(
+                        cur,
+                        self.ptr_sized_int_type().const_int(1, false),
+                        "next_i",
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(counter_alloca, next)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(merge_bb);
                 Ok(self.symbol_binding("none"))
@@ -1277,6 +1350,9 @@ impl<'ctx> Codegen<'ctx> {
                 let body_bb = self
                     .context
                     .append_basic_block(current_fn, &format!("for.body.{}", id));
+                let step_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("for.step.{}", id));
                 let merge_bb = self
                     .context
                     .append_basic_block(current_fn, &format!("for.merge.{}", id));
@@ -1351,7 +1427,12 @@ impl<'ctx> Codegen<'ctx> {
                     );
                 }
 
+                self.loop_stack.push(LoopContext {
+                    continue_bb: step_bb,
+                    break_bb: merge_bb,
+                });
                 self.codegen_expression(body)?;
+                self.loop_stack.pop();
 
                 if binder.is_some() {
                     self.local_scopes.pop();
@@ -1359,27 +1440,33 @@ impl<'ctx> Codegen<'ctx> {
 
                 if let Some(bb) = self.builder.get_insert_block() {
                     if bb.get_terminator().is_none() {
-                        let cur = self
-                            .builder
-                            .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
-                            .map_err(|e| e.to_string())?
-                            .into_int_value();
-                        let next = self
-                            .builder
-                            .build_int_add(
-                                cur,
-                                self.ptr_sized_int_type().const_int(1, false),
-                                "next_i",
-                            )
-                            .map_err(|e| e.to_string())?;
                         self.builder
-                            .build_store(counter_alloca, next)
-                            .map_err(|e| e.to_string())?;
-                        self.builder
-                            .build_unconditional_branch(cond_bb)
+                            .build_unconditional_branch(step_bb)
                             .map_err(|e| e.to_string())?;
                     }
                 }
+
+                // --- Step Block ---
+                self.builder.position_at_end(step_bb);
+                let cur = self
+                    .builder
+                    .build_load(self.ptr_sized_int_type(), counter_alloca, "cur_i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+                let next = self
+                    .builder
+                    .build_int_add(
+                        cur,
+                        self.ptr_sized_int_type().const_int(1, false),
+                        "next_i",
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(counter_alloca, next)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(merge_bb);
                 Ok(self.symbol_binding("none"))
@@ -1418,7 +1505,12 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(body_bb);
+                self.loop_stack.push(LoopContext {
+                    continue_bb: cond_bb,
+                    break_bb: merge_bb,
+                });
                 self.codegen_expression(body)?;
+                self.loop_stack.pop();
 
                 if let Some(bb) = self.builder.get_insert_block() {
                     if bb.get_terminator().is_none() {
@@ -1458,7 +1550,12 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(body_bb);
+                self.loop_stack.push(LoopContext {
+                    continue_bb: cond_bb,
+                    break_bb: merge_bb,
+                });
                 self.codegen_expression(body)?;
+                self.loop_stack.pop();
 
                 if let Some(bb) = self.builder.get_insert_block() {
                     if bb.get_terminator().is_none() {
@@ -1717,14 +1814,19 @@ impl<'ctx> Codegen<'ctx> {
         let struct_type = Type::Struct(field_types);
         let llvm_struct_type = self.llvm_type(&struct_type)?.into_struct_type();
 
-        let mut struct_val = llvm_struct_type.get_undef();
-        for (i, val) in field_values.into_iter().enumerate() {
-            struct_val = self
-                .builder
-                .build_insert_value(struct_val, val, i as u32, &format!("struct_fld_{}", i))
-                .map_err(|e| e.to_string())?
-                .into_struct_value();
-        }
+        let struct_val = if self.builder.get_insert_block().is_none() {
+            llvm_struct_type.const_named_struct(&field_values)
+        } else {
+            let mut struct_val = llvm_struct_type.get_undef();
+            for (i, val) in field_values.into_iter().enumerate() {
+                struct_val = self
+                    .builder
+                    .build_insert_value(struct_val, val, i as u32, &format!("struct_fld_{}", i))
+                    .map_err(|e| e.to_string())?
+                    .into_struct_value();
+            }
+            struct_val
+        };
 
         Ok(Binding::Struct {
             ty: struct_type,
@@ -1752,14 +1854,19 @@ impl<'ctx> Codegen<'ctx> {
         let tuple_type = Type::Tuple(element_types);
         let llvm_struct_type = self.llvm_type(&tuple_type)?.into_struct_type();
 
-        let mut struct_val = llvm_struct_type.get_undef();
-        for (i, val) in element_values.into_iter().enumerate() {
-            struct_val = self
-                .builder
-                .build_insert_value(struct_val, val, i as u32, &format!("tuple_fld_{}", i))
-                .map_err(|e| e.to_string())?
-                .into_struct_value();
-        }
+        let struct_val = if self.builder.get_insert_block().is_none() {
+            llvm_struct_type.const_named_struct(&element_values)
+        } else {
+            let mut struct_val = llvm_struct_type.get_undef();
+            for (i, val) in element_values.into_iter().enumerate() {
+                struct_val = self
+                    .builder
+                    .build_insert_value(struct_val, val, i as u32, &format!("tuple_fld_{}", i))
+                    .map_err(|e| e.to_string())?
+                    .into_struct_value();
+            }
+            struct_val
+        };
 
         Ok(Binding::Struct {
             ty: tuple_type,
@@ -3037,13 +3144,22 @@ impl<'ctx> Codegen<'ctx> {
 
 
 
-        if let (Type::Pointer { .. }, Type::Pointer { .. }) = (&resolved_source, &resolved_target) {
-            if let Binding::Pointer { value, .. } = binding {
-                return Ok(Binding::Pointer {
-                    ty: target_type,
-                    value,
-                });
-            }
+        if matches!(
+            (&resolved_source, &resolved_target),
+            (
+                Type::Pointer { .. } | Type::Function { .. },
+                Type::Pointer { .. } | Type::Function { .. }
+            )
+        ) {
+            let ptr_val = match binding {
+                Binding::Pointer { value, .. } => value,
+                Binding::Function { value, .. } => value.as_global_value().as_pointer_value(),
+                _ => return Err("expected pointer or function binding".to_string()),
+            };
+            return Ok(Binding::Pointer {
+                ty: target_type,
+                value: ptr_val,
+            });
         }
 
         if let Type::Union(target_vars) = &resolved_target {
@@ -3367,6 +3483,9 @@ impl<'ctx> Codegen<'ctx> {
 
         let casted = if target_bits == source_bits {
             value
+        } else if self.builder.get_insert_block().is_none() {
+            let val_u64 = value.get_zero_extended_constant().unwrap_or(0);
+            target_llvm_type.const_int(val_u64, self.is_signed(&resolved_source))
         } else if target_bits > source_bits {
             if self.is_signed(&resolved_source) {
                 self.builder

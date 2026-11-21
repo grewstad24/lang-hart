@@ -1,5 +1,39 @@
 mod io
 
+# Standard file descriptor numbers
+const stdinFileno := 0
+const stdoutFileno := 1
+const stderrFileno := 2
+
+# open() flags
+const oRdonly := 0
+const oReadOnly := 0
+const oWronly := 1
+const oWriteOnly := 1
+const oRdwr := 2
+const oReadWrite := 2
+const oCreat := 64
+const oCreate := 64
+const oTrunc := 512
+const oAppend := 1024
+
+# Combined open() flags for creation and appending
+# oWriteOnly | oCreate | oTrunc (1 + 64 + 512 = 577)
+const oCreateWrite := 577
+# oWriteOnly | oCreate | oAppend (1 + 64 + 1024 = 1089)
+const oCreateAppend := 1089
+
+# Standard file permissions (0644 octal = 420 decimal: rw-r--r--)
+const defaultFileMode := 420
+
+# lseek() whence values
+const seekSet := 0
+const seekCur := 1
+const seekEnd := 2
+
+# Default buffer size for stream operations
+const defaultBufferSize := 8192 as usize
+
 extern func open(path: *u8, flags: s32, mode: s32) -> s32
 extern func close(fd: s32) -> s32
 extern func read(fd: s32, buf: *u8, bytes: usize) -> s64

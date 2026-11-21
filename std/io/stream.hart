@@ -1,35 +1,31 @@
 mod io
 
-def copy_stream_loop(src_fd, dst_fd, buf, chunk_size) {
-      mut n := read(src_fd, buf, chunk_size)
-      if {
-            n > 0 as s64 => {
-                  write(dst_fd, buf, n as usize)
-                  copy_stream_loop(src_fd, dst_fd, buf, chunk_size)
-            }
-            else => :none
-      }
-}
-
 def copy_stream(src_fd, dst_fd, chunk_size) {
       mut buf := alloc(chunk_size)
-      copy_stream_loop(src_fd, dst_fd, buf as *u8, chunk_size)
-      dealloc(buf)
-}
-
-def stream_fd_loop(fd, buf, chunk_size, callback) {
-      mut n := read(fd, buf, chunk_size)
-      if {
-            n > 0 as s64 => {
-                  callback({ ptr: buf, len: n as usize })
-                  stream_fd_loop(fd, buf, chunk_size, callback)
+      mut n: s64 := 0
+      repeat until n <= 0 as s64 {
+            n := read(src_fd, buf as *u8, chunk_size)
+            if {
+                  n > 0 as s64 => {
+                        write(dst_fd, buf as *u8, n as usize)
+                  }
+                  else => :none
             }
-            else => :none
       }
+      dealloc(buf)
 }
 
 def stream_fd(fd, chunk_size, callback) {
       mut buf := alloc(chunk_size)
-      stream_fd_loop(fd, buf as *u8, chunk_size, callback)
+      mut n: s64 := 0
+      repeat until n <= 0 as s64 {
+            n := read(fd, buf as *u8, chunk_size)
+            if {
+                  n > 0 as s64 => {
+                        callback({ ptr: buf as *u8, len: n as usize })
+                  }
+                  else => :none
+            }
+      }
       dealloc(buf)
 }

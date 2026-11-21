@@ -21,6 +21,8 @@
   "while"
   "until"
   "return"
+  "break"
+  "continue"
   "as"
   "mut"
 ] @keyword

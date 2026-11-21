@@ -346,6 +346,8 @@ impl fmt::Display for Expression {
             Expression::Block(_) => write!(f, "{{ ... }}"),
             Expression::Discard(expr) => write!(f, "_{}", expr),
             Expression::Return(expr) => write!(f, "return {}", expr),
+            Expression::Break => write!(f, "break"),
+            Expression::Continue => write!(f, "continue"),
             Expression::If { .. } => write!(f, "if ..."),
             Expression::Match { target, .. } => write!(f, "match {}", target),
             Expression::Let { name, value } => write!(f, "{} := {}", name, value),
@@ -487,6 +489,8 @@ pub enum Expression {
     Block(Vec<Expression>),
     Discard(Box<Expression>),
     Return(Box<Expression>),
+    Break,
+    Continue,
     If {
         arms: Vec<IfArm>,
     },
@@ -686,6 +690,8 @@ pub enum Token {
     Switch,
     Using,
     Return,
+    Break,
+    Continue,
     As,
     Repeat,
     While,
@@ -767,6 +773,8 @@ impl fmt::Display for Token {
             Token::Switch => write!(f, "'switch'"),
             Token::Using => write!(f, "'using'"),
             Token::Return => write!(f, "'return'"),
+            Token::Break => write!(f, "'break'"),
+            Token::Continue => write!(f, "'continue'"),
             Token::As => write!(f, "'as'"),
             Token::Repeat => write!(f, "'repeat'"),
             Token::While => write!(f, "'while'"),
@@ -1144,6 +1152,8 @@ impl Lexer {
             "switch" => Token::Switch,
             "using" => Token::Using,
             "return" => Token::Return,
+            "break" => Token::Break,
+            "continue" => Token::Continue,
             "as" => Token::As,
             "s16" => Token::TypeS16,
             "s32" => Token::TypeS32,
@@ -1419,6 +1429,14 @@ impl Parser {
                 self.advance();
                 Ok("return".to_string())
             }
+            Token::Break => {
+                self.advance();
+                Ok("break".to_string())
+            }
+            Token::Continue => {
+                self.advance();
+                Ok("continue".to_string())
+            }
             Token::As => {
                 self.advance();
                 Ok("as".to_string())
@@ -1533,8 +1551,8 @@ impl Parser {
 
             if self.is(Token::RBrace) {
                 // No trailing newline before '}' -> automatically return
-                let ret_expr = match expr {
-                    Expression::Return(_) => expr,
+                let ret_expr = match unspanned_expression(&expr) {
+                    Expression::Return(_) | Expression::Break | Expression::Continue => expr,
                     _ => Expression::Return(Box::new(expr)),
                 };
                 expressions.push(ret_expr);
@@ -2394,6 +2412,8 @@ impl Parser {
                 | Token::Switch
                 | Token::Using
                 | Token::Return
+                | Token::Break
+                | Token::Continue
                 | Token::As
                 | Token::Repeat
                 | Token::While
@@ -2438,6 +2458,8 @@ impl Parser {
                 | Token::Switch
                 | Token::Using
                 | Token::Return
+                | Token::Break
+                | Token::Continue
                 | Token::As
                 | Token::Repeat
                 | Token::While
@@ -2664,6 +2686,14 @@ impl Parser {
                 self.skip_newlines();
                 let expr = self.parse_expression()?;
                 Ok(Expression::Return(Box::new(expr)))
+            }
+            Token::Break => {
+                self.advance();
+                Ok(Expression::Break)
+            }
+            Token::Continue => {
+                self.advance();
+                Ok(Expression::Continue)
             }
             Token::Repeat => {
                 self.advance();

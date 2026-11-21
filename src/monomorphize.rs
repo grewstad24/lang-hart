@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::sema::ModuleScope;
 use crate::syntax::{
@@ -289,7 +289,9 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Symbol(_) => {}
+        | Expression::Symbol(_)
+        | Expression::Break
+        | Expression::Continue => {}
     }
 }
 
@@ -520,7 +522,9 @@ fn scan_and_rewrite_expression(
         Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Symbol(_) => {}
+        | Expression::Symbol(_)
+        | Expression::Break
+        | Expression::Continue => {}
     }
     Ok(())
 }
@@ -828,7 +832,9 @@ fn concretize_expression(
         Expression::Integer(_)
         | Expression::String(_)
         | Expression::Symbol(_)
-        | Expression::Identifier(_) => {}
+        | Expression::Identifier(_)
+        | Expression::Break
+        | Expression::Continue => {}
     }
     Ok(())
 }
@@ -1068,7 +1074,10 @@ pub fn unify_types_to_sum_type(types: &[Type], scope: &ModuleScope) -> Type {
         }
     }
 
-    let mut non_never: Vec<Type> = unique.into_iter().filter(|t| *t != Type::Never).collect();
+    let mut non_never: Vec<Type> = unique
+        .into_iter()
+        .filter(|t| *t != Type::Never && *t != Type::Inferred)
+        .collect();
     if non_never.is_empty() {
         return Type::Never;
     }
@@ -1080,6 +1089,127 @@ pub fn unify_types_to_sum_type(types: &[Type], scope: &ModuleScope) -> Type {
     Type::Union(non_never)
 }
 
+fn collect_returns(
+    expr: &Expression,
+    local_types: &HashMap<String, Type>,
+    scope: &ModuleScope,
+    generated: &[GeneratedSpecialization],
+    returns: &mut Vec<Type>,
+    visiting: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > 20 {
+        return;
+    }
+    let unspanned = crate::syntax::unspanned_expression(expr);
+    match unspanned {
+        Expression::Return(r) => {
+            if let Some(t) = infer_expr_type_internal(r, local_types, scope, generated, visiting, depth + 1) {
+                if t != Type::Never && t != Type::Inferred && !returns.contains(&t) {
+                    returns.push(t);
+                }
+            }
+        }
+        Expression::Block(exprs) => {
+            let mut block_locals = local_types.clone();
+            for stmt in exprs {
+                let mut unspanned_stmt = crate::syntax::unspanned_expression(stmt);
+                while let Expression::Discard(inner) = unspanned_stmt {
+                    unspanned_stmt = crate::syntax::unspanned_expression(inner);
+                }
+                match unspanned_stmt {
+                    Expression::Let { name, value } => {
+                        if let Some(t) = infer_expr_type_internal(value, &block_locals, scope, generated, visiting, depth + 1) {
+                            block_locals.insert(name.clone(), t);
+                        }
+                    }
+                    Expression::Var { name, ty, value } => {
+                        if let Some(t) = ty {
+                            if *t != Type::Inferred {
+                                block_locals.insert(name.clone(), t.clone());
+                            } else if let Some(v) = value {
+                                if let Some(t) = infer_expr_type_internal(v, &block_locals, scope, generated, visiting, depth + 1) {
+                                    block_locals.insert(name.clone(), t);
+                                }
+                            }
+                        } else if let Some(v) = value {
+                            if let Some(t) = infer_expr_type_internal(v, &block_locals, scope, generated, visiting, depth + 1) {
+                                block_locals.insert(name.clone(), t);
+                            }
+                        }
+                    }
+                    Expression::Assign { target, value } => {
+                        if let Expression::Identifier(name) = crate::syntax::unspanned_expression(target) {
+                            if let Some(t) = infer_expr_type_internal(value, &block_locals, scope, generated, visiting, depth + 1) {
+                                block_locals.insert(name.clone(), t);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                collect_returns(stmt, &block_locals, scope, generated, returns, visiting, depth + 1);
+            }
+        }
+        Expression::If { arms } => {
+            for arm in arms {
+                collect_returns(&arm.body, local_types, scope, generated, returns, visiting, depth + 1);
+            }
+        }
+        Expression::Match { target, binding_name, arms } => {
+            for arm in arms {
+                let mut arm_locals = local_types.clone();
+                if !binding_name.is_empty() {
+                    if let Some(vt) = &arm.variant_type {
+                        arm_locals.insert(binding_name.clone(), vt.clone());
+                    } else if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
+                        arm_locals.insert(binding_name.clone(), target_ty);
+                    }
+                }
+                collect_returns(&arm.body, &arm_locals, scope, generated, returns, visiting, depth + 1);
+            }
+        }
+        Expression::Repeat { count: _, body, binder } => {
+            let mut loop_locals = local_types.clone();
+            if let Some(b) = binder {
+                loop_locals.insert(b.clone(), Type::USize);
+            }
+            collect_returns(body, &loop_locals, scope, generated, returns, visiting, depth + 1);
+        }
+        Expression::RepeatWhile { condition: _, body } => {
+            collect_returns(body, local_types, scope, generated, returns, visiting, depth + 1);
+        }
+        Expression::RepeatUntil { condition: _, body } => {
+            collect_returns(body, local_types, scope, generated, returns, visiting, depth + 1);
+        }
+        Expression::For { iterable, binder, body } => {
+            let mut loop_locals = local_types.clone();
+            if let Some(iter_ty) = infer_expr_type_internal(iterable, local_types, scope, generated, visiting, depth + 1) {
+                let resolved = resolve_type_alias_deep(&iter_ty, scope);
+                match resolved {
+                    Type::Array { element, .. } => {
+                        if let Some(b) = binder {
+                            loop_locals.insert(b.clone(), *element);
+                        }
+                    }
+                    ref other if crate::sema::Checker::new(scope).is_slice_type(other).unwrap_or(false) => {
+                        if let Ok(elem) = crate::sema::Checker::new(scope).slice_element_type(other) {
+                            if let Some(b) = binder {
+                                loop_locals.insert(b.clone(), elem);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect_returns(body, &loop_locals, scope, generated, returns, visiting, depth + 1);
+        }
+        Expression::Discard(inner) => {
+            collect_returns(inner, local_types, scope, generated, returns, visiting, depth + 1);
+        }
+        _ => {}
+    }
+}
+
 pub fn infer_expr_type(
     expr: &Expression,
     local_types: &HashMap<String, Type>,
@@ -1088,14 +1218,56 @@ pub fn infer_expr_type(
     infer_expr_type_with_generated(expr, local_types, scope, &[])
 }
 
+fn infer_function_return_type(
+    def_value: &Expression,
+    local_types: &HashMap<String, Type>,
+    scope: &ModuleScope,
+    generated: &[GeneratedSpecialization],
+    visiting: &mut HashSet<String>,
+    depth: usize,
+) -> Option<Type> {
+    let mut returns = Vec::new();
+    collect_returns(def_value, local_types, scope, generated, &mut returns, visiting, depth + 1);
+    let fallthrough = infer_expr_type_internal(def_value, local_types, scope, generated, visiting, depth + 1);
+    if let Some(ref ft) = fallthrough {
+        if *ft != Type::Never && *ft != Type::Inferred && !returns.contains(ft) {
+            returns.push(ft.clone());
+        }
+    }
+    if returns.is_empty() {
+        fallthrough
+    } else if returns.len() == 1 {
+        Some(returns.remove(0))
+    } else {
+        Some(unify_types_to_sum_type(&returns, scope))
+    }
+}
+
 pub(crate) fn infer_expr_type_with_generated(
     expr: &Expression,
     local_types: &HashMap<String, Type>,
     scope: &ModuleScope,
     generated: &[GeneratedSpecialization],
 ) -> Option<Type> {
+    let mut visiting = HashSet::new();
+    infer_expr_type_internal(expr, local_types, scope, generated, &mut visiting, 0)
+}
+
+fn infer_expr_type_internal(
+    expr: &Expression,
+    local_types: &HashMap<String, Type>,
+    scope: &ModuleScope,
+    generated: &[GeneratedSpecialization],
+    visiting: &mut HashSet<String>,
+    depth: usize,
+) -> Option<Type> {
+    if depth > 20 {
+        return None;
+    }
     match expr {
-        Expression::Spanned { expression, .. } => infer_expr_type_with_generated(expression, local_types, scope, generated),
+        Expression::Spanned { expression, .. } => {
+            infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1)
+        }
         Expression::Integer(_) => Some(Type::S32),
         Expression::String(_) => Some(Type::Alias("String".to_string())),
         Expression::Symbol(name) => {
@@ -1132,8 +1304,11 @@ pub(crate) fn infer_expr_type_with_generated(
                         return_type: sig.return_type.clone(),
                         is_variadic: sig.is_variadic,
                     });
-                } else {
-                    return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
+                } else if !visiting.contains(name) {
+                    visiting.insert(name.clone());
+                    let res = infer_expr_type_internal(&prov.item.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                    visiting.remove(name);
+                    return res;
                 }
             }
             if let Some(ext) = scope.lookup_extern(name) {
@@ -1157,13 +1332,13 @@ pub(crate) fn infer_expr_type_with_generated(
         }
         Expression::Cast { ty, .. } => Some(ty.clone()),
         Expression::AddressOf { expression, is_mut } => {
-            infer_expr_type_with_generated(expression, local_types, scope, generated).map(|el| Type::Pointer {
+            infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1).map(|el| Type::Pointer {
                 element: Box::new(el),
                 is_mut: *is_mut,
             })
         }
         Expression::Dereference(expression) => {
-            infer_expr_type_with_generated(expression, local_types, scope, generated).and_then(|t| {
+            infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1).and_then(|t| {
                 match resolve_type_alias_deep(&t, scope) {
                     Type::Pointer { element, .. } => Some(*element),
                     _ => None,
@@ -1176,7 +1351,7 @@ pub(crate) fn infer_expr_type_with_generated(
             } else {
                 let mut elem_types = Vec::new();
                 for el in elements {
-                    if let Some(t) = infer_expr_type_with_generated(el, local_types, scope, generated) {
+                    if let Some(t) = infer_expr_type_internal(el, local_types, scope, generated, visiting, depth + 1) {
                         elem_types.push(t);
                     } else {
                         return None;
@@ -1192,7 +1367,7 @@ pub(crate) fn infer_expr_type_with_generated(
         Expression::Tuple(elements) => {
             let mut elem_types = Vec::with_capacity(elements.len());
             for elem in elements {
-                if let Some(t) = infer_expr_type_with_generated(elem, local_types, scope, generated) {
+                if let Some(t) = infer_expr_type_internal(elem, local_types, scope, generated, visiting, depth + 1) {
                     elem_types.push(t);
                 } else {
                     return None;
@@ -1203,7 +1378,7 @@ pub(crate) fn infer_expr_type_with_generated(
         Expression::Struct(fields) => {
             let mut struct_fields = Vec::with_capacity(fields.len());
             for f in fields {
-                if let Some(t) = infer_expr_type_with_generated(&f.value, local_types, scope, generated) {
+                if let Some(t) = infer_expr_type_internal(&f.value, local_types, scope, generated, visiting, depth + 1) {
                     struct_fields.push(StructFieldType {
                         name: f.name.clone(),
                         ty: t,
@@ -1216,7 +1391,7 @@ pub(crate) fn infer_expr_type_with_generated(
         }
         Expression::Record(_) => Some(Type::Alias("Record".to_string())),
         Expression::Slice(inner) => {
-            if let Some(inner_ty) = infer_expr_type_with_generated(inner, local_types, scope, generated) {
+            if let Some(inner_ty) = infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&inner_ty, scope);
                 match resolved {
                     Type::Array { element, .. } => Some(Type::GenericInstance {
@@ -1236,7 +1411,7 @@ pub(crate) fn infer_expr_type_with_generated(
             }
         }
         Expression::Member { expression, field } => {
-            if let Some(expr_ty) = infer_expr_type_with_generated(expression, local_types, scope, generated) {
+            if let Some(expr_ty) = infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&expr_ty, scope);
                 match resolved {
                     Type::Struct(fields) => {
@@ -1273,7 +1448,7 @@ pub(crate) fn infer_expr_type_with_generated(
             }
         }
         Expression::Index { expression, index } => {
-            if let Some(expr_ty) = infer_expr_type_with_generated(expression, local_types, scope, generated) {
+            if let Some(expr_ty) = infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&expr_ty, scope);
                 match resolved {
                     Type::Array { element, .. } => Some(*element),
@@ -1294,11 +1469,10 @@ pub(crate) fn infer_expr_type_with_generated(
                 None
             }
         }
-        Expression::Binary { left, .. } => infer_expr_type_with_generated(left, local_types, scope, generated),
+        Expression::Binary { left, .. } => infer_expr_type_internal(left, local_types, scope, generated, visiting, depth + 1),
         Expression::Comparison { .. } => Some(Type::Alias("Bool".to_string())),
         Expression::Block(exprs) => {
             let mut block_locals = local_types.clone();
-            let mut returned_type = None;
             for stmt in exprs {
                 let mut unspanned = crate::syntax::unspanned_expression(stmt);
                 while let Expression::Discard(inner) = unspanned {
@@ -1306,7 +1480,7 @@ pub(crate) fn infer_expr_type_with_generated(
                 }
                 match unspanned {
                     Expression::Let { name, value } => {
-                        if let Some(t) = infer_expr_type_with_generated(value, &block_locals, scope, generated) {
+                        if let Some(t) = infer_expr_type_internal(value, &block_locals, scope, generated, visiting, depth + 1) {
                             block_locals.insert(name.clone(), t);
                         }
                     }
@@ -1315,60 +1489,102 @@ pub(crate) fn infer_expr_type_with_generated(
                             if *t != Type::Inferred {
                                 block_locals.insert(name.clone(), t.clone());
                             } else if let Some(v) = value {
-                                if let Some(t) = infer_expr_type_with_generated(v, &block_locals, scope, generated) {
+                                if let Some(t) = infer_expr_type_internal(v, &block_locals, scope, generated, visiting, depth + 1) {
                                     block_locals.insert(name.clone(), t);
                                 }
                             }
                         } else if let Some(v) = value {
-                            if let Some(t) = infer_expr_type_with_generated(v, &block_locals, scope, generated) {
+                            if let Some(t) = infer_expr_type_internal(v, &block_locals, scope, generated, visiting, depth + 1) {
                                 block_locals.insert(name.clone(), t);
                             }
                         }
                     }
                     Expression::Assign { target, value } => {
                         if let Expression::Identifier(name) = crate::syntax::unspanned_expression(target) {
-                            if let Some(t) = infer_expr_type_with_generated(value, &block_locals, scope, generated) {
+                            if let Some(t) = infer_expr_type_internal(value, &block_locals, scope, generated, visiting, depth + 1) {
                                 block_locals.insert(name.clone(), t);
                             }
                         }
                     }
-                    Expression::Return(r) => {
-                        returned_type = infer_expr_type_with_generated(r, &block_locals, scope, generated);
-                    }
                     _ => {}
                 }
             }
-            if returned_type.is_some() {
-                return returned_type;
-            }
-            exprs.last().and_then(|e| infer_expr_type_with_generated(e, &block_locals, scope, generated))
+
+            exprs.last().and_then(|e| infer_expr_type_internal(e, &block_locals, scope, generated, visiting, depth + 1))
         }
         Expression::If { arms } => {
-            arms.first().and_then(|arm| infer_expr_type_with_generated(&arm.body, local_types, scope, generated))
+            let mut arm_types = Vec::new();
+            for arm in arms {
+                if let Some(t) = infer_expr_type_internal(&arm.body, local_types, scope, generated, visiting, depth + 1) {
+                    if t != Type::Never && t != Type::Inferred && !arm_types.contains(&t) {
+                        arm_types.push(t);
+                    }
+                }
+            }
+            if arm_types.is_empty() {
+                None
+            } else if arm_types.len() == 1 {
+                Some(arm_types.remove(0))
+            } else {
+                Some(unify_types_to_sum_type(&arm_types, scope))
+            }
         }
-        Expression::Match { arms, .. } => {
-            arms.first().and_then(|arm| infer_expr_type_with_generated(&arm.body, local_types, scope, generated))
+        Expression::Match { target, binding_name, arms } => {
+            let mut arm_types = Vec::new();
+            for arm in arms {
+                let mut arm_locals = local_types.clone();
+                if !binding_name.is_empty() {
+                    if let Some(vt) = &arm.variant_type {
+                        arm_locals.insert(binding_name.clone(), vt.clone());
+                    } else if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
+                        arm_locals.insert(binding_name.clone(), target_ty);
+                    }
+                }
+                if let Some(t) = infer_expr_type_internal(&arm.body, &arm_locals, scope, generated, visiting, depth + 1) {
+                    if t != Type::Never && t != Type::Inferred && !arm_types.contains(&t) {
+                        arm_types.push(t);
+                    }
+                }
+            }
+            if arm_types.is_empty() {
+                None
+            } else if arm_types.len() == 1 {
+                Some(arm_types.remove(0))
+            } else {
+                Some(unify_types_to_sum_type(&arm_types, scope))
+            }
         }
-        Expression::Return(e) => infer_expr_type_with_generated(e, local_types, scope, generated),
+        Expression::Return(_) => Some(Type::Never),
+        Expression::Break | Expression::Continue => Some(Type::Never),
         Expression::Discard(inner) => {
             let mut unspanned = crate::syntax::unspanned_expression(inner);
             while let Expression::Discard(d) = unspanned {
                 unspanned = crate::syntax::unspanned_expression(d);
             }
-            if let Expression::Return(r) = unspanned {
-                infer_expr_type_with_generated(r, local_types, scope, generated)
+            if let Expression::Return(_) = unspanned {
+                Some(Type::Never)
             } else {
                 Some(Type::Symbol("none".to_string()))
             }
         }
         Expression::Call { target, .. } => {
-            if let Some(fn_name) = unwrap_identifier_name(target) {
+            let fn_name_opt = unwrap_identifier_name(target).or_else(|| {
+                if let Expression::Member { field, .. } = crate::syntax::unspanned_expression(target) {
+                    Some(field.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(fn_name) = fn_name_opt {
                 if let Some(g) = generated.iter().rev().find(|g| g.specialized_def.name == fn_name) {
                     if let Some(sig) = &g.specialized_def.signature {
                         if *sig.return_type != Type::Inferred {
                             return Some(*sig.return_type.clone());
-                        } else {
-                            return infer_expr_type_with_generated(&g.specialized_def.value, &HashMap::new(), scope, generated);
+                        } else if !visiting.contains(&fn_name) {
+                            visiting.insert(fn_name.clone());
+                            let res = infer_function_return_type(&g.specialized_def.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                            visiting.remove(&fn_name);
+                            return res;
                         }
                     }
                 }
@@ -1376,11 +1592,17 @@ pub(crate) fn infer_expr_type_with_generated(
                     if let Some(sig) = &prov.item.signature {
                         if *sig.return_type != Type::Inferred {
                             return Some(*sig.return_type.clone());
-                        } else {
-                            return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
+                        } else if !visiting.contains(&fn_name) {
+                            visiting.insert(fn_name.clone());
+                            let res = infer_function_return_type(&prov.item.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                            visiting.remove(&fn_name);
+                            return res;
                         }
-                    } else {
-                        return infer_expr_type_with_generated(&prov.item.value, &HashMap::new(), scope, generated);
+                    } else if !visiting.contains(&fn_name) {
+                        visiting.insert(fn_name.clone());
+                        let res = infer_function_return_type(&prov.item.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                        visiting.remove(&fn_name);
+                        return res;
                     }
                 }
                 if let Some(ext) = scope.lookup_extern(&fn_name) {
@@ -1390,7 +1612,7 @@ pub(crate) fn infer_expr_type_with_generated(
                     return Some(*ext.item.signature.return_type.clone());
                 }
             }
-            if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
+            if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&target_ty, scope);
                 if let Type::Function { return_type, .. } = resolved {
                     return Some(*return_type);
@@ -1626,9 +1848,9 @@ fn scan_and_monomorphize_def(
 
                         if let Some(spec_sig) = &mut specialized_def.signature {
                             if *spec_sig.return_type == Type::Inferred {
-                                if let Some(ret_ty) = infer_expr_type_with_generated(&specialized_def.value, &param_types_map, scope, generated) {
-                                    spec_sig.return_type = Box::new(ret_ty);
-                                }
+                                let ret_ty = infer_function_return_type(&specialized_def.value, &param_types_map, scope, generated, &mut HashSet::new(), 0)
+                                    .unwrap_or(Type::Symbol("none".to_string()));
+                                spec_sig.return_type = Box::new(ret_ty);
                             }
                         }
 
@@ -1803,7 +2025,9 @@ fn scan_and_monomorphize_def(
         Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
-        | Expression::Symbol(_) => {}
+        | Expression::Symbol(_)
+        | Expression::Break
+        | Expression::Continue => {}
     }
     Ok(())
 }
