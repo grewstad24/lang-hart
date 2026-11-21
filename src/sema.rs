@@ -924,10 +924,31 @@ impl<'a> Checker<'a> {
         let aliases = self.alias_targets();
 
         // 1. Literal integer to expected integer type
-        if matches!(unspanned_expression(expr), Expression::Integer(_))
-            && Self::is_integer_type(&res_actual)
-            && Self::is_integer_type(&res_expected)
-        {
+        if let Expression::Integer(val) = unspanned_expression(expr) {
+            if Self::is_integer_type(&res_expected) {
+                let fits = match res_expected {
+                    Type::U8 => *val >= 0 && *val <= u8::MAX as i64,
+                    Type::U16 => *val >= 0 && *val <= u16::MAX as i64,
+                    Type::U32 => *val >= 0 && *val <= u32::MAX as i64,
+                    Type::U64 | Type::USize => *val >= 0,
+                    Type::S16 => *val >= i16::MIN as i64 && *val <= i16::MAX as i64,
+                    Type::S32 => *val >= i32::MIN as i64 && *val <= i32::MAX as i64,
+                    Type::S64 | Type::SSize => true,
+                    _ => false,
+                };
+                if fits {
+                    let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
+                    *expr = Expression::Cast {
+                        expression: Box::new(orig),
+                        ty: expected_ty.clone(),
+                    };
+                    return Ok(Some(res_expected));
+                }
+            }
+        }
+
+        // 2. Safe lossless integer widening
+        if Self::is_lossless_integer_widening(&res_actual, &res_expected) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
                 expression: Box::new(orig),
@@ -936,7 +957,7 @@ impl<'a> Checker<'a> {
             return Ok(Some(res_expected));
         }
 
-        // 2. Types compatible with aliases
+        // 3. Types compatible with aliases
         if Self::types_compatible_with_aliases(&res_actual, &res_expected, &aliases) {
             let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
             *expr = Expression::Cast {
@@ -946,7 +967,7 @@ impl<'a> Checker<'a> {
             return Ok(Some(res_expected));
         }
 
-        // 3. Expected is a union: if exactly one variant is supported, insert cast
+        // 4. Expected is a union: if exactly one variant is supported, insert cast
         if let Type::Union(target_vars) = &res_expected {
             if let Some(_variant_idx) = Self::castable_union_variant_with_aliases(&res_actual, target_vars, &aliases) {
                 let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
@@ -959,7 +980,7 @@ impl<'a> Checker<'a> {
             return Ok(None);
         }
 
-        // 4. Expected is a single concrete type (unambiguous target):
+        // 5. Expected is a single concrete type (unambiguous target):
         // If there is a supported cast between the mismatched type and the expected type,
         // only this single cast makes it correct. Insert it implicitly.
         if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &aliases) {
@@ -1006,7 +1027,7 @@ impl<'a> Checker<'a> {
         let right_is_lit = matches!(unspanned_expression(right), Expression::Integer(_));
         let left_is_lit = matches!(unspanned_expression(left), Expression::Integer(_));
 
-        if right_is_lit && !left_is_lit && Self::is_supported_cast_with_aliases(right_type, left_type, &aliases) {
+        if right_is_lit && !left_is_lit && Self::is_integer_type(left_type) {
             let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
             *right = Expression::Cast {
                 expression: Box::new(orig),
@@ -1016,13 +1037,33 @@ impl<'a> Checker<'a> {
             return true;
         }
 
-        if left_is_lit && !right_is_lit && Self::is_supported_cast_with_aliases(left_type, right_type, &aliases) {
+        if left_is_lit && !right_is_lit && Self::is_integer_type(right_type) {
             let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
             *left = Expression::Cast {
                 expression: Box::new(orig),
                 ty: right_type.clone(),
             };
             *left_type = right_type.clone();
+            return true;
+        }
+
+        if Self::is_lossless_integer_widening(left_type, right_type) {
+            let orig = std::mem::replace(left, Expression::Symbol("false".to_string()));
+            *left = Expression::Cast {
+                expression: Box::new(orig),
+                ty: right_type.clone(),
+            };
+            *left_type = right_type.clone();
+            return true;
+        }
+
+        if Self::is_lossless_integer_widening(right_type, left_type) {
+            let orig = std::mem::replace(right, Expression::Symbol("false".to_string()));
+            *right = Expression::Cast {
+                expression: Box::new(orig),
+                ty: left_type.clone(),
+            };
+            *right_type = left_type.clone();
             return true;
         }
 
@@ -3184,7 +3225,12 @@ impl<'a> Checker<'a> {
                             .all(|(a, b)| compatible(a, b, aliases, visited))
                         && compatible(r1, r2, aliases, visited)
                 }
-                _ => false,
+                _ => {
+                    if Checker::is_lossless_integer_widening(provided, expected) {
+                        return true;
+                    }
+                    false
+                }
             }
         }
 
@@ -3206,6 +3252,14 @@ impl<'a> Checker<'a> {
         )
     }
 
+    pub fn is_signed_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::S16 | Type::S32 | Type::S64 | Type::SSize)
+    }
+
+    pub fn is_unsigned_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::USize)
+    }
+
     pub fn integer_bit_width(ty: &Type) -> Option<u32> {
         match ty {
             Type::U8 => Some(8),
@@ -3213,6 +3267,21 @@ impl<'a> Checker<'a> {
             Type::S32 | Type::U32 => Some(32),
             Type::S64 | Type::U64 | Type::USize | Type::SSize => Some(64),
             _ => None,
+        }
+    }
+
+    pub fn is_lossless_integer_widening(source: &Type, target: &Type) -> bool {
+        if !Self::is_integer_type(source) || !Self::is_integer_type(target) {
+            return false;
+        }
+        let same_signedness = (Self::is_signed_integer_type(source) && Self::is_signed_integer_type(target))
+            || (Self::is_unsigned_integer_type(source) && Self::is_unsigned_integer_type(target));
+        if !same_signedness {
+            return false;
+        }
+        match (Self::integer_bit_width(source), Self::integer_bit_width(target)) {
+            (Some(s_bits), Some(t_bits)) => s_bits < t_bits,
+            _ => false,
         }
     }
 

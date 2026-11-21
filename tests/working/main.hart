@@ -106,7 +106,7 @@ func main(args: Slice<String>) -> :none {
       mut read_file_handle := open_file("test_loop_io.txt")
       if {
             read_file_handle.is_ok() => {
-                  read_file_handle.stream(64 as usize, on_chunk)
+                  read_file_handle.stream(64, on_chunk)
                   read_file_handle.close_file()
             }
             else => println("failed to open for streaming")
@@ -125,6 +125,32 @@ func main(args: Slice<String>) -> :none {
       println(@slice [ "early_return_from_loop(99) = ", early_return_from_loop(99) ])
       println(@slice [ "early_return_from_while(7) = ", early_return_from_while(7) ])
       println(@slice [ "early_return_from_while(50) = ", early_return_from_while(50) ])
+
+      println("--- testing compound assignments +=, -=, *=, /= ---")
+      mut ca := 10
+      ca += 5
+      println(@slice [ "10 += 5 => ", ca ])
+      ca -= 3
+      println(@slice [ "15 -= 3 => ", ca ])
+      ca *= 4
+      println(@slice [ "12 *= 4 => ", ca ])
+      ca /= 6
+      println(@slice [ "48 /= 6 => ", ca ])
+
+      println("--- testing implicit widening and contextual literals ---")
+      mut literal_usize: usize := 100
+      mut literal_s64: s64 := 500
+      mut b: u8 := 42
+      mut wide_u32: u32 := b
+      mut wide_usize: usize := b
+      println(@slice [ "u8 widened to u32: ", wide_u32 ])
+      println(@slice [ "u8 widened to usize: ", wide_usize ])
+      mut sum := literal_usize + b
+      println(@slice [ "literal_usize + u8: ", sum ])
+      if {
+            b < literal_usize => println("b < literal_usize is true without casts")
+            else => :none
+      }
 }
 
 func on_chunk(chunk: String) -> :none {

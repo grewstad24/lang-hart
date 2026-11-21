@@ -3,10 +3,10 @@ mod io
 def copy_stream(src_fd, dst_fd, chunk_size) {
       mut buf := alloc(chunk_size)
       mut n: s64 := 0
-      repeat until n <= 0 as s64 {
+      repeat until n <= 0 {
             n := read(src_fd, buf as *u8, chunk_size)
             if {
-                  n > 0 as s64 => {
+                  n > 0 => {
                         write(dst_fd, buf as *u8, n as usize)
                   }
                   else => :none
@@ -18,10 +18,10 @@ def copy_stream(src_fd, dst_fd, chunk_size) {
 def stream_fd(fd, chunk_size, callback) {
       mut buf := alloc(chunk_size)
       mut n: s64 := 0
-      repeat until n <= 0 as s64 {
+      repeat until n <= 0 {
             n := read(fd, buf as *u8, chunk_size)
             if {
-                  n > 0 as s64 => {
+                  n > 0 => {
                         callback({ ptr: buf as *u8, len: n as usize })
                   }
                   else => :none

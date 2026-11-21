@@ -5,9 +5,9 @@ type String := Slice <u8>
 
 type Integer := SignedInteger | UnsignedInteger
 
-type SignedInteger := s16 | s32 | s64
+type SignedInteger := s16 | s32 | s64 | ssize
 
-type UnsignedInteger := u16 | u32 | u64
+type UnsignedInteger := u8 | u16 | u32 | u64 | usize
 
 type Record := *{
       len: usize

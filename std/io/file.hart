@@ -52,13 +52,13 @@ def stream(file, chunk_size, callback) {
 def write_data(file, data) {
       mut remaining := data.len
       mut curr_ptr := data.ptr
-      repeat while remaining > 0 as usize {
+      repeat while remaining > 0 {
             mut n := write(file.fd, curr_ptr, remaining)
             if {
-                  n > 0 as s64 => {
+                  n > 0 => {
                         mut written := n as usize
                         curr_ptr := (curr_ptr as usize + written) as *u8
-                        remaining := remaining - written
+                        remaining -= written
                   }
                   else => return :error
             }
@@ -66,23 +66,23 @@ def write_data(file, data) {
       :ok }
 
 def read_all(file) {
-      mut size := lseek(file.fd, 0 as s64, seekEnd)
-      lseek(file.fd, 0 as s64, seekSet)
+      mut size := lseek(file.fd, 0, seekEnd)
+      lseek(file.fd, 0, seekSet)
       if {
-            size < 0 as s64 => return (:error, :seek_failed)
+            size < 0 => return (:error, :seek_failed)
             else => :none
       }
       mut u_size := size as usize
-      mut buf := alloc(u_size + 1 as usize)
-      mut total_read := 0 as usize
+      mut buf := alloc(u_size + 1)
+      mut total_read: usize := 0
       mut curr_ptr := buf as *u8
       repeat while total_read < u_size {
             mut n := read(file.fd, curr_ptr, u_size - total_read)
             if {
-                  n > 0 as s64 => {
+                  n > 0 => {
                         mut read_bytes := n as usize
                         curr_ptr := (curr_ptr as usize + read_bytes) as *u8
-                        total_read := total_read + read_bytes
+                        total_read += read_bytes
                   }
                   else => break
             }

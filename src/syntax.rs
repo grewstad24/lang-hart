@@ -659,6 +659,10 @@ pub enum Token {
     Colon,
     ColonColon,
     ColonEqual,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
     Equal,
     NotEqual,
     Less,
@@ -741,6 +745,10 @@ impl fmt::Display for Token {
             Token::Colon => write!(f, "':'"),
             Token::ColonColon => write!(f, "'::'"),
             Token::ColonEqual => write!(f, "':='"),
+            Token::PlusEqual => write!(f, "'+='"),
+            Token::MinusEqual => write!(f, "'-='"),
+            Token::StarEqual => write!(f, "'*='"),
+            Token::SlashEqual => write!(f, "'/='"),
             Token::Comma => write!(f, "','"),
             Token::Dot => write!(f, "'.'"),
             Token::Plus => write!(f, "'+'"),
@@ -891,25 +899,43 @@ impl Lexer {
                     tokens.push(self.lex_string()?);
                 }
                 '+' => {
-                    self.position += 1;
-                    tokens.push(Token::Plus);
+                    if self.peek_char(1) == Some('=') {
+                        self.position += 2;
+                        tokens.push(Token::PlusEqual);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Plus);
+                    }
                 }
                 '-' => {
                     if self.peek_char(1) == Some('>') {
                         self.position += 2;
                         tokens.push(Token::Arrow);
+                    } else if self.peek_char(1) == Some('=') {
+                        self.position += 2;
+                        tokens.push(Token::MinusEqual);
                     } else {
                         self.position += 1;
                         tokens.push(Token::Minus);
                     }
                 }
                 '*' => {
-                    self.position += 1;
-                    tokens.push(Token::Star);
+                    if self.peek_char(1) == Some('=') {
+                        self.position += 2;
+                        tokens.push(Token::StarEqual);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Star);
+                    }
                 }
                 '/' => {
-                    self.position += 1;
-                    tokens.push(Token::Slash);
+                    if self.peek_char(1) == Some('=') {
+                        self.position += 2;
+                        tokens.push(Token::SlashEqual);
+                    } else {
+                        self.position += 1;
+                        tokens.push(Token::Slash);
+                    }
                 }
                 '%' => {
                     self.position += 1;
@@ -2181,6 +2207,26 @@ impl Parser {
             return Ok(Expression::Assign {
                 target: Box::new(expression),
                 value: Box::new(value),
+            });
+        }
+
+        if let Some(op) = match self.peek() {
+            Token::PlusEqual => Some(BinaryOperator::Add),
+            Token::MinusEqual => Some(BinaryOperator::Subtract),
+            Token::StarEqual => Some(BinaryOperator::Multiply),
+            Token::SlashEqual => Some(BinaryOperator::Divide),
+            _ => None,
+        } {
+            self.advance();
+            self.skip_newlines();
+            let value = self.parse_assignment()?;
+            return Ok(Expression::Assign {
+                target: Box::new(expression.clone()),
+                value: Box::new(Expression::Binary {
+                    left: Box::new(expression),
+                    operator: op,
+                    right: Box::new(value),
+                }),
             });
         }
 

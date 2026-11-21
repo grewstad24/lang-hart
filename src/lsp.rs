@@ -472,7 +472,11 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
             }
         }
 
-        Token::ColonEqual => Some((6, 2)),
+        Token::ColonEqual
+        | Token::PlusEqual
+        | Token::MinusEqual
+        | Token::StarEqual
+        | Token::SlashEqual => Some((6, 2)),
         Token::Equal => Some((6, 1)),
         Token::NotEqual => Some((6, 2)),
         Token::Less => Some((6, 1)),
