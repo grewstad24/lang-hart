@@ -1691,6 +1691,11 @@ impl<'a> Checker<'a> {
                 }
             }
 
+            Expression::Defer(expr) => {
+                let _ = self.type_of_expression(expr)?;
+                Ok(Type::Symbol("none".to_string()))
+            }
+
             Expression::Discard(expr) => {
                 let ty = self.type_of_expression(expr)?;
                 if ty == Type::Never {

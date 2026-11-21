@@ -348,6 +348,9 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Block(resolved))
         }
+        Expression::Defer(e) => Ok(Expression::Defer(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
         Expression::Discard(e) => Ok(Expression::Discard(Box::new(canonicalize_expression(
             e, checker,
         )?))),

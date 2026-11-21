@@ -193,6 +193,92 @@ func main(args: Slice<String>) -> :none {
       test_take_generic({ inline_field: 42 })
       println([ "test_take_record({ a: 1, b: 2, c: 3 }) len = ", test_take_record({ a: 1, b: 2, c: 3 }) as s32 ])
       test_take_error((:error, { code: 404 }))
+
+      println("--- testing defer LIFO execution ---")
+      test_defer_lifo()
+
+      println("--- testing defer scope in block ---")
+      test_defer_scope()
+
+      println("--- testing defer return value evaluation order ---")
+      println([ "test_defer_return(1) returned: ", test_defer_return(1) ])
+
+      println("--- testing defer inside loop iterations ---")
+      test_defer_in_loop()
+
+      println("--- testing defer with break and continue ---")
+      test_defer_break_continue()
+
+      println("--- testing defer with block yield ---")
+      test_defer_yield()
+
+      println("--- testing stdlib file read/write using defer ---")
+      write_file("test_defer.tmp", "hello from defer stdlib")
+      mut file_content := read_file("test_defer.tmp")
+      match file_content using fc {
+            String => println([ "read_file succeeded: '", fc, "'" ])
+            else => println("read_file failed")
+      }
+}
+
+def test_defer_lifo() {
+      defer println("defer 1 (outer)")
+      defer println("defer 2 (middle)")
+      defer println("defer 3 (inner)")
+      println("body executing")
+}
+
+def test_defer_scope() {
+      println("before block")
+      {
+            defer println("inner block defer")
+            println("inside block")
+      }
+      println("after block")
+}
+
+def test_defer_return(x: s32) {
+      mut count := 10
+      defer {
+            count := count + 5
+            println([ "defer ran, count = ", count ])
+      }
+      if {
+            x > 0 => return count
+            else => :none
+      }
+      return 0
+}
+
+def test_defer_in_loop() {
+      mut i := 0
+      repeat while i < 3 {
+            defer println([ "loop defer for i = ", i ])
+            println([ "loop body for i = ", i ])
+            i := i + 1
+      }
+}
+
+def test_defer_break_continue() {
+      mut j := 0
+      repeat while j < 4 {
+            defer println([ "defer iter j = ", j ])
+            j := j + 1
+            if {
+                  j = 2 => continue
+                  j = 3 => break
+                  else => println([ "normal iter j = ", j ])
+            }
+      }
+}
+
+def test_defer_yield() {
+      val := {
+            defer println("yield block defer")
+            println("yield block body")
+            yield 42
+      }
+      println([ "yielded val = ", val ])
 }
 
 func test_take_record(r: Record) -> usize { return r.*.len }

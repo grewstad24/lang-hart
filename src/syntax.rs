@@ -334,6 +334,7 @@ impl fmt::Display for Expression {
                 write!(f, "{} {} {}", left, operator, right)
             }
             Expression::Block(_) => write!(f, "{{ ... }}"),
+            Expression::Defer(expr) => write!(f, "defer {}", expr),
             Expression::Discard(expr) => write!(f, "_{}", expr),
             Expression::Return(expr) => write!(f, "return {}", expr),
             Expression::Yield(expr) => write!(f, "yield {}", expr),
@@ -477,6 +478,7 @@ pub enum Expression {
 
     // Block & Value Control Flow
     Block(Vec<Expression>),
+    Defer(Box<Expression>),
     Discard(Box<Expression>),
     Return(Box<Expression>),
     Yield(Box<Expression>),
@@ -563,7 +565,7 @@ pub fn block_contains_yield(expr: &Expression) -> bool {
         | Expression::RepeatWhile { body, .. }
         | Expression::RepeatUntil { body, .. }
         | Expression::For { body, .. } => block_contains_yield(body),
-        Expression::Discard(e) => block_contains_yield(e),
+        Expression::Discard(e) | Expression::Defer(e) => block_contains_yield(e),
         _ => false,
     }
 }
@@ -705,6 +707,7 @@ pub enum Token {
     Match,
     Switch,
     Using,
+    Defer,
     Return,
     Yield,
     Break,
@@ -793,6 +796,7 @@ impl fmt::Display for Token {
             Token::Match => write!(f, "'match'"),
             Token::Switch => write!(f, "'switch'"),
             Token::Using => write!(f, "'using'"),
+            Token::Defer => write!(f, "'defer'"),
             Token::Return => write!(f, "'return'"),
             Token::Yield => write!(f, "'yield'"),
             Token::Break => write!(f, "'break'"),
@@ -1191,6 +1195,7 @@ impl Lexer {
             "match" => Token::Match,
             "switch" => Token::Switch,
             "using" => Token::Using,
+            "defer" => Token::Defer,
             "return" => Token::Return,
             "yield" => Token::Yield,
             "break" => Token::Break,
@@ -1466,6 +1471,10 @@ impl Parser {
                 self.advance();
                 Ok("using".to_string())
             }
+            Token::Defer => {
+                self.advance();
+                Ok("defer".to_string())
+            }
             Token::Return => {
                 self.advance();
                 Ok("return".to_string())
@@ -1597,7 +1606,7 @@ impl Parser {
             if self.is(Token::RBrace) {
                 // No trailing newline before '}' -> automatically return
                 let ret_expr = match unspanned_expression(&expr) {
-                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue => expr,
+                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue | Expression::Defer(_) => expr,
                     _ => Expression::Return(Box::new(expr)),
                 };
                 expressions.push(ret_expr);
@@ -1606,7 +1615,7 @@ impl Parser {
                 // Trailing newline present -> evaluate, discard value, continue
                 self.skip_newlines();
                 match unspanned_expression(&expr) {
-                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue => {
+                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue | Expression::Defer(_) => {
                         expressions.push(expr);
                     }
                     _ if block_contains_yield(&expr) => {
@@ -2486,6 +2495,7 @@ impl Parser {
                 | Token::Match
                 | Token::Switch
                 | Token::Using
+                | Token::Defer
                 | Token::Return
                 | Token::Yield
                 | Token::Break
@@ -2533,6 +2543,7 @@ impl Parser {
                 | Token::Match
                 | Token::Switch
                 | Token::Using
+                | Token::Defer
                 | Token::Return
                 | Token::Yield
                 | Token::Break
@@ -2724,6 +2735,12 @@ impl Parser {
                         ),
                     ))
                 }
+            }
+            Token::Defer => {
+                self.advance();
+                self.skip_newlines();
+                let expr = self.parse_expression()?;
+                Ok(Expression::Defer(Box::new(expr)))
             }
             Token::Return => {
                 self.advance();

@@ -305,6 +305,7 @@ module.exports = grammar({
       $.switch_expression,
       $.match_expression,
       $.repeat_expression,
+      $.defer_expression,
       $.return_expression,
       $.yield_expression,
       $.break_expression,
@@ -453,6 +454,11 @@ module.exports = grammar({
         seq('for', field('iterable', $._expression), optional(seq('using', field('binder', $.identifier))), field('body', $.block)),
         seq(field('count', $._expression), optional(seq('using', field('binder', $.identifier))), field('body', $.block)),
       ),
+    )),
+
+    defer_expression: $ => prec.right(seq(
+      'defer',
+      field('value', $._expression)
     )),
 
     return_expression: $ => prec.right(seq(

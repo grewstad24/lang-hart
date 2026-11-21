@@ -421,6 +421,7 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
     match token {
         Token::FnKeyword => Some((0, 4)),
         Token::Def => Some((0, 3)),
+        Token::Defer => Some((0, 5)),
         Token::Return => Some((0, 6)),
         Token::Yield => Some((0, 5)),
         Token::Break => Some((0, 5)),

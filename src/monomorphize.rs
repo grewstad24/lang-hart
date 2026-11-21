@@ -227,6 +227,9 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
                 substitute_expression(e, substitutions);
             }
         }
+        Expression::Defer(operand) => {
+            substitute_expression(operand, substitutions);
+        }
         Expression::Discard(operand) => {
             substitute_expression(operand, substitutions);
         }
@@ -445,6 +448,9 @@ fn scan_and_rewrite_expression(
             for e in exprs {
                 scan_and_rewrite_expression(e, scope, generated, changed)?;
             }
+        }
+        Expression::Defer(operand) => {
+            scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
         Expression::Discard(operand) => {
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
@@ -765,6 +771,9 @@ fn concretize_expression(
             for e in exprs {
                 concretize_expression(e, templates, generated, changed)?;
             }
+        }
+        Expression::Defer(e) => {
+            concretize_expression(e, templates, generated, changed)?;
         }
         Expression::Discard(e) => {
             concretize_expression(e, templates, generated, changed)?;
@@ -1599,6 +1608,7 @@ fn infer_expr_type_internal(
         }
         Expression::Return(_) => Some(Type::Never),
         Expression::Yield(inner) => infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1),
+        Expression::Defer(_) => Some(Type::Symbol("none".to_string())),
         Expression::Break | Expression::Continue => Some(Type::Never),
         Expression::Discard(inner) => {
             let mut unspanned = crate::syntax::unspanned_expression(inner);
@@ -2033,6 +2043,7 @@ fn scan_and_monomorphize_def(
         | Expression::SizeOf(expression)
         | Expression::AddressOf { expression, .. }
         | Expression::Dereference(expression)
+        | Expression::Defer(expression)
         | Expression::Discard(expression)
         | Expression::Return(expression)
         | Expression::Yield(expression) => {

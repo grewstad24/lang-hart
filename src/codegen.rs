@@ -70,6 +70,7 @@ struct GlobalVar<'ctx> {
 struct LoopContext<'ctx> {
     continue_bb: inkwell::basic_block::BasicBlock<'ctx>,
     break_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    defer_depth: usize,
 }
 
 #[derive(Clone)]
@@ -77,6 +78,7 @@ struct BlockContext<'ctx> {
     merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
     result_slot: Option<PointerValue<'ctx>>,
     result_ty: Option<Type>,
+    defer_scope_idx: usize,
 }
 
 fn block_contains_yield(expr: &Expression) -> bool {
@@ -95,7 +97,7 @@ fn block_contains_yield(expr: &Expression) -> bool {
         | Expression::RepeatWhile { body, .. }
         | Expression::RepeatUntil { body, .. }
         | Expression::For { body, .. } => block_contains_yield(body),
-        Expression::Discard(e) => block_contains_yield(e),
+        Expression::Discard(e) | Expression::Defer(e) => block_contains_yield(e),
         _ => false,
     }
 }
@@ -116,6 +118,7 @@ pub struct Codegen<'ctx> {
     current_function_return_type: Option<Type>,
     loop_stack: Vec<LoopContext<'ctx>>,
     block_stack: Vec<BlockContext<'ctx>>,
+    defer_stack: Vec<Vec<Expression>>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -143,6 +146,7 @@ impl<'ctx> Codegen<'ctx> {
             current_function_return_type: None,
             loop_stack: Vec::new(),
             block_stack: Vec::new(),
+            defer_stack: Vec::new(),
             string_counter: 0,
             branch_counter: 0,
         }
@@ -605,6 +609,35 @@ impl<'ctx> Codegen<'ctx> {
         Ok(())
     }
 
+    fn run_all_defers(&mut self) -> Result<(), String> {
+        let mut defers_to_run = Vec::new();
+        for scope in self.defer_stack.iter().rev() {
+            for expr in scope.iter().rev() {
+                defers_to_run.push(expr.clone());
+            }
+        }
+        for expr in defers_to_run {
+            self.codegen_expression(&expr)?;
+        }
+        Ok(())
+    }
+
+    fn run_defers_down_to(&mut self, min_depth: usize) -> Result<(), String> {
+        let mut defers_to_run = Vec::new();
+        let total = self.defer_stack.len();
+        if total > min_depth {
+            for scope_idx in (min_depth..total).rev() {
+                for expr in self.defer_stack[scope_idx].iter().rev() {
+                    defers_to_run.push(expr.clone());
+                }
+            }
+        }
+        for expr in defers_to_run {
+            self.codegen_expression(&expr)?;
+        }
+        Ok(())
+    }
+
     fn codegen_externals(&mut self, extern_functions: &[ExternalFunction]) -> Result<(), String> {
         for external in extern_functions {
             let fn_type = self.signature_to_function_type(Some(&external.signature))?;
@@ -777,6 +810,8 @@ impl<'ctx> Codegen<'ctx> {
 
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
+        let previous_defers = std::mem::take(&mut self.defer_stack);
+        self.defer_stack.push(Vec::new());
         let previous_return_type = self.current_function_return_type.take();
         if let Some(sig) = signature {
             self.current_function_return_type = Some((*sig.return_type).clone());
@@ -824,6 +859,7 @@ impl<'ctx> Codegen<'ctx> {
                 Type::Symbol("none".to_string())
             };
 
+            self.run_all_defers()?;
             self.exit_scope(stack_ptr)?;
 
             if ret_ty == Type::Never {
@@ -841,6 +877,7 @@ impl<'ctx> Codegen<'ctx> {
             self.scope_stack_ptrs.pop();
         }
 
+        self.defer_stack = previous_defers;
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
         self.current_function_return_type = previous_return_type;
@@ -858,6 +895,8 @@ impl<'ctx> Codegen<'ctx> {
         self.builder.position_at_end(entry);
         let previous_scopes = std::mem::take(&mut self.local_scopes);
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
+        let previous_defers = std::mem::take(&mut self.defer_stack);
+        self.defer_stack.push(Vec::new());
         let previous_return_type = self.current_function_return_type.take();
         if let Some(sig) = &main_def.signature {
             self.current_function_return_type = Some((*sig.return_type).clone());
@@ -1043,6 +1082,7 @@ impl<'ctx> Codegen<'ctx> {
             .map_or(false, |bb| bb.get_terminator().is_none());
 
         if needs_terminator {
+            self.run_all_defers()?;
             self.exit_scope(stack_ptr)?;
             let return_val: BasicValueEnum<'ctx> = match &body_binding {
                 Binding::Integer { value, .. } => (*value).into(),
@@ -1056,6 +1096,7 @@ impl<'ctx> Codegen<'ctx> {
             self.scope_stack_ptrs.pop();
         }
 
+        self.defer_stack = previous_defers;
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
         self.current_function_return_type = previous_return_type;
@@ -1237,10 +1278,14 @@ impl<'ctx> Codegen<'ctx> {
                                 .context
                                 .append_basic_block(current_fn, &format!("block.merge.{}", id));
 
+                            let defer_scope_idx = self.defer_stack.len();
+                            self.defer_stack.push(Vec::new());
+
                             self.block_stack.push(BlockContext {
                                 merge_bb,
                                 result_slot: None,
                                 result_ty: None,
+                                defer_scope_idx,
                             });
 
                             self.local_scopes.push(HashMap::new());
@@ -1252,6 +1297,18 @@ impl<'ctx> Codegen<'ctx> {
                                     }
                                 }
                                 last_binding = self.codegen_expression(expr)?;
+                            }
+
+                            let has_no_terminator = self
+                                .builder
+                                .get_insert_block()
+                                .map_or(false, |bb| bb.get_terminator().is_none());
+
+                            let block_defers = self.defer_stack.pop().unwrap_or_default();
+                            if has_no_terminator {
+                                for d in block_defers.into_iter().rev() {
+                                    self.codegen_expression(&d)?;
+                                }
                             }
                             self.local_scopes.pop();
 
@@ -1281,6 +1338,7 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 }
 
+                self.defer_stack.push(Vec::new());
                 self.local_scopes.push(HashMap::new());
                 let mut last_binding = self.symbol_binding("none");
                 for expr in exprs {
@@ -1291,11 +1349,29 @@ impl<'ctx> Codegen<'ctx> {
                     }
                     last_binding = self.codegen_expression(expr)?;
                 }
+
+                let has_no_terminator = self
+                    .builder
+                    .get_insert_block()
+                    .map_or(false, |bb| bb.get_terminator().is_none());
+
+                let block_defers = self.defer_stack.pop().unwrap_or_default();
+                if has_no_terminator {
+                    for d in block_defers.into_iter().rev() {
+                        self.codegen_expression(&d)?;
+                    }
+                }
                 self.local_scopes.pop();
                 Ok(last_binding)
             }
             Expression::Discard(expr) => {
                 self.codegen_expression(expr)?;
+                Ok(self.symbol_binding("none"))
+            }
+            Expression::Defer(expr) => {
+                if let Some(scope) = self.defer_stack.last_mut() {
+                    scope.push(*expr.clone());
+                }
                 Ok(self.symbol_binding("none"))
             }
             Expression::Return(expr) => {
@@ -1310,6 +1386,7 @@ impl<'ctx> Codegen<'ctx> {
                         }
                     }
                 }
+                self.run_all_defers()?;
                 self.exit_current_scope()?;
                 self.build_return(&binding)?;
                 Ok(self.symbol_binding("none"))
@@ -1322,9 +1399,9 @@ impl<'ctx> Codegen<'ctx> {
                     return Err("cannot yield outside of block".to_string());
                 }
 
-                let (merge_bb, existing_slot, target_ty_opt) = {
+                let (merge_bb, existing_slot, target_ty_opt, defer_scope_idx) = {
                     let ctx = self.block_stack.last().unwrap();
-                    (ctx.merge_bb, ctx.result_slot, ctx.result_ty.clone())
+                    (ctx.merge_bb, ctx.result_slot, ctx.result_ty.clone(), ctx.defer_scope_idx)
                 };
 
                 let alloca = match existing_slot {
@@ -1351,6 +1428,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let val = self.binding_basic_value(&binding)?;
                 self.builder.build_store(alloca, val).map_err(|e| e.to_string())?;
+                self.run_defers_down_to(defer_scope_idx)?;
                 self.builder.build_unconditional_branch(merge_bb).map_err(|e| e.to_string())?;
 
                 Ok(self.symbol_binding("none"))
@@ -1359,10 +1437,11 @@ impl<'ctx> Codegen<'ctx> {
                 let loop_ctx = self
                     .loop_stack
                     .last()
-                    .ok_or_else(|| "cannot break outside of loop".to_string())?;
-                let break_bb = loop_ctx.break_bb;
+                    .ok_or_else(|| "cannot break outside of loop".to_string())?
+                    .clone();
+                self.run_defers_down_to(loop_ctx.defer_depth)?;
                 self.builder
-                    .build_unconditional_branch(break_bb)
+                    .build_unconditional_branch(loop_ctx.break_bb)
                     .map_err(|e| e.to_string())?;
                 Ok(self.symbol_binding("none"))
             }
@@ -1370,10 +1449,11 @@ impl<'ctx> Codegen<'ctx> {
                 let loop_ctx = self
                     .loop_stack
                     .last()
-                    .ok_or_else(|| "cannot continue outside of loop".to_string())?;
-                let continue_bb = loop_ctx.continue_bb;
+                    .ok_or_else(|| "cannot continue outside of loop".to_string())?
+                    .clone();
+                self.run_defers_down_to(loop_ctx.defer_depth)?;
                 self.builder
-                    .build_unconditional_branch(continue_bb)
+                    .build_unconditional_branch(loop_ctx.continue_bb)
                     .map_err(|e| e.to_string())?;
                 Ok(self.symbol_binding("none"))
             }
@@ -1643,9 +1723,11 @@ impl<'ctx> Codegen<'ctx> {
                     );
                 }
 
+                let loop_defer_depth = self.defer_stack.len();
                 self.loop_stack.push(LoopContext {
                     continue_bb: step_bb,
                     break_bb: merge_bb,
+                    defer_depth: loop_defer_depth,
                 });
                 self.codegen_expression(body)?;
                 self.loop_stack.pop();
@@ -1829,9 +1911,11 @@ impl<'ctx> Codegen<'ctx> {
                     );
                 }
 
+                let loop_defer_depth = self.defer_stack.len();
                 self.loop_stack.push(LoopContext {
                     continue_bb: step_bb,
                     break_bb: merge_bb,
+                    defer_depth: loop_defer_depth,
                 });
                 self.codegen_expression(body)?;
                 self.loop_stack.pop();
@@ -1907,9 +1991,11 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(body_bb);
+                let loop_defer_depth = self.defer_stack.len();
                 self.loop_stack.push(LoopContext {
                     continue_bb: cond_bb,
                     break_bb: merge_bb,
+                    defer_depth: loop_defer_depth,
                 });
                 self.codegen_expression(body)?;
                 self.loop_stack.pop();
@@ -1952,9 +2038,11 @@ impl<'ctx> Codegen<'ctx> {
                     .map_err(|e| e.to_string())?;
 
                 self.builder.position_at_end(body_bb);
+                let loop_defer_depth = self.defer_stack.len();
                 self.loop_stack.push(LoopContext {
                     continue_bb: cond_bb,
                     break_bb: merge_bb,
+                    defer_depth: loop_defer_depth,
                 });
                 self.codegen_expression(body)?;
                 self.loop_stack.pop();

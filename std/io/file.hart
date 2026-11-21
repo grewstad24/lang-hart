@@ -97,9 +97,8 @@ def read_file(path) {
             file.is_err() => return (:error, :open_failed)
             else => :none
       }
-      mut data := file.read_all()
-      file.close_file()
-      return data
+      defer file.close_file()
+      return file.read_all()
 }
 
 def write_file(path, data) {
@@ -108,9 +107,8 @@ def write_file(path, data) {
             file.is_err() => return (:error, :open_failed)
             else => :none
       }
-      mut res := file.write_data(data)
-      file.close_file()
-      return res
+      defer file.close_file()
+      return file.write_data(data)
 }
 
 def append_to_file(path, data) {
@@ -119,7 +117,6 @@ def append_to_file(path, data) {
             file.is_err() => return (:error, :open_failed)
             else => :none
       }
-      mut res := file.write_data(data)
-      file.close_file()
-      return res
+      defer file.close_file()
+      return file.write_data(data)
 }

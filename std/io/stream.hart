@@ -2,6 +2,7 @@ mod io
 
 def copy_stream(src_fd, dst_fd, chunk_size) {
       mut buf := alloc(chunk_size)
+      defer dealloc(buf)
       mut n: s64 := 0
       repeat until n <= 0 {
             n := read(src_fd, buf as *u8, chunk_size)
@@ -12,11 +13,11 @@ def copy_stream(src_fd, dst_fd, chunk_size) {
                   else => :none
             }
       }
-      dealloc(buf)
 }
 
 def stream_fd(fd, chunk_size, callback) {
       mut buf := alloc(chunk_size)
+      defer dealloc(buf)
       mut n: s64 := 0
       repeat until n <= 0 {
             n := read(fd, buf as *u8, chunk_size)
@@ -27,5 +28,4 @@ def stream_fd(fd, chunk_size, callback) {
                   else => :none
             }
       }
-      dealloc(buf)
 }

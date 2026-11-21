@@ -20,6 +20,8 @@
   "for"
   "while"
   "until"
+  "defer"
+  "yield"
   "return"
   "break"
   "continue"

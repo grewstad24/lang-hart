@@ -1789,6 +1789,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "defer_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "return_expression"
         },
         {
@@ -2900,6 +2904,27 @@
                 ]
               }
             ]
+          }
+        ]
+      }
+    },
+    "defer_expression": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "defer"
+          },
+          {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
           }
         ]
       }

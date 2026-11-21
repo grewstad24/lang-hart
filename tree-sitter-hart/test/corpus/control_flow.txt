@@ -101,3 +101,28 @@ func main() -> :none {
             function: (function_identifier)
             arguments: (argument_list
               (string_literal))))))))
+
+==================
+Defer and Yield
+==================
+
+func cleanup() -> :none {
+    defer close_file(f)
+    yield 10
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list)
+    return_type: (symbol_literal)
+    body: (block
+      (defer_expression
+        value: (call_expression
+          function: (function_identifier)
+          arguments: (argument_list
+            (identifier))))
+      (yield_expression
+        (integer_literal)))))
