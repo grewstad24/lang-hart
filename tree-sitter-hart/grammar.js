@@ -306,6 +306,7 @@ module.exports = grammar({
       $.match_expression,
       $.repeat_expression,
       $.return_expression,
+      $.yield_expression,
       $.break_expression,
       $.continue_expression,
       $.record_literal,
@@ -460,6 +461,11 @@ module.exports = grammar({
 
     return_expression: $ => prec.right(seq(
       'return',
+      optional($._expression)
+    )),
+
+    yield_expression: $ => prec.right(seq(
+      'yield',
       optional($._expression)
     )),
 

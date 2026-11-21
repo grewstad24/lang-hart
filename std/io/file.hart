@@ -9,20 +9,18 @@ const stdout := { fd: 1 }
 const stderr := { fd: 2 }
 
 def to_c_str(path) {
-      match path using p {
+      return match path using p {
             String => p.ptr
             *u8 => p
             else => p.ptr
-      }}
+      }
+}
 
-def open_file(path) {
-      { fd: open(to_c_str(path), oReadOnly, 0) }}
+def open_file(path) { { fd: open(to_c_str(path), oReadOnly, 0) } }
 
-def create_file(path) {
-      { fd: open(to_c_str(path), oCreateWrite, defaultFileMode) }}
+def create_file(path) { { fd: open(to_c_str(path), oCreateWrite, defaultFileMode) } }
 
-def append_file(path) {
-      { fd: open(to_c_str(path), oCreateAppend, defaultFileMode) }}
+def append_file(path) { { fd: open(to_c_str(path), oCreateAppend, defaultFileMode) } }
 
 def is_ok(file) { file.fd >= 0 }
 
@@ -31,19 +29,21 @@ def is_err(file) { file.fd < 0 }
 def close_file(file) { close(file.fd) }
 
 def copy_to(src, dst) {
-      match dst using d {
+      return match dst using d {
             File => copy_stream(src.fd, d.fd, defaultBufferSize)
             s32 => copy_stream(src.fd, d, defaultBufferSize)
-      }}
+      }
+}
 
 def copy(src, dst) {
-      match src using s {
+      return match src using s {
             File => s.copy_to(dst)
             s32 => {
                   mut f := { fd: s }
-                  f.copy_to(dst)
+                  yield f.copy_to(dst)
             }
-      }}
+      }
+}
 
 def stream(file, chunk_size, callback) {
       stream_fd(file.fd, chunk_size, callback)
@@ -63,7 +63,8 @@ def write_data(file, data) {
                   else => return :error
             }
       }
-      :ok }
+      return :ok
+}
 
 def read_all(file) {
       mut size := lseek(file.fd, 0, seekEnd)
@@ -87,7 +88,8 @@ def read_all(file) {
                   else => break
             }
       }
-      { ptr: buf as *u8, len: total_read } as String }
+      return { ptr: buf as *u8, len: total_read } as String
+}
 
 def read_file(path) {
       mut file := open_file(path)
@@ -97,7 +99,8 @@ def read_file(path) {
       }
       mut data := file.read_all()
       file.close_file()
-      data }
+      return data
+}
 
 def write_file(path, data) {
       mut file := create_file(path)
@@ -107,7 +110,8 @@ def write_file(path, data) {
       }
       mut res := file.write_data(data)
       file.close_file()
-      res }
+      return res
+}
 
 def append_to_file(path, data) {
       mut file := append_file(path)
@@ -117,4 +121,5 @@ def append_to_file(path, data) {
       }
       mut res := file.write_data(data)
       file.close_file()
-      res }
+      return res
+}

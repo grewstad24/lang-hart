@@ -364,6 +364,9 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::Return(e) => Ok(Expression::Return(Box::new(canonicalize_expression(
             e, checker,
         )?))),
+        Expression::Yield(e) => Ok(Expression::Yield(Box::new(canonicalize_expression(
+            e, checker,
+        )?))),
         Expression::Break => Ok(Expression::Break),
         Expression::Continue => Ok(Expression::Continue),
         Expression::Let { name, value } => Ok(Expression::Let {

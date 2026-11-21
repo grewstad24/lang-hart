@@ -72,6 +72,34 @@ struct LoopContext<'ctx> {
     break_bb: inkwell::basic_block::BasicBlock<'ctx>,
 }
 
+#[derive(Clone)]
+struct BlockContext<'ctx> {
+    merge_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    result_slot: Option<PointerValue<'ctx>>,
+    result_ty: Option<Type>,
+}
+
+fn block_contains_yield(expr: &Expression) -> bool {
+    match crate::syntax::unspanned_expression(expr) {
+        Expression::Yield(_) => true,
+        Expression::Block(_) => false,
+        Expression::If { arms } => arms.iter().any(|arm| {
+            if let crate::syntax::IfCondition::Expression(e) = &arm.condition {
+                block_contains_yield(e) || block_contains_yield(&arm.body)
+            } else {
+                block_contains_yield(&arm.body)
+            }
+        }),
+        Expression::Match { arms, .. } => arms.iter().any(|arm| block_contains_yield(&arm.body)),
+        Expression::Repeat { body, .. }
+        | Expression::RepeatWhile { body, .. }
+        | Expression::RepeatUntil { body, .. }
+        | Expression::For { body, .. } => block_contains_yield(body),
+        Expression::Discard(e) => block_contains_yield(e),
+        _ => false,
+    }
+}
+
 pub struct Codegen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -87,6 +115,7 @@ pub struct Codegen<'ctx> {
     type_aliases: HashMap<String, Type>,
     current_function_return_type: Option<Type>,
     loop_stack: Vec<LoopContext<'ctx>>,
+    block_stack: Vec<BlockContext<'ctx>>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -113,9 +142,27 @@ impl<'ctx> Codegen<'ctx> {
             type_aliases: HashMap::new(),
             current_function_return_type: None,
             loop_stack: Vec::new(),
+            block_stack: Vec::new(),
             string_counter: 0,
             branch_counter: 0,
         }
+    }
+
+    fn create_entry_block_alloca(
+        &self,
+        function: FunctionValue<'ctx>,
+        llvm_ty: BasicTypeEnum<'ctx>,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let builder = self.context.create_builder();
+        let entry = function
+            .get_first_basic_block()
+            .ok_or_else(|| "function has no entry block".to_string())?;
+        match entry.get_first_instruction() {
+            Some(first_instr) => builder.position_before(&first_instr),
+            None => builder.position_at_end(entry),
+        }
+        builder.build_alloca(llvm_ty, name).map_err(|e| e.to_string())
     }
 
     fn ptr_sized_int_type(&self) -> IntType<'ctx> {
@@ -920,6 +967,59 @@ impl<'ctx> Codegen<'ctx> {
                 Err(format!("unknown identifier '{}'", name))
             }
             Expression::Block(exprs) => {
+                if exprs.iter().any(block_contains_yield) {
+                    if let Some(current_bb) = self.builder.get_insert_block() {
+                        if let Some(current_fn) = current_bb.get_parent() {
+                            let id = self.branch_counter;
+                            self.branch_counter += 1;
+                            let merge_bb = self
+                                .context
+                                .append_basic_block(current_fn, &format!("block.merge.{}", id));
+
+                            self.block_stack.push(BlockContext {
+                                merge_bb,
+                                result_slot: None,
+                                result_ty: None,
+                            });
+
+                            self.local_scopes.push(HashMap::new());
+                            let mut last_binding = self.symbol_binding("none");
+                            for expr in exprs {
+                                if let Some(bb) = self.builder.get_insert_block() {
+                                    if bb.get_terminator().is_some() {
+                                        break;
+                                    }
+                                }
+                                last_binding = self.codegen_expression(expr)?;
+                            }
+                            self.local_scopes.pop();
+
+                            let block_ctx = self.block_stack.pop().unwrap();
+
+                            if let Some(bb) = self.builder.get_insert_block() {
+                                if bb.get_terminator().is_none() {
+                                    self.builder
+                                        .build_unconditional_branch(merge_bb)
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+
+                            self.builder.position_at_end(merge_bb);
+
+                            if let (Some(alloca), Some(ty)) = (block_ctx.result_slot, block_ctx.result_ty) {
+                                let llvm_ty = self.llvm_type(&ty)?;
+                                let loaded = self
+                                    .builder
+                                    .build_load(llvm_ty, alloca, "yield.val")
+                                    .map_err(|e| e.to_string())?;
+                                return self.binding_from_basic_value(&ty, loaded);
+                            } else {
+                                return Ok(last_binding);
+                            }
+                        }
+                    }
+                }
+
                 self.local_scopes.push(HashMap::new());
                 let mut last_binding = self.symbol_binding("none");
                 for expr in exprs {
@@ -951,6 +1051,47 @@ impl<'ctx> Codegen<'ctx> {
                 }
                 self.exit_current_scope()?;
                 self.build_return(&binding)?;
+                Ok(self.symbol_binding("none"))
+            }
+            Expression::Yield(expr) => {
+                let mut binding = self.codegen_expression(expr)?;
+                let ty = self.binding_type(&binding)?;
+
+                if self.block_stack.is_empty() {
+                    return Err("cannot yield outside of block".to_string());
+                }
+
+                let (merge_bb, existing_slot, target_ty_opt) = {
+                    let ctx = self.block_stack.last().unwrap();
+                    (ctx.merge_bb, ctx.result_slot, ctx.result_ty.clone())
+                };
+
+                let alloca = match existing_slot {
+                    Some(slot) => {
+                        if let Some(target_ty) = target_ty_opt {
+                            if target_ty != ty {
+                                if let Ok(cast_val) = self.codegen_cast(binding.clone(), target_ty) {
+                                    binding = cast_val;
+                                }
+                            }
+                        }
+                        slot
+                    }
+                    None => {
+                        let current_fn = self.builder.get_insert_block().unwrap().get_parent().unwrap();
+                        let llvm_ty = self.llvm_type(&ty)?;
+                        let slot = self.create_entry_block_alloca(current_fn, llvm_ty, "yield.slot")?;
+                        let ctx = self.block_stack.last_mut().unwrap();
+                        ctx.result_slot = Some(slot);
+                        ctx.result_ty = Some(ty);
+                        slot
+                    }
+                };
+
+                let val = self.binding_basic_value(&binding)?;
+                self.builder.build_store(alloca, val).map_err(|e| e.to_string())?;
+                self.builder.build_unconditional_branch(merge_bb).map_err(|e| e.to_string())?;
+
                 Ok(self.symbol_binding("none"))
             }
             Expression::Break => {

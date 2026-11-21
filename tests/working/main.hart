@@ -151,11 +151,25 @@ func main(args: Slice<String>) -> :none {
             b < literal_usize => println("b < literal_usize is true without casts")
             else => :none
       }
+
+      println("--- testing yield expression in blocks and functions ---")
+      mut simple_yield := {
+            mut bx := 10
+            yield bx * 3
+      }
+      println(@slice [ "simple block yield: ", simple_yield ])
+
+      println(@slice [ "test_block_yield(1): ", test_block_yield(1) ])
+      println(@slice [ "test_block_yield(2): ", test_block_yield(2) ])
+      println(@slice [ "test_block_yield(99): ", test_block_yield(99) ])
+
+      println(@slice [ "func_yield_double(21): ", func_yield_double(21) ])
+
+      println(@slice [ "test_yield_vs_return(0) (early function return): ", test_yield_vs_return(0) ])
+      println(@slice [ "test_yield_vs_return(5) (block yield): ", test_yield_vs_return(5) ])
 }
 
-func on_chunk(chunk: String) -> :none {
-      println(@slice [ "streamed chunk: '", chunk, "'" ])
-}
+func on_chunk(chunk: String) -> :none { println(@slice [ "streamed chunk: '", chunk, "'" ]) }
 
 def early_return_nested_block(val: s32) {
       if {
@@ -167,7 +181,8 @@ def early_return_nested_block(val: s32) {
             }
             else => :none
       }
-      0 }
+      return 0
+}
 
 def early_return_from_loop(target: s32) {
       repeat 10 using i {
@@ -176,7 +191,8 @@ def early_return_from_loop(target: s32) {
                   else => :none
             }
       }
-      0 - 1 }
+      return 0 - 1
+}
 
 def early_return_from_while(target: s32) {
       mut cur := 0
@@ -185,6 +201,33 @@ def early_return_from_while(target: s32) {
                   cur = target => return cur * 5
                   else => :none
             }
-            cur := cur + 1
+            cur += 1
       }
-      0 - 99 }
+      return 0 - 99
+}
+
+def test_block_yield(val: s32) {
+      res := {
+            if {
+                  val = 1 => yield 111
+                  val = 2 => yield 222
+                  else => yield 333
+            }
+      }
+      return res
+}
+
+def func_yield_double(x: s32) {
+      yield x * 2
+}
+
+def test_yield_vs_return(flag: s32) {
+      res := {
+            if {
+                  flag = 0 => return 9999
+                  else => :none
+            }
+            yield flag + 10
+      }
+      return res * 2
+}

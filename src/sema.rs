@@ -429,6 +429,7 @@ pub struct Checker<'a> {
     current_function_return_type: Option<Type>,
     is_return_inferred: bool,
     loop_depth: usize,
+    block_yield_stack: Vec<Vec<Type>>,
     counter: usize,
 }
 
@@ -483,6 +484,7 @@ impl<'a> Checker<'a> {
             current_function_return_type: None,
             is_return_inferred: false,
             loop_depth: 0,
+            block_yield_stack: Vec::new(),
             counter: 0,
         };
 
@@ -1654,6 +1656,7 @@ impl<'a> Checker<'a> {
             Expression::Block(exprs) => {
                 let enclosing_scopes = self.local_scopes.clone();
                 self.enter_scope();
+                self.block_yield_stack.push(Vec::new());
 
                 let mut block_ty = Type::Symbol("none".to_string());
                 let mut diverged = false;
@@ -1668,8 +1671,12 @@ impl<'a> Checker<'a> {
                     }
                 }
 
+                let yields = self.block_yield_stack.pop().unwrap_or_default();
                 self.local_scopes = enclosing_scopes;
-                if diverged {
+                if !yields.is_empty() {
+                    let unified = self.unify_to_sum_type(&yields)?;
+                    Ok(unified)
+                } else if diverged {
                     Ok(Type::Never)
                 } else {
                     Ok(block_ty)
@@ -1707,6 +1714,19 @@ impl<'a> Checker<'a> {
                     return Err(format!(
                         "{}: error: return type mismatch: expected {}, found {}",
                         self.current_file_path, expected, actual
+                    ));
+                }
+                Ok(Type::Never)
+            }
+
+            Expression::Yield(expr) => {
+                let actual = self.type_of_expression(expr)?;
+                if let Some(yields) = self.block_yield_stack.last_mut() {
+                    yields.push(actual);
+                } else {
+                    return Err(format!(
+                        "{}: error: 'yield' outside of block",
+                        self.current_file_path
                     ));
                 }
                 Ok(Type::Never)

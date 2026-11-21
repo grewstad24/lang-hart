@@ -422,6 +422,7 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
         Token::FnKeyword => Some((0, 4)),
         Token::Def => Some((0, 3)),
         Token::Return => Some((0, 6)),
+        Token::Yield => Some((0, 5)),
         Token::Break => Some((0, 5)),
         Token::Continue => Some((0, 8)),
         Token::Repeat => Some((0, 6)),

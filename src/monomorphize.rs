@@ -233,6 +233,9 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::Return(operand) => {
             substitute_expression(operand, substitutions);
         }
+        Expression::Yield(operand) => {
+            substitute_expression(operand, substitutions);
+        }
         Expression::Repeat { count, body, .. } => {
             substitute_expression(count, substitutions);
             substitute_expression(body, substitutions);
@@ -452,6 +455,9 @@ fn scan_and_rewrite_expression(
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
         Expression::Return(operand) => {
+            scan_and_rewrite_expression(operand, scope, generated, changed)?;
+        }
+        Expression::Yield(operand) => {
             scan_and_rewrite_expression(operand, scope, generated, changed)?;
         }
         Expression::Let { value, .. } => {
@@ -774,6 +780,9 @@ fn concretize_expression(
             concretize_expression(e, templates, generated, changed)?;
         }
         Expression::Return(e) => {
+            concretize_expression(e, templates, generated, changed)?;
+        }
+        Expression::Yield(e) => {
             concretize_expression(e, templates, generated, changed)?;
         }
         Expression::If { arms } => {
@@ -1103,7 +1112,7 @@ fn collect_returns(
     }
     let unspanned = crate::syntax::unspanned_expression(expr);
     match unspanned {
-        Expression::Return(r) => {
+        Expression::Return(r) | Expression::Yield(r) => {
             if let Some(t) = infer_expr_type_internal(r, local_types, scope, generated, visiting, depth + 1) {
                 if t != Type::Never && t != Type::Inferred && !returns.contains(&t) {
                     returns.push(t);
@@ -1216,6 +1225,44 @@ pub fn infer_expr_type(
     scope: &ModuleScope,
 ) -> Option<Type> {
     infer_expr_type_with_generated(expr, local_types, scope, &[])
+}
+
+fn collect_block_yield_types(
+    expr: &Expression,
+    local_types: &HashMap<String, Type>,
+    scope: &ModuleScope,
+    generated: &[GeneratedSpecialization],
+    yields: &mut Vec<Type>,
+    visiting: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > 20 {
+        return;
+    }
+    match crate::syntax::unspanned_expression(expr) {
+        Expression::Yield(inner) => {
+            if let Some(t) = infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1) {
+                if t != Type::Never && t != Type::Inferred && !yields.contains(&t) {
+                    yields.push(t);
+                }
+            }
+        }
+        Expression::Block(_) => {}
+        Expression::If { arms } => {
+            for arm in arms {
+                collect_block_yield_types(&arm.body, local_types, scope, generated, yields, visiting, depth + 1);
+            }
+        }
+        Expression::Match { arms, .. } => {
+            for arm in arms {
+                collect_block_yield_types(&arm.body, local_types, scope, generated, yields, visiting, depth + 1);
+            }
+        }
+        Expression::Discard(inner) => {
+            collect_block_yield_types(inner, local_types, scope, generated, yields, visiting, depth + 1);
+        }
+        _ => {}
+    }
 }
 
 fn infer_function_return_type(
@@ -1510,7 +1557,19 @@ fn infer_expr_type_internal(
                 }
             }
 
-            exprs.last().and_then(|e| infer_expr_type_internal(e, &block_locals, scope, generated, visiting, depth + 1))
+            let mut yields = Vec::new();
+            for stmt in exprs {
+                collect_block_yield_types(stmt, &block_locals, scope, generated, &mut yields, visiting, depth + 1);
+            }
+            if !yields.is_empty() {
+                if yields.len() == 1 {
+                    Some(yields.remove(0))
+                } else {
+                    Some(unify_types_to_sum_type(&yields, scope))
+                }
+            } else {
+                exprs.last().and_then(|e| infer_expr_type_internal(e, &block_locals, scope, generated, visiting, depth + 1))
+            }
         }
         Expression::If { arms } => {
             let mut arm_types = Vec::new();
@@ -1555,6 +1614,7 @@ fn infer_expr_type_internal(
             }
         }
         Expression::Return(_) => Some(Type::Never),
+        Expression::Yield(inner) => infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1),
         Expression::Break | Expression::Continue => Some(Type::Never),
         Expression::Discard(inner) => {
             let mut unspanned = crate::syntax::unspanned_expression(inner);
@@ -1990,7 +2050,8 @@ fn scan_and_monomorphize_def(
         | Expression::AddressOf { expression, .. }
         | Expression::Dereference(expression)
         | Expression::Discard(expression)
-        | Expression::Return(expression) => {
+        | Expression::Return(expression)
+        | Expression::Yield(expression) => {
             scan_and_monomorphize_def(expression, scope, def_templates, local_types, generated, changed)?;
         }
         Expression::Index { expression, index } => {

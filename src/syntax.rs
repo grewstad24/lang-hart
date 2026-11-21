@@ -346,6 +346,7 @@ impl fmt::Display for Expression {
             Expression::Block(_) => write!(f, "{{ ... }}"),
             Expression::Discard(expr) => write!(f, "_{}", expr),
             Expression::Return(expr) => write!(f, "return {}", expr),
+            Expression::Yield(expr) => write!(f, "yield {}", expr),
             Expression::Break => write!(f, "break"),
             Expression::Continue => write!(f, "continue"),
             Expression::If { .. } => write!(f, "if ..."),
@@ -489,6 +490,7 @@ pub enum Expression {
     Block(Vec<Expression>),
     Discard(Box<Expression>),
     Return(Box<Expression>),
+    Yield(Box<Expression>),
     Break,
     Continue,
     If {
@@ -554,6 +556,27 @@ pub fn unspanned_expression_mut(mut expression: &mut Expression) -> &mut Express
         expression = inner;
     }
     expression
+}
+
+pub fn block_contains_yield(expr: &Expression) -> bool {
+    match unspanned_expression(expr) {
+        Expression::Yield(_) => true,
+        Expression::Block(_) => false,
+        Expression::If { arms } => arms.iter().any(|arm| {
+            if let IfCondition::Expression(e) = &arm.condition {
+                block_contains_yield(e) || block_contains_yield(&arm.body)
+            } else {
+                block_contains_yield(&arm.body)
+            }
+        }),
+        Expression::Match { arms, .. } => arms.iter().any(|arm| block_contains_yield(&arm.body)),
+        Expression::Repeat { body, .. }
+        | Expression::RepeatWhile { body, .. }
+        | Expression::RepeatUntil { body, .. }
+        | Expression::For { body, .. } => block_contains_yield(body),
+        Expression::Discard(e) => block_contains_yield(e),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -694,6 +717,7 @@ pub enum Token {
     Switch,
     Using,
     Return,
+    Yield,
     Break,
     Continue,
     As,
@@ -781,6 +805,7 @@ impl fmt::Display for Token {
             Token::Switch => write!(f, "'switch'"),
             Token::Using => write!(f, "'using'"),
             Token::Return => write!(f, "'return'"),
+            Token::Yield => write!(f, "'yield'"),
             Token::Break => write!(f, "'break'"),
             Token::Continue => write!(f, "'continue'"),
             Token::As => write!(f, "'as'"),
@@ -1178,6 +1203,7 @@ impl Lexer {
             "switch" => Token::Switch,
             "using" => Token::Using,
             "return" => Token::Return,
+            "yield" => Token::Yield,
             "break" => Token::Break,
             "continue" => Token::Continue,
             "as" => Token::As,
@@ -1455,6 +1481,10 @@ impl Parser {
                 self.advance();
                 Ok("return".to_string())
             }
+            Token::Yield => {
+                self.advance();
+                Ok("yield".to_string())
+            }
             Token::Break => {
                 self.advance();
                 Ok("break".to_string())
@@ -1578,7 +1608,7 @@ impl Parser {
             if self.is(Token::RBrace) {
                 // No trailing newline before '}' -> automatically return
                 let ret_expr = match unspanned_expression(&expr) {
-                    Expression::Return(_) | Expression::Break | Expression::Continue => expr,
+                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue => expr,
                     _ => Expression::Return(Box::new(expr)),
                 };
                 expressions.push(ret_expr);
@@ -1586,7 +1616,17 @@ impl Parser {
             } else if self.is(Token::Newline) {
                 // Trailing newline present -> evaluate, discard value, continue
                 self.skip_newlines();
-                expressions.push(Expression::Discard(Box::new(expr)));
+                match unspanned_expression(&expr) {
+                    Expression::Return(_) | Expression::Yield(_) | Expression::Break | Expression::Continue => {
+                        expressions.push(expr);
+                    }
+                    _ if block_contains_yield(&expr) => {
+                        expressions.push(expr);
+                    }
+                    _ => {
+                        expressions.push(Expression::Discard(Box::new(expr)));
+                    }
+                }
             } else {
                 return Err(format!(
                     "expected newline or '}}' after expression, found {}",
@@ -2458,6 +2498,7 @@ impl Parser {
                 | Token::Switch
                 | Token::Using
                 | Token::Return
+                | Token::Yield
                 | Token::Break
                 | Token::Continue
                 | Token::As
@@ -2504,6 +2545,7 @@ impl Parser {
                 | Token::Switch
                 | Token::Using
                 | Token::Return
+                | Token::Yield
                 | Token::Break
                 | Token::Continue
                 | Token::As
@@ -2732,6 +2774,16 @@ impl Parser {
                 self.skip_newlines();
                 let expr = self.parse_expression()?;
                 Ok(Expression::Return(Box::new(expr)))
+            }
+            Token::Yield => {
+                self.advance();
+                if self.is(Token::Newline) || self.is(Token::RBrace) {
+                    Ok(Expression::Yield(Box::new(Expression::Symbol("none".to_string()))))
+                } else {
+                    self.skip_newlines();
+                    let expr = self.parse_expression()?;
+                    Ok(Expression::Yield(Box::new(expr)))
+                }
             }
             Token::Break => {
                 self.advance();
