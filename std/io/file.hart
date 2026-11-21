@@ -28,17 +28,11 @@ def stdin() {
       return { fd: 0 }
 }
 
-def stdout() {
-      return { fd: 1 }
-}
+def stdout() {{ fd: 1 }}
 
-def stderr() {
-      return { fd: 2 }
-}
+def stderr() {{ fd: 2 }}
 
-def is_ok(file) {
-      return file.fd >= 0
-}
+def is_ok(file) { file.fd >= 0 }
 
 def is_err(file) {
       return file.fd < 0

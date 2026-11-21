@@ -2,7 +2,7 @@ default:
     @just run
 
 run:
-    cargo run -- tests/working
+    cargo run -- build tests/working
     ./main
 
 install:

@@ -10,3 +10,9 @@ repository = "https://github.com/grewstad24/lang-hart"
 repository = "https://github.com/grewstad24/lang-hart"
 path = "tree-sitter-hart"
 rev = "main"
+
+[language_servers.hart]
+name = "hart"
+languages = ["Hart"]
+
+
