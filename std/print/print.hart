@@ -14,8 +14,7 @@ type Printable :=
       | Integer
       | :nl
       | :t
-      | ( :softTab, u32 )
-      | ( :softTab, s32 )
+      | ( :softTab, Integer )
       | Bool
       | Slice <Printable>
 
@@ -27,8 +26,7 @@ def print( x ) {
             UnsignedInteger => print_uint(z)
             :nl => pr_nl()
             :t => pr_tab()
-            ( :softTab, u32 ) => repeat z.1 { print(" ") }
-            ( :softTab, s32 ) => repeat z.1 { print(" ") }
+            ( :softTab, Integer ) => repeat (z.1 as usize) { print(" ") }
             Slice <Printable> => printa(z)
             Bool => match z {
                   :true => print("true")

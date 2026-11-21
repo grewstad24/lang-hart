@@ -59,11 +59,11 @@ func main(args: Slice<String>) -> :none {
       println("--- testing break and continue in repeat N ---")
       repeat 5 using idx {
             if {
-                  idx = 1 as usize => continue
-                  idx = 3 as usize => break
+                  idx = 1 => continue
+                  idx = 3 => break
                   else => :none
             }
-            println([ "repeat N idx = ", idx as s32 ])
+            println([ "repeat N idx = ", idx ])
       }
 
       println("--- testing break and continue in repeat for ---")
@@ -174,24 +174,30 @@ func main(args: Slice<String>) -> :none {
       println([ "test_block_yield(99): ", test_block_yield(99) ])
 
       println([ "func_yield_double(21): ", func_yield_double(21) ])
+      println([ "func_yield_double(50 as u64): ", func_yield_double(50 as u64) ])
+      println([ "func_yield_double(7 as u8): ", func_yield_double(7 as u8) ])
+      println([ "func_yield_double(100 as usize): ", func_yield_double(100 as usize) ])
+      println([ "func_yield_double(12 as s16): ", func_yield_double(12 as s16) ])
+      println([ "soft tab with u64:", ( :softTab, 4 as u64 ), "indented" ])
+      println([ "soft tab with usize:", ( :softTab, 2 as usize ), "indented" ])
 
       println([ "test_yield_vs_return(0) (early function return): ", test_yield_vs_return(0) ])
       println([ "test_yield_vs_return(5) (block yield): ", test_yield_vs_return(5) ])
 
       println("--- testing implicit casts (array to Slice, symbol to Atom) ---")
       mut my_slice: Slice<s32> := [ 10, 20, 30 ]
-      println([ "my_slice.len = ", my_slice.len as s32 ])
+      println([ "my_slice.len = ", my_slice.len ])
       println([ "test_take_atom(:my_symbol): ", test_take_atom(:my_symbol) ])
       test_take_error((:error, :seek_failed))
       test_take_atom_record(:open_failed)
 
       println("--- testing struct to Record and Generic casts ---")
       mut rec := { x: 10, y: 20 } as Record
-      println([ "rec.len = ", rec.*.len as s32 ])
+      println([ "rec.len = ", rec.*.len ])
       mut gen := { title: "Hart", stars: 100 } as Generic
       test_take_generic(gen)
       test_take_generic({ inline_field: 42 })
-      println([ "test_take_record({ a: 1, b: 2, c: 3 }) len = ", test_take_record({ a: 1, b: 2, c: 3 }) as s32 ])
+      println([ "test_take_record({ a: 1, b: 2, c: 3 }) len = ", test_take_record({ a: 1, b: 2, c: 3 }) ])
       test_take_error((:error, { code: 404 }))
 
       println("--- testing defer LIFO execution ---")
@@ -202,6 +208,8 @@ func main(args: Slice<String>) -> :none {
 
       println("--- testing defer return value evaluation order ---")
       println([ "test_defer_return(1) returned: ", test_defer_return(1) ])
+      println([ "test_defer_return(2 as u64) returned: ", test_defer_return(2 as u64) ])
+      println([ "test_defer_return(3 as usize) returned: ", test_defer_return(3 as usize) ])
 
       println("--- testing defer inside loop iterations ---")
       test_defer_in_loop()
@@ -237,7 +245,7 @@ def test_defer_scope() {
       println("after block")
 }
 
-def test_defer_return(x: s32) {
+def test_defer_return(x: Integer) {
       mut count := 10
       defer {
             count := count + 5
@@ -285,7 +293,7 @@ func test_take_record(r: Record) -> usize { return r.*.len }
 
 func test_take_generic(g: Generic) -> :none {
       match g using z {
-            Record => println([ "test_take_generic matched Record, len = ", z.*.len as s32 ])
+            Record => println([ "test_take_generic matched Record, len = ", z.*.len ])
             else => println("test_take_generic matched other")
       }
 }
@@ -309,7 +317,7 @@ func test_take_atom_record(x: Atom | Record) -> :none {
 
 func on_chunk(chunk: String) -> :none { println([ "streamed chunk: '", chunk, "'" ]) }
 
-def early_return_nested_block(val: s32) {
+def early_return_nested_block(val: Integer) {
       if {
             val > 10 => {
                   if {
@@ -322,17 +330,17 @@ def early_return_nested_block(val: s32) {
       return 0
 }
 
-def early_return_from_loop(target: s32) {
+def early_return_from_loop(target: Integer) {
       repeat 10 using i {
             if {
-                  (i as s32) = target => return (i as s32) * 10
+                  i = target => return i * 10
                   else => :none
             }
       }
       return 0 - 1
 }
 
-def early_return_from_while(target: s32) {
+def early_return_from_while(target: Integer) {
       mut cur := 0
       repeat while cur < 20 {
             if {
@@ -344,7 +352,7 @@ def early_return_from_while(target: s32) {
       return 0 - 99
 }
 
-def test_block_yield(val: s32) {
+def test_block_yield(val: Integer) {
       res := {
             if {
                   val = 1 => yield 111
@@ -355,11 +363,11 @@ def test_block_yield(val: s32) {
       return res
 }
 
-def func_yield_double(x: s32) {
+def func_yield_double(x: Integer) {
       yield x * 2
 }
 
-def test_yield_vs_return(flag: s32) {
+def test_yield_vs_return(flag: Integer) {
       res := {
             if {
                   flag = 0 => return 9999

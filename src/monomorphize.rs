@@ -1866,11 +1866,22 @@ fn scan_and_monomorphize_def(
 
                     let mut arg_types = Vec::with_capacity(arguments.len());
                     for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
-                        if param.ty != Type::Inferred {
-                            arg_types.push(param.ty.clone());
+                        let inferred_arg_ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
+                        let resolved_param_ty = resolve_type_alias_deep(&param.ty, scope);
+                        let is_polymorphic = param.ty == Type::Inferred
+                            || matches!(resolved_param_ty, Type::Union(_))
+                            || matches!(param.ty, Type::Alias(ref n) if n == "Generic");
+
+                        if is_polymorphic && inferred_arg_ty != Type::Inferred {
+                            if param.ty != Type::Inferred && !type_matches_pattern(&inferred_arg_ty, &param.ty, scope) {
+                                return Err(format!(
+                                    "def function '{}' expects parameter '{}' matching {}, found {}",
+                                    fn_name, param.name, param.ty, inferred_arg_ty
+                                ));
+                            }
+                            arg_types.push(inferred_arg_ty);
                         } else {
-                            let ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
-                            arg_types.push(ty);
+                            arg_types.push(param.ty.clone());
                         }
                     }
 
@@ -1893,7 +1904,12 @@ fn scan_and_monomorphize_def(
                         let mut param_types_map = HashMap::new();
                         if let Some(spec_sig) = &mut specialized_def.signature {
                             for (p, arg_ty) in spec_sig.parameters.iter_mut().zip(arg_types.iter()) {
-                                if p.ty == Type::Inferred && *arg_ty != Type::Inferred {
+                                let resolved_p_ty = resolve_type_alias_deep(&p.ty, scope);
+                                let is_polymorphic = p.ty == Type::Inferred
+                                    || matches!(resolved_p_ty, Type::Union(_))
+                                    || matches!(p.ty, Type::Alias(ref n) if n == "Generic");
+
+                                if is_polymorphic && *arg_ty != Type::Inferred {
                                     p.ty = arg_ty.clone();
                                 }
                                 param_types_map.insert(p.name.clone(), p.ty.clone());

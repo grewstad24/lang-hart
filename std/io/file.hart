@@ -31,15 +31,15 @@ def close_file(file) { close(file.fd) }
 def copy_to(src, dst) {
       return match dst using d {
             File => copy_stream(src.fd, d.fd, defaultBufferSize)
-            s32 => copy_stream(src.fd, d, defaultBufferSize)
+            Integer => copy_stream(src.fd, d as s32, defaultBufferSize)
       }
 }
 
 def copy(src, dst) {
       return match src using s {
             File => s.copy_to(dst)
-            s32 => {
-                  mut f := { fd: s }
+            Integer => {
+                  mut f := { fd: s as s32 }
                   yield f.copy_to(dst)
             }
       }
