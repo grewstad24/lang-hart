@@ -1805,22 +1805,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "record_literal"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "slice_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "atom_expression"
-        },
-        {
-          "type": "SYMBOL",
-          "name": "generalise_expression"
-        },
-        {
-          "type": "SYMBOL",
           "name": "sizeof_expression"
         },
         {
@@ -2997,95 +2981,6 @@
           {
             "type": "STRING",
             "value": "@sizeOf"
-          },
-          {
-            "type": "FIELD",
-            "name": "value",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_expression"
-            }
-          }
-        ]
-      }
-    },
-    "record_literal": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "@record"
-          },
-          {
-            "type": "SYMBOL",
-            "name": "struct_literal"
-          }
-        ]
-      }
-    },
-    "slice_expression": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "@slice"
-          },
-          {
-            "type": "FIELD",
-            "name": "value",
-            "content": {
-              "type": "SYMBOL",
-              "name": "_expression"
-            }
-          }
-        ]
-      }
-    },
-    "atom_expression": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "@atom"
-          },
-          {
-            "type": "FIELD",
-            "name": "value",
-            "content": {
-              "type": "CHOICE",
-              "members": [
-                {
-                  "type": "SYMBOL",
-                  "name": "symbol_literal"
-                },
-                {
-                  "type": "SYMBOL",
-                  "name": "_expression"
-                }
-              ]
-            }
-          }
-        ]
-      }
-    },
-    "generalise_expression": {
-      "type": "PREC",
-      "value": 10,
-      "content": {
-        "type": "SEQ",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "@generalise"
           },
           {
             "type": "FIELD",

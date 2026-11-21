@@ -547,6 +547,38 @@ impl<'a> Checker<'a> {
         Err(format!("expected slice type, found {}", ty))
     }
 
+    pub fn is_atom_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Struct(fields) = &resolved {
+            if fields.len() == 1 && fields[0].name == "str" {
+                return self.is_slice_type(&fields[0].ty);
+            }
+        }
+        Ok(false)
+    }
+
+    pub fn is_record_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_type(ty)?;
+        if let Type::Pointer { element, .. } = &resolved {
+            let elem_resolved = self.resolve_type(element)?;
+            if let Type::Struct(fields) = elem_resolved {
+                if fields.len() == 3
+                    && fields[0].name == "len"
+                    && fields[1].name == "key"
+                    && fields[2].name == "val"
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        if let Type::Alias(name) = ty {
+            if name == "Record" {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn bool_type() -> Type {
         Type::Union(vec![
             Type::Symbol("false".to_string()),
@@ -1576,30 +1608,6 @@ impl<'a> Checker<'a> {
                 Ok(Type::Struct(struct_fields))
             }
 
-            Expression::Record(fields) => {
-                let struct_fields = self.check_struct_fields(fields)?;
-                let generic_type = Self::generic_type();
-                for (field, struct_field) in fields.iter_mut().zip(struct_fields.iter()) {
-                    let resolved_field_type = self.resolve_type(&struct_field.ty)?;
-                    let coerced_type = self.coerce_expression_to_type(
-                        &mut field.value,
-                        &resolved_field_type,
-                        &generic_type,
-                    )?;
-                    if !Self::types_compatible_with_aliases(
-                        &coerced_type,
-                        &generic_type,
-                        &self.alias_targets(),
-                    ) {
-                        return Err(format!(
-                            "{}: error: record field '@{}' has unsupported value type {}",
-                            self.current_file_path, field.name, resolved_field_type
-                        ));
-                    }
-                }
-                self.resolve_type(&Self::record_type())
-            }
-
             Expression::Tuple(elements) => {
                 let mut elem_types = Vec::with_capacity(elements.len());
                 for elem in elements.iter_mut() {
@@ -2203,12 +2211,25 @@ impl<'a> Checker<'a> {
                     for (idx, arm) in arms.iter().enumerate() {
                         if let Some(raw_ty) = &arm.variant_type {
                             let resolved = self.resolve_type(raw_ty)?;
-                            let matches = if self.is_slice_type(&target_ty).unwrap_or(false)
+                            let matches = if (self.is_slice_type(&target_ty).unwrap_or(false)
+                                || matches!(target_ty, Type::Array { .. })
+                                || matches!(target_ty, Type::Tuple(_)))
                                 && self.is_slice_type(&resolved).unwrap_or(false)
                             {
-                                let t_elem = self.slice_element_type(&target_ty).unwrap();
-                                let r_elem = self.slice_element_type(&resolved).unwrap();
-                                Self::types_compatible_with_aliases(&t_elem, &r_elem, &aliases)
+                                if let Ok(r_elem) = self.slice_element_type(&resolved) {
+                                    if self.is_slice_type(&target_ty).unwrap_or(false) {
+                                        let t_elem = self.slice_element_type(&target_ty).unwrap();
+                                        Self::types_compatible_with_aliases(&t_elem, &r_elem, &aliases)
+                                    } else {
+                                        Self::is_array_to_slice_compatible(&target_ty, &resolved, &aliases)
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else if matches!(target_ty, Type::Symbol(_))
+                                && self.is_atom_type(&resolved).unwrap_or(false)
+                            {
+                                true
                             } else {
                                 Self::types_compatible_with_aliases(&target_ty, &resolved, &aliases)
                                     || Self::types_compatible_with_aliases(&resolved, &target_ty, &aliases)
@@ -2240,21 +2261,60 @@ impl<'a> Checker<'a> {
                             mut arms,
                         } => {
                             let arm = arms.remove(matched_idx);
-                            (target, binding_name, arm)
+                            (*target, binding_name, arm)
                         }
                         _ => unreachable!(),
                     };
 
                     *expression = if b_name.is_empty() {
                         Expression::Block(vec![
-                            Expression::Discard(target_expr),
+                            Expression::Discard(Box::new(target_expr)),
                             *matched_arm.body,
                         ])
                     } else {
+                        let bound_expr = if (matches!(target_ty, Type::Array { .. }) || matches!(target_ty, Type::Tuple(_)))
+                            && matched_arm.variant_type.as_ref().map(|vt| self.is_slice_type(vt).unwrap_or(false)).unwrap_or(false)
+                        {
+                            let slice_expr = Expression::Slice(Box::new(target_expr));
+                            if let Some(vt) = &matched_arm.variant_type {
+                                Expression::Cast {
+                                    expression: Box::new(slice_expr),
+                                    ty: vt.clone(),
+                                }
+                            } else {
+                                slice_expr
+                            }
+                        } else if matches!(target_ty, Type::Symbol(_))
+                            && matched_arm.variant_type.as_ref().map(|vt| self.is_atom_type(vt).unwrap_or(false)).unwrap_or(false)
+                        {
+                            if let Expression::Symbol(sym_name) = unspanned_expression(&target_expr) {
+                                Expression::Struct(vec![StructFieldInit {
+                                    name: "str".to_string(),
+                                    value: Expression::String(sym_name.clone().into_bytes()),
+                                }])
+                            } else {
+                                Expression::Cast {
+                                    expression: Box::new(target_expr),
+                                    ty: matched_arm.variant_type.clone().unwrap(),
+                                }
+                            }
+                        } else if let Some(vt) = &matched_arm.variant_type {
+                            let resolved_vt = self.resolve_type(vt)?;
+                            if target_ty != resolved_vt && Self::types_compatible_with_aliases(&target_ty, &resolved_vt, &aliases) {
+                                Expression::Cast {
+                                    expression: Box::new(target_expr),
+                                    ty: vt.clone(),
+                                }
+                            } else {
+                                target_expr
+                            }
+                        } else {
+                            target_expr
+                        };
                         Expression::Block(vec![
                             Expression::Let {
                                 name: b_name,
-                                value: target_expr,
+                                value: Box::new(bound_expr),
                             },
                             *matched_arm.body,
                         ])
@@ -2955,7 +3015,7 @@ impl<'a> Checker<'a> {
                     Type::Tuple(elements) => {
                         if elements.is_empty() {
                             return Err(format!(
-                                "{}: error: '@slice' cannot be used on an empty tuple",
+                                "{}: error: slice cannot be created from an empty tuple",
                                 self.current_file_path
                             ));
                         }
@@ -2963,7 +3023,7 @@ impl<'a> Checker<'a> {
                         for elem in &elements[1..] {
                             if !self.are_types_compatible(elem, first)? {
                                 return Err(format!(
-                                    "{}: error: '@slice' on tuple requires all elements to have compatible types, expected {}, found {}",
+                                    "{}: error: slice on tuple requires all elements to have compatible types, expected {}, found {}",
                                     self.current_file_path, first, elem
                                 ));
                             }
@@ -2983,7 +3043,7 @@ impl<'a> Checker<'a> {
                         ]))
                     }
                     other => Err(format!(
-                        "{}: error: '@slice' requires an array literal or array value, found {}",
+                        "{}: error: slice requires an array or tuple, found {}",
                         self.current_file_path, other
                     )),
                 }
@@ -3095,6 +3155,195 @@ impl<'a> Checker<'a> {
         equivalent(t1, t2, aliases, &mut visited)
     }
 
+    pub fn resolve_alias_root<'b>(mut ty: &'b Type, aliases: &'b HashMap<String, Type>) -> &'b Type {
+        let mut visited = HashSet::new();
+        while let Type::Alias(name) = ty {
+            if !visited.insert(name.as_str()) {
+                break;
+            }
+            if let Some(target) = aliases.get(name) {
+                ty = target;
+            } else {
+                break;
+            }
+        }
+        ty
+    }
+
+    pub fn is_slice_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
+        let resolved = Self::resolve_alias_root(ty, aliases);
+        match resolved {
+            Type::GenericInstance { name, type_arguments } if name == "Slice" && type_arguments.len() == 1 => true,
+            Type::Struct(fields) => {
+                if fields.len() == 2 && fields[0].name == "ptr" && fields[1].name == "len" {
+                    let f0 = Self::resolve_alias_root(&fields[0].ty, aliases);
+                    let f1 = Self::resolve_alias_root(&fields[1].ty, aliases);
+                    if matches!(f0, Type::Pointer { .. }) && matches!(f1, Type::USize) {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub fn slice_element_type_with_aliases<'b>(
+        ty: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> Option<&'b Type> {
+        let resolved = Self::resolve_alias_root(ty, aliases);
+        match resolved {
+            Type::GenericInstance { name, type_arguments } if name == "Slice" && type_arguments.len() == 1 => {
+                Some(&type_arguments[0])
+            }
+            Type::Struct(fields) => {
+                if fields.len() == 2 && fields[0].name == "ptr" {
+                    let f0 = Self::resolve_alias_root(&fields[0].ty, aliases);
+                    if let Type::Pointer { element, .. } = f0 {
+                        return Some(element.as_ref());
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_atom_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
+        let resolved = Self::resolve_alias_root(ty, aliases);
+        if let Type::Struct(fields) = resolved {
+            if fields.len() == 1 && fields[0].name == "str" {
+                return Self::is_slice_type_with_aliases(&fields[0].ty, aliases);
+            }
+        }
+        false
+    }
+
+    pub fn is_array_to_slice_compatible<'b>(
+        provided: &'b Type,
+        expected: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> bool {
+        if !Self::is_slice_type_with_aliases(expected, aliases) {
+            return false;
+        }
+        let target_elem = match Self::slice_element_type_with_aliases(expected, aliases) {
+            Some(elem) => elem,
+            None => return false,
+        };
+        let resolved_provided = Self::resolve_alias_root(provided, aliases);
+        match resolved_provided {
+            Type::Array { element, .. } => {
+                Self::types_compatible_with_aliases(element, target_elem, aliases)
+            }
+            Type::Tuple(elems) => {
+                if elems.is_empty() {
+                    return false;
+                }
+                elems.iter().all(|elem| {
+                    Self::types_compatible_with_aliases(elem, target_elem, aliases)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_array_to_slice_castable<'b>(
+        provided: &'b Type,
+        expected: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> bool {
+        if !Self::is_slice_type_with_aliases(expected, aliases) {
+            return false;
+        }
+        let target_elem = match Self::slice_element_type_with_aliases(expected, aliases) {
+            Some(elem) => elem,
+            None => return false,
+        };
+        let resolved_provided = Self::resolve_alias_root(provided, aliases);
+        match resolved_provided {
+            Type::Array { element, .. } => {
+                Self::is_supported_cast_with_aliases(element, target_elem, aliases)
+            }
+            Type::Tuple(elems) => {
+                if elems.is_empty() {
+                    return false;
+                }
+                elems.iter().all(|elem| {
+                    Self::is_supported_cast_with_aliases(elem, target_elem, aliases)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_symbol_to_atom_compatible<'b>(
+        provided: &'b Type,
+        expected: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> bool {
+        let resolved_provided = Self::resolve_alias_root(provided, aliases);
+        if !matches!(resolved_provided, Type::Symbol(_)) {
+            return false;
+        }
+        Self::is_atom_type_with_aliases(expected, aliases)
+    }
+
+    pub fn is_record_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
+        if let Type::Alias(name) = ty {
+            if name == "Record" {
+                return true;
+            }
+        }
+        let resolved = Self::resolve_alias_root(ty, aliases);
+        if let Type::Alias(name) = resolved {
+            if name == "Record" {
+                return true;
+            }
+        }
+        if let Type::Pointer { element, .. } = resolved {
+            let elem_resolved = Self::resolve_alias_root(element, aliases);
+            if let Type::Struct(fields) = elem_resolved {
+                if fields.len() == 3
+                    && fields[0].name == "len"
+                    && fields[1].name == "key"
+                    && fields[2].name == "val"
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn is_struct_to_record_castable<'b>(
+        source: &'b Type,
+        target: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> bool {
+        if !Self::is_record_type_with_aliases(target, aliases) {
+            return false;
+        }
+        let resolved_source = Self::resolve_alias_root(source, aliases);
+        if let Type::Struct(fields) = resolved_source {
+            let generic_ty = Self::generic_type();
+            fields.iter().all(|f| {
+                Self::is_supported_cast_with_aliases(&f.ty, &generic_ty, aliases)
+            })
+        } else {
+            false
+        }
+    }
+
+    pub fn is_struct_to_record_compatible<'b>(
+        provided: &'b Type,
+        expected: &'b Type,
+        aliases: &'b HashMap<String, Type>,
+    ) -> bool {
+        Self::is_struct_to_record_castable(provided, expected, aliases)
+    }
+
     pub fn types_compatible_with_aliases(
         provided: &Type,
         expected: &Type,
@@ -3166,12 +3415,44 @@ impl<'a> Checker<'a> {
                     variant => std::slice::from_ref(variant),
                 };
                 return provided_vars.iter().all(|variant| {
+                    let exact_count = expected_vars
+                        .iter()
+                        .filter(|target| Checker::types_equivalent_with_aliases(variant, target, aliases))
+                        .count();
+                    if exact_count == 1 {
+                        return true;
+                    }
                     expected_vars
                         .iter()
                         .filter(|target| compatible(variant, target, aliases, visited))
                         .count()
                         == 1
                 });
+            }
+
+            if Checker::is_slice_type_with_aliases(provided, aliases)
+                && Checker::is_slice_type_with_aliases(expected, aliases)
+            {
+                if let (Some(e1), Some(e2)) = (
+                    Checker::slice_element_type_with_aliases(provided, aliases),
+                    Checker::slice_element_type_with_aliases(expected, aliases),
+                ) {
+                    if compatible(e1, e2, aliases, visited) {
+                        return true;
+                    }
+                }
+            }
+
+            if Checker::is_array_to_slice_compatible(provided, expected, aliases) {
+                return true;
+            }
+
+            if Checker::is_symbol_to_atom_compatible(provided, expected, aliases) {
+                return true;
+            }
+
+            if Checker::is_struct_to_record_compatible(provided, expected, aliases) {
+                return true;
             }
 
             match (provided, expected) {
@@ -3378,6 +3659,31 @@ impl<'a> Checker<'a> {
                     .all(|variant| supported(variant, target, aliases, visited));
             }
 
+            if Checker::is_slice_type_with_aliases(source, aliases)
+                && Checker::is_slice_type_with_aliases(target, aliases)
+            {
+                if let (Some(e1), Some(e2)) = (
+                    Checker::slice_element_type_with_aliases(source, aliases),
+                    Checker::slice_element_type_with_aliases(target, aliases),
+                ) {
+                    if supported(e1, e2, aliases, visited) {
+                        return true;
+                    }
+                }
+            }
+
+            if Checker::is_array_to_slice_castable(source, target, aliases) {
+                return true;
+            }
+
+            if Checker::is_symbol_to_atom_compatible(source, target, aliases) {
+                return true;
+            }
+
+            if Checker::is_struct_to_record_castable(source, target, aliases) {
+                return true;
+            }
+
             match (source, target) {
                 (Type::Struct(source_fields), Type::Struct(target_fields)) => {
                     if source_fields.len() != target_fields.len() {
@@ -3455,6 +3761,9 @@ impl<'a> Checker<'a> {
             }
 
             if matches!(source, Type::Symbol(_)) || matches!(target, Type::Symbol(_)) {
+                if Checker::is_symbol_to_atom_compatible(source, target, aliases) {
+                    return true;
+                }
                 return false;
             }
 
@@ -3491,6 +3800,16 @@ impl<'a> Checker<'a> {
     ) -> Option<usize> {
         if let Some(index) = targets.iter().position(|target| target == source) {
             return Some(index);
+        }
+        let equiv_matches: Vec<usize> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, target)| {
+                Self::types_equivalent_with_aliases(source, target, aliases).then_some(index)
+            })
+            .collect();
+        if equiv_matches.len() == 1 {
+            return Some(equiv_matches[0]);
         }
         let implicit_matches: Vec<usize> = targets
             .iter()

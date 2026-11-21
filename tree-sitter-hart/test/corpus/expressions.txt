@@ -5,10 +5,10 @@ Expressions and Literals
 func test() {
     mut x := 1 + 2 * 3
     mut b := not(:false)
-    mut r := @record {
+    mut r := {
         name: "alice",
         age: 30
-    }
+    } as Record
     mut s := {
         key: "val"
     }
@@ -20,7 +20,6 @@ func test() {
     mut postfix_mut := p.&mut
     mut el := arr[0]
     mut casted := el as s64
-    mut sl := @slice s
     mut u := "\u{2714}"
     obj.process(1, 2)
 }
@@ -47,14 +46,15 @@ func test() {
             (symbol_literal))))
       (mut_declaration
         name: (identifier)
-        value: (record_literal
-          (struct_literal
+        value: (cast_expression
+          expression: (struct_literal
             (struct_field_init
               name: (identifier)
               value: (string_literal))
             (struct_field_init
               name: (identifier)
-              value: (integer_literal)))))
+              value: (integer_literal)))
+          type: (type_identifier)))
       (mut_declaration
         name: (identifier)
         value: (struct_literal
@@ -101,10 +101,6 @@ func test() {
         value: (cast_expression
           expression: (identifier)
           type: (primitive_type)))
-      (mut_declaration
-        name: (identifier)
-        value: (slice_expression
-          value: (identifier)))
       (mut_declaration
         name: (identifier)
         value: (string_literal

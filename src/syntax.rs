@@ -282,16 +282,6 @@ impl fmt::Display for Expression {
                 }
                 write!(f, " }}")
             }
-            Expression::Record(fields) => {
-                write!(f, "@record {{ ")?;
-                for (i, field) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{} := {}", field.name, field.value)?;
-                }
-                write!(f, " }}")
-            }
             Expression::Tuple(elements) => {
                 if elements.is_empty() {
                     write!(f, "()")
@@ -380,7 +370,7 @@ impl fmt::Display for Expression {
                 }
             }
             Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
-            Expression::Slice(expr) => write!(f, "@slice {}", expr),
+            Expression::Slice(expr) => write!(f, "({} as Slice)", expr),
         }
     }
 }
@@ -450,7 +440,6 @@ pub enum Expression {
     Identifier(String),
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
-    Record(Vec<StructFieldInit>),
     Tuple(Vec<Expression>),
     Member {
         expression: Box<Expression>,
@@ -2607,43 +2596,10 @@ impl Parser {
                     let operand = self.parse_unary()?;
                     return Ok(Expression::SizeOf(Box::new(operand)));
                 }
-                if tag == "slice" {
-                    let operand = self.parse_primary()?;
-                    return Ok(Expression::Slice(Box::new(operand)));
-                }
-                if tag == "atom" {
-                    let operand = self.parse_primary()?;
-                    let symbol_name = match unspanned_expression(&operand) {
-                        Expression::Symbol(name) => name.clone(),
-                        _ => return Err("'@atom' expects a symbol literal (e.g. :foo)".to_string()),
-                    };
-                    return Ok(Expression::Struct(vec![
-                        StructFieldInit {
-                            name: "str".to_string(),
-                            value: Expression::String(symbol_name.into_bytes()),
-                        }
-                    ]));
-                }
-                if tag == "generalise" {
-                    let operand = self.parse_primary()?;
-                    let gen_expr = Self::generalise_expression(operand)?;
-                    return match unspanned_expression(&gen_expr) {
-                        Expression::Record(_) | Expression::Slice(_) => Ok(gen_expr),
-                        _ => Ok(Expression::Cast {
-                            expression: Box::new(gen_expr),
-                            ty: Type::Alias("Generic".to_string()),
-                        }),
-                    };
-                }
-                if tag != "record" {
-                    return Err(format!(
-                        "unknown tag '@{}', expected '@record', '@sizeOf', '@slice', '@atom', or '@generalise'",
-                        tag
-                    ));
-                }
-                self.expect(Token::LBrace)?;
-                let fields = self.parse_struct_fields(Token::RBrace)?;
-                Ok(Expression::Record(fields))
+                return Err(format!(
+                    "unknown tag '@{}', expected '@sizeOf'",
+                    tag
+                ));
             }
             Token::LParen => {
                 self.advance();
@@ -2874,90 +2830,6 @@ impl Parser {
             self.expect(closing_token)?;
         }
         Ok(fields)
-    }
-
-    pub fn generalise_expression(expr: Expression) -> Result<Expression, String> {
-        match expr {
-            Expression::Spanned { expression, span } => Ok(Expression::Spanned {
-                expression: Box::new(Self::generalise_expression(*expression)?),
-                span,
-            }),
-            Expression::AddressOf { expression, .. } => Ok(Expression::AddressOf {
-                expression: Box::new(Self::generalise_expression(*expression)?),
-                is_mut: false,
-            }),
-            Expression::Symbol(name) => {
-                if name == "true" || name == "false" || name == "none" || name == "error" {
-                    Ok(Expression::Symbol(name))
-                } else {
-                    Ok(Expression::Struct(vec![StructFieldInit {
-                        name: "str".to_string(),
-                        value: Expression::String(name.into_bytes()),
-                    }]))
-                }
-            }
-            Expression::Struct(fields) => {
-                let gen_fields = fields
-                    .into_iter()
-                    .map(|f| {
-                        Ok(StructFieldInit {
-                            name: f.name,
-                            value: Self::generalise_expression(f.value)?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok(Expression::Record(gen_fields))
-            }
-            Expression::Record(fields) => {
-                let gen_fields = fields
-                    .into_iter()
-                    .map(|f| {
-                        Ok(StructFieldInit {
-                            name: f.name,
-                            value: Self::generalise_expression(f.value)?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok(Expression::Record(gen_fields))
-            }
-            Expression::Array(elements) => {
-                let gen_elems = elements
-                    .into_iter()
-                    .map(|e| {
-                        let gen_val = Self::generalise_expression(e)?;
-                        Ok(Expression::Cast {
-                            expression: Box::new(gen_val),
-                            ty: Type::Alias("Generic".to_string()),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok(Expression::Slice(Box::new(Expression::Array(gen_elems))))
-            }
-            Expression::Tuple(elements) => {
-                if elements.len() == 2 && matches!(unspanned_expression(&elements[0]), Expression::Symbol(s) if s == "error") {
-                    let mut iter = elements.into_iter();
-                    let err_elem = iter.next().unwrap();
-                    let reason_elem = iter.next().unwrap();
-                    let gen_reason = Self::generalise_expression(reason_elem)?;
-                    return Ok(Expression::Tuple(vec![err_elem, gen_reason]));
-                }
-                let gen_elems = elements
-                    .into_iter()
-                    .map(|e| {
-                        let gen_val = Self::generalise_expression(e)?;
-                        Ok(Expression::Cast {
-                            expression: Box::new(gen_val),
-                            ty: Type::Alias("Generic".to_string()),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok(Expression::Slice(Box::new(Expression::Array(gen_elems))))
-            }
-            Expression::Slice(inner) => {
-                Ok(Expression::Slice(Box::new(Self::generalise_expression(*inner)?)))
-            }
-            other => Ok(other),
-        }
     }
 
     fn parse_match_expression(&mut self) -> Result<Expression, String> {

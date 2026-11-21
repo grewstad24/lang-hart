@@ -309,10 +309,6 @@ module.exports = grammar({
       $.yield_expression,
       $.break_expression,
       $.continue_expression,
-      $.record_literal,
-      $.slice_expression,
-      $.atom_expression,
-      $.generalise_expression,
       $.sizeof_expression,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
@@ -475,26 +471,6 @@ module.exports = grammar({
 
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',
-      field('value', $._expression)
-    )),
-
-    record_literal: $ => prec(PREC.PRIMARY, seq(
-      '@record',
-      $.struct_literal
-    )),
-
-    slice_expression: $ => prec(PREC.PRIMARY, seq(
-      '@slice',
-      field('value', $._expression)
-    )),
-
-    atom_expression: $ => prec(PREC.PRIMARY, seq(
-      '@atom',
-      field('value', choice($.symbol_literal, $._expression))
-    )),
-
-    generalise_expression: $ => prec(PREC.PRIMARY, seq(
-      '@generalise',
       field('value', $._expression)
     )),
 

@@ -76,11 +76,7 @@
 (comment) @comment
 
 ; Builtins / Intrinsics
-"@record" @attribute
 "@sizeOf" @function.macro
-"@slice" @function.macro
-"@atom" @function.macro
-"@generalise" @function.macro
 
 ; Operators & Delimiters
 [

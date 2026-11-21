@@ -109,7 +109,7 @@ pub struct Codegen<'ctx> {
     local_scopes: Vec<HashMap<String, LocalVar<'ctx>>>,
     scope_stack_ptrs: Vec<PointerValue<'ctx>>,
     global_vars: HashMap<String, GlobalVar<'ctx>>,
-    pending_global_records: Vec<(String, Vec<StructFieldInit>)>,
+    pending_global_records: Vec<(String, Expression)>,
     extern_functions: HashMap<String, Signature>,
     function_signatures: HashMap<String, Signature>,
     type_aliases: HashMap<String, Type>,
@@ -249,6 +249,262 @@ impl<'ctx> Codegen<'ctx> {
         Err(format!("expected slice type, found {}", ty))
     }
 
+    fn is_atom_type(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_alias_root(ty)?;
+        if let Type::Struct(fields) = resolved {
+            if fields.len() == 1 && fields[0].name == "str" {
+                return self.is_slice_type(&fields[0].ty);
+            }
+        }
+        Ok(false)
+    }
+
+    fn is_record_type(&self, ty: &Type) -> Result<bool, String> {
+        Ok(Checker::is_record_type_with_aliases(ty, &self.type_aliases))
+    }
+
+    fn record_from_struct_binding(
+        &mut self,
+        fields: &[StructFieldType],
+        struct_binding: Binding<'ctx>,
+    ) -> Result<Binding<'ctx>, String> {
+        let generic_alias = Checker::generic_type();
+        let generic_type = self.resolve_alias_root(&generic_alias)?.clone();
+        let key_type = Type::Alias("String".to_string());
+        let key_llvm_type = self.llvm_type(&key_type)?;
+        let generic_llvm_type = self.llvm_type(&generic_type)?;
+        let count = fields.len();
+        let count_value = self.ptr_sized_int_type().const_int(count as u64, false);
+
+        let keys_array_type = key_llvm_type.array_type(count as u32);
+        let keys_storage = self
+            .builder
+            .build_alloca(keys_array_type, "record.keys")
+            .map_err(|error| error.to_string())?;
+        let values_array_type = generic_llvm_type.array_type(count as u32);
+        let values_storage = self
+            .builder
+            .build_alloca(values_array_type, "record.values")
+            .map_err(|error| error.to_string())?;
+        let zero = self.ptr_sized_int_type().const_zero();
+
+        let source_value = self.binding_basic_value(&struct_binding)?.into_struct_value();
+
+        for (index, field) in fields.iter().enumerate() {
+            let key_binding = self.codegen_string_literal(field.name.as_bytes())?;
+            let key_value = self.binding_basic_value(&key_binding)?;
+            let index_value = self.ptr_sized_int_type().const_int(index as u64, false);
+            let key_slot = unsafe {
+                self.builder
+                    .build_gep(
+                        keys_array_type,
+                        keys_storage,
+                        &[zero, index_value],
+                        "record.key.slot",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(key_slot, key_value)
+                .map_err(|error| error.to_string())?;
+
+            let field_value = self
+                .builder
+                .build_extract_value(
+                    source_value,
+                    index as u32,
+                    &format!("rec_fld_{}", field.name),
+                )
+                .map_err(|error| error.to_string())?;
+            let field_binding = self.binding_from_basic_value(&field.ty, field_value)?;
+            let boxed_value = self.codegen_cast(field_binding, generic_alias.clone())?;
+            let value = self.binding_basic_value(&boxed_value)?;
+            let value_slot = unsafe {
+                self.builder
+                    .build_gep(
+                        values_array_type,
+                        values_storage,
+                        &[zero, index_value],
+                        "record.value.slot",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            self.builder
+                .build_store(value_slot, value)
+                .map_err(|error| error.to_string())?;
+        }
+
+        let (keys_pointer, values_pointer) = if count == 0 {
+            (
+                self.context.ptr_type(AddressSpace::default()).const_null(),
+                self.context.ptr_type(AddressSpace::default()).const_null(),
+            )
+        } else {
+            let kp = unsafe {
+                self.builder
+                    .build_gep(
+                        keys_array_type,
+                        keys_storage,
+                        &[zero, zero],
+                        "record.keys.ptr",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            let vp = unsafe {
+                self.builder
+                    .build_gep(
+                        values_array_type,
+                        values_storage,
+                        &[zero, zero],
+                        "record.values.ptr",
+                    )
+                    .map_err(|error| error.to_string())?
+            };
+            (kp, vp)
+        };
+
+        let record_type = self.resolve_alias_root(&Checker::record_type())?.clone();
+        let Type::Pointer {
+            element: record_struct,
+            ..
+        } = &record_type
+        else {
+            return Err("expected Record to be a pointer type".to_string());
+        };
+        let record_llvm_type = self.llvm_type(record_struct)?.into_struct_type();
+        let record_storage = self
+            .builder
+            .build_alloca(record_llvm_type, "record.header")
+            .map_err(|error| error.to_string())?;
+        let len_pointer = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 0, "record.len")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(len_pointer, count_value)
+            .map_err(|error| error.to_string())?;
+        let keys_field = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 1, "record.keys.field")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(keys_field, keys_pointer)
+            .map_err(|error| error.to_string())?;
+        let values_field = self
+            .builder
+            .build_struct_gep(record_llvm_type, record_storage, 2, "record.values.field")
+            .map_err(|error| error.to_string())?;
+        self.builder
+            .build_store(values_field, values_pointer)
+            .map_err(|error| error.to_string())?;
+
+        Ok(Binding::Pointer {
+            ty: record_type,
+            value: record_storage,
+        })
+    }
+
+    fn slice_binding(&mut self, binding: Binding<'ctx>) -> Result<Binding<'ctx>, String> {
+        let (elem_ty, size, storage_ptr) = match &binding {
+            Binding::Array { ty, value, storage } => {
+                let (elem, sz) = match ty {
+                    Type::Array { element, size } => ((**element).clone(), *size),
+                    _ => return Err("expected array type".to_string()),
+                };
+                let ptr = if let Some(s) = storage {
+                    *s
+                } else {
+                    let llvm_arr_ty = value.get_type();
+                    let tmp = self.builder.build_alloca(llvm_arr_ty, "slice_tmp").map_err(|e| e.to_string())?;
+                    self.builder.build_store(tmp, *value).map_err(|e| e.to_string())?;
+                    tmp
+                };
+                (elem, sz, ptr)
+            }
+            Binding::Struct { ty, value, storage } if matches!(self.resolve_alias_root(ty)?, Type::Tuple(_)) => {
+                let elements = match self.resolve_alias_root(ty)? {
+                    Type::Tuple(elems) => elems.clone(),
+                    _ => unreachable!(),
+                };
+                if elements.is_empty() {
+                    return Err("slicing on empty tuple unsupported".to_string());
+                }
+                let elem_ty = elements[0].clone();
+                let size = elements.len();
+                let llvm_elem_ty = self.llvm_type(&elem_ty)?;
+                let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
+                let arr_tmp = self.builder.build_alloca(llvm_arr_ty, "tuple_slice_arr").map_err(|e| e.to_string())?;
+                let zero = self.ptr_sized_int_type().const_zero();
+                for (i, elem_t) in elements.iter().enumerate() {
+                    let idx = self.ptr_sized_int_type().const_int(i as u64, false);
+                    let elem_dest_ptr = unsafe {
+                        self.builder.build_gep(llvm_arr_ty, arr_tmp, &[zero, idx], "elem_dest").map_err(|e| e.to_string())?
+                    };
+                    let elem_val = if let Some(s) = storage {
+                        let struct_ty = self.llvm_type(ty)?.into_struct_type();
+                        let elem_src_ptr = self.builder.build_struct_gep(struct_ty, *s, i as u32, "tuple_elem_ptr").map_err(|e| e.to_string())?;
+                        self.builder.build_load(self.llvm_type(elem_t)?, elem_src_ptr, "tuple_elem_val").map_err(|e| e.to_string())?
+                    } else {
+                        self.builder.build_extract_value(*value, i as u32, "tuple_elem_val").map_err(|e| e.to_string())?
+                    };
+                    let converted_val = if elem_t != &elem_ty {
+                        let elem_binding = self.binding_from_basic_value(elem_t, elem_val)?;
+                        let converted = self.codegen_cast(elem_binding, elem_ty.clone())?;
+                        self.binding_basic_value(&converted)?
+                    } else {
+                        elem_val
+                    };
+                    self.builder.build_store(elem_dest_ptr, converted_val).map_err(|e| e.to_string())?;
+                }
+                (elem_ty, size, arr_tmp)
+            }
+            _ => return Err("slicing requires an array or tuple".to_string()),
+        };
+
+        let llvm_elem_ty = self.llvm_type(&elem_ty)?;
+        let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
+        let zero = self.ptr_sized_int_type().const_zero();
+        let first_elem_ptr = unsafe {
+            self.builder
+                .build_gep(llvm_arr_ty, storage_ptr, &[zero, zero], "slice_first_elem")
+                .map_err(|e| e.to_string())?
+        };
+
+        let slice_ty = Type::Struct(vec![
+            StructFieldType {
+                name: "ptr".to_string(),
+                ty: Type::Pointer {
+                    element: Box::new(elem_ty),
+                    is_mut: false,
+                },
+            },
+            StructFieldType {
+                name: "len".to_string(),
+                ty: Type::USize,
+            },
+        ]);
+        let slice_llvm_ty = self.slice_type();
+        let len_val = self.ptr_sized_int_type().const_int(size as u64, false);
+
+        let mut slice_val = slice_llvm_ty.get_undef();
+        slice_val = self
+            .builder
+            .build_insert_value(slice_val, first_elem_ptr, 0, "slice_ptr")
+            .map_err(|e| e.to_string())?
+            .into_struct_value();
+        slice_val = self
+            .builder
+            .build_insert_value(slice_val, len_val, 1, "slice_len")
+            .map_err(|e| e.to_string())?
+            .into_struct_value();
+
+        Ok(Binding::Struct {
+            ty: slice_ty,
+            value: slice_val,
+            storage: None,
+        })
+    }
+
     fn resolve_alias_root<'a>(&'a self, mut ty: &'a Type) -> Result<&'a Type, String> {
         let mut visited = HashSet::new();
         while let Type::Alias(name) = ty {
@@ -386,24 +642,30 @@ impl<'ctx> Codegen<'ctx> {
             if def.name == "main" {
                 continue;
             }
-            if let Expression::Record(fields) = unspanned_expression(&def.value) {
-                let ty = self.resolve_alias_root(&Checker::record_type())?.clone();
-                let llvm_type = self.llvm_type(&ty)?;
-                let global_name = format!("hart.record.{}", def.name);
-                let global =
-                    self.module
-                        .add_global(llvm_type, Some(AddressSpace::default()), &global_name);
-                global.set_linkage(inkwell::module::Linkage::Internal);
-                global.set_initializer(&self.zero_value(&ty)?);
-                self.global_vars.insert(
-                    def.name.clone(),
-                    GlobalVar {
-                        ty,
-                        pointer: global.as_pointer_value(),
-                    },
-                );
-                self.pending_global_records
-                    .push((def.name.clone(), fields.clone()));
+            if def.signature.is_none() {
+                let is_record = match unspanned_expression(&def.value) {
+                    Expression::Cast { ty, .. } => self.is_record_type(ty).unwrap_or(false),
+                    _ => false,
+                };
+                if is_record {
+                    let ty = self.resolve_alias_root(&Checker::record_type())?.clone();
+                    let llvm_type = self.llvm_type(&ty)?;
+                    let global_name = format!("hart.record.{}", def.name);
+                    let global =
+                        self.module
+                            .add_global(llvm_type, Some(AddressSpace::default()), &global_name);
+                    global.set_linkage(inkwell::module::Linkage::Internal);
+                    global.set_initializer(&self.zero_value(&ty)?);
+                    self.global_vars.insert(
+                        def.name.clone(),
+                        GlobalVar {
+                            ty,
+                            pointer: global.as_pointer_value(),
+                        },
+                    );
+                    self.pending_global_records
+                        .push((def.name.clone(), def.value.clone()));
+                }
             }
         }
 
@@ -411,7 +673,7 @@ impl<'ctx> Codegen<'ctx> {
             if def.name == "main" {
                 continue;
             }
-            if matches!(unspanned_expression(&def.value), Expression::Record(_)) {
+            if self.pending_global_records.iter().any(|(name, _)| name == &def.name) {
                 continue;
             }
 
@@ -446,7 +708,7 @@ impl<'ctx> Codegen<'ctx> {
             if def.name == "main" {
                 continue;
             }
-            if matches!(unspanned_expression(&def.value), Expression::Record(_)) {
+            if self.pending_global_records.iter().any(|(name, _)| name == &def.name) {
                 continue;
             }
 
@@ -604,8 +866,8 @@ impl<'ctx> Codegen<'ctx> {
         }
         let stack_ptr = self.enter_scope()?;
 
-        for (name, fields) in std::mem::take(&mut self.pending_global_records) {
-            let record = self.codegen_record_literal(&fields)?;
+        for (name, expr) in std::mem::take(&mut self.pending_global_records) {
+            let record = self.codegen_expression(&expr)?;
             let value = self.binding_basic_value(&record)?;
             let global = self
                 .global_vars
@@ -841,7 +1103,6 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::String(value) => self.codegen_string_literal(value),
             Expression::Struct(fields) => self.codegen_struct_literal(fields),
-            Expression::Record(fields) => self.codegen_record_literal(fields),
             Expression::Tuple(elements) => self.codegen_tuple_literal(elements),
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
@@ -1783,97 +2044,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Slice(expr) => {
                 let binding = self.codegen_expression(expr)?;
-                let (elem_ty, size, storage_ptr) = match &binding {
-                    Binding::Array { ty, value, storage } => {
-                        let (elem, sz) = match ty {
-                            Type::Array { element, size } => ((**element).clone(), *size),
-                            _ => return Err("expected array type".to_string()),
-                        };
-                        let ptr = if let Some(s) = storage {
-                            *s
-                        } else {
-                            let llvm_arr_ty = value.get_type();
-                            let tmp = self.builder.build_alloca(llvm_arr_ty, "slice_tmp").map_err(|e| e.to_string())?;
-                            self.builder.build_store(tmp, *value).map_err(|e| e.to_string())?;
-                            tmp
-                        };
-                        (elem, sz, ptr)
-                    }
-                    Binding::Struct { ty, value, storage } if matches!(self.resolve_alias_root(ty)?, Type::Tuple(_)) => {
-                        let elements = match self.resolve_alias_root(ty)? {
-                            Type::Tuple(elems) => elems.clone(),
-                            _ => unreachable!(),
-                        };
-                        if elements.is_empty() {
-                            return Err("'@slice' on empty tuple unsupported".to_string());
-                        }
-                        let elem_ty = elements[0].clone();
-                        let size = elements.len();
-                        let llvm_elem_ty = self.llvm_type(&elem_ty)?;
-                        let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
-                        let arr_tmp = self.builder.build_alloca(llvm_arr_ty, "tuple_slice_arr").map_err(|e| e.to_string())?;
-                        let zero = self.ptr_sized_int_type().const_zero();
-                        for (i, elem_t) in elements.iter().enumerate() {
-                            let idx = self.ptr_sized_int_type().const_int(i as u64, false);
-                            let elem_dest_ptr = unsafe {
-                                self.builder.build_gep(llvm_arr_ty, arr_tmp, &[zero, idx], "elem_dest").map_err(|e| e.to_string())?
-                            };
-                            let elem_val = if let Some(s) = storage {
-                                let struct_ty = self.llvm_type(ty)?.into_struct_type();
-                                let elem_src_ptr = self.builder.build_struct_gep(struct_ty, *s, i as u32, "tuple_elem_ptr").map_err(|e| e.to_string())?;
-                                self.builder.build_load(self.llvm_type(elem_t)?, elem_src_ptr, "tuple_elem_val").map_err(|e| e.to_string())?
-                            } else {
-                                self.builder.build_extract_value(*value, i as u32, "tuple_elem_val").map_err(|e| e.to_string())?
-                            };
-                            self.builder.build_store(elem_dest_ptr, elem_val).map_err(|e| e.to_string())?;
-                        }
-                        (elem_ty, size, arr_tmp)
-                    }
-                    _ => return Err("'@slice' requires an array or tuple".to_string()),
-                };
-
-                let llvm_elem_ty = self.llvm_type(&elem_ty)?;
-                let llvm_arr_ty = llvm_elem_ty.array_type(size as u32);
-                let zero = self.ptr_sized_int_type().const_zero();
-                let first_elem_ptr = unsafe {
-                    self.builder
-                        .build_gep(llvm_arr_ty, storage_ptr, &[zero, zero], "slice_first_elem")
-                        .map_err(|e| e.to_string())?
-                };
-
-                let slice_ty = Type::Struct(vec![
-                    StructFieldType {
-                        name: "ptr".to_string(),
-                        ty: Type::Pointer {
-                            element: Box::new(elem_ty),
-                            is_mut: false,
-                        },
-                    },
-                    StructFieldType {
-                        name: "len".to_string(),
-                        ty: Type::USize,
-                    },
-                ]);
-                let slice_llvm_ty = self.slice_type();
-                let len_val = self.ptr_sized_int_type().const_int(size as u64, false);
-
-                let mut slice_val = slice_llvm_ty.get_undef();
-                slice_val = self
-                    .builder
-                    .build_insert_value(slice_val, first_elem_ptr, 0, "slice_ptr")
-                    .map_err(|e| e.to_string())?
-                    .into_struct_value();
-                slice_val = self
-                    .builder
-                    .build_insert_value(slice_val, len_val, 1, "slice_len")
-                    .map_err(|e| e.to_string())?
-                    .into_struct_value();
-
-                Ok(Binding::Struct {
-                    ty: slice_ty,
-                    value: slice_val,
-                    storage: None,
-                })
+                self.slice_binding(binding)
             }
         }
     }
@@ -2013,128 +2184,6 @@ impl<'ctx> Codegen<'ctx> {
             ty: tuple_type,
             value: struct_val,
             storage: None,
-        })
-    }
-
-    fn codegen_record_literal(
-        &mut self,
-        fields: &[StructFieldInit],
-    ) -> Result<Binding<'ctx>, String> {
-        let generic_alias = Checker::generic_type();
-        let generic_type = self.resolve_alias_root(&generic_alias)?.clone();
-        let key_type = Type::Alias("String".to_string());
-        let key_llvm_type = self.llvm_type(&key_type)?;
-        let generic_llvm_type = self.llvm_type(&generic_type)?;
-        let count = fields.len();
-        let count_value = self.ptr_sized_int_type().const_int(count as u64, false);
-
-        let keys_array_type = key_llvm_type.array_type(count as u32);
-        let keys_storage = self
-            .builder
-            .build_alloca(keys_array_type, "record.keys")
-            .map_err(|error| error.to_string())?;
-        let values_array_type = generic_llvm_type.array_type(count as u32);
-        let values_storage = self
-            .builder
-            .build_alloca(values_array_type, "record.values")
-            .map_err(|error| error.to_string())?;
-        let zero = self.ptr_sized_int_type().const_zero();
-
-        for (index, field) in fields.iter().enumerate() {
-            let key_binding = self.codegen_string_literal(field.name.as_bytes())?;
-            let key_value = self.binding_basic_value(&key_binding)?;
-            let index_value = self.ptr_sized_int_type().const_int(index as u64, false);
-            let key_slot = unsafe {
-                self.builder
-                    .build_gep(
-                        keys_array_type,
-                        keys_storage,
-                        &[zero, index_value],
-                        "record.key.slot",
-                    )
-                    .map_err(|error| error.to_string())?
-            };
-            self.builder
-                .build_store(key_slot, key_value)
-                .map_err(|error| error.to_string())?;
-
-            let value_binding = self.codegen_expression(&field.value)?;
-            let boxed_value = self.codegen_cast(value_binding, generic_alias.clone())?;
-            let value = self.binding_basic_value(&boxed_value)?;
-            let value_slot = unsafe {
-                self.builder
-                    .build_gep(
-                        values_array_type,
-                        values_storage,
-                        &[zero, index_value],
-                        "record.value.slot",
-                    )
-                    .map_err(|error| error.to_string())?
-            };
-            self.builder
-                .build_store(value_slot, value)
-                .map_err(|error| error.to_string())?;
-        }
-
-        let keys_pointer = unsafe {
-            self.builder
-                .build_gep(
-                    keys_array_type,
-                    keys_storage,
-                    &[zero, zero],
-                    "record.keys.ptr",
-                )
-                .map_err(|error| error.to_string())?
-        };
-        let values_pointer = unsafe {
-            self.builder
-                .build_gep(
-                    values_array_type,
-                    values_storage,
-                    &[zero, zero],
-                    "record.values.ptr",
-                )
-                .map_err(|error| error.to_string())?
-        };
-
-        let record_type = self.resolve_alias_root(&Checker::record_type())?.clone();
-        let Type::Pointer {
-            element: record_struct,
-            ..
-        } = &record_type
-        else {
-            unreachable!();
-        };
-        let record_llvm_type = self.llvm_type(record_struct)?.into_struct_type();
-        let record_storage = self
-            .builder
-            .build_alloca(record_llvm_type, "record.header")
-            .map_err(|error| error.to_string())?;
-        let len_pointer = self
-            .builder
-            .build_struct_gep(record_llvm_type, record_storage, 0, "record.len")
-            .map_err(|error| error.to_string())?;
-        self.builder
-            .build_store(len_pointer, count_value)
-            .map_err(|error| error.to_string())?;
-        let keys_field = self
-            .builder
-            .build_struct_gep(record_llvm_type, record_storage, 1, "record.keys.field")
-            .map_err(|error| error.to_string())?;
-        self.builder
-            .build_store(keys_field, keys_pointer)
-            .map_err(|error| error.to_string())?;
-        let values_field = self
-            .builder
-            .build_struct_gep(record_llvm_type, record_storage, 2, "record.values.field")
-            .map_err(|error| error.to_string())?;
-        self.builder
-            .build_store(values_field, values_pointer)
-            .map_err(|error| error.to_string())?;
-
-        Ok(Binding::Pointer {
-            ty: record_type,
-            value: record_storage,
         })
     }
 
@@ -3036,6 +3085,41 @@ impl<'ctx> Codegen<'ctx> {
         }
 
 
+
+        if (matches!(resolved_source, Type::Array { .. }) || matches!(resolved_source, Type::Tuple(_)))
+            && self.is_slice_type(&resolved_target)?
+        {
+            let slice_binding = self.slice_binding(binding)?;
+            return self.codegen_cast_inner(slice_binding, target_type, visited);
+        }
+
+        if matches!(resolved_source, Type::Symbol(_)) && self.is_atom_type(&resolved_target)? {
+            let sym_name = match &binding {
+                Binding::Symbol { name, .. } => name.clone(),
+                _ => return Err("expected symbol binding for symbol to atom cast".to_string()),
+            };
+            let str_binding = self.codegen_string_literal(sym_name.as_bytes())?;
+            let str_val = self.binding_basic_value(&str_binding)?;
+            let atom_llvm_ty = self.llvm_type(&resolved_target)?.into_struct_type();
+            let mut atom_val = atom_llvm_ty.get_undef();
+            atom_val = self
+                .builder
+                .build_insert_value(atom_val, str_val, 0, "atom_str")
+                .map_err(|e| e.to_string())?
+                .into_struct_value();
+            return Ok(Binding::Struct {
+                ty: target_type,
+                value: atom_val,
+                storage: None,
+            });
+        }
+
+        if let Type::Struct(fields) = &resolved_source {
+            if self.is_record_type(&resolved_target)? {
+                let record_binding = self.record_from_struct_binding(fields, binding)?;
+                return self.codegen_cast_inner(record_binding, target_type, visited);
+            }
+        }
 
         if self.is_slice_type(&resolved_source)? && self.is_slice_type(&resolved_target)? {
             let source_element = self.slice_element_type(&resolved_source)?;

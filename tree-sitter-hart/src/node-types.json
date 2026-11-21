@@ -20,10 +20,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -60,10 +56,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -96,10 +88,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -109,10 +97,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -164,10 +148,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -204,10 +184,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -240,10 +216,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -253,10 +225,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -307,10 +275,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -347,10 +311,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -383,10 +343,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -396,10 +352,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -564,10 +516,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -604,10 +552,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -640,10 +584,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -653,154 +593,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
-            "named": true
-          },
-          {
-            "type": "string_literal",
-            "named": true
-          },
-          {
-            "type": "struct_literal",
-            "named": true
-          },
-          {
-            "type": "switch_expression",
-            "named": true
-          },
-          {
-            "type": "symbol_literal",
-            "named": true
-          },
-          {
-            "type": "tuple_literal",
-            "named": true
-          },
-          {
-            "type": "yield_expression",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
-    "type": "atom_expression",
-    "named": true,
-    "fields": {
-      "value": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "address_of_expression",
-            "named": true
-          },
-          {
-            "type": "array_literal",
-            "named": true
-          },
-          {
-            "type": "assignment_expression",
-            "named": true
-          },
-          {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
-            "type": "binary_expression",
-            "named": true
-          },
-          {
-            "type": "block",
-            "named": true
-          },
-          {
-            "type": "break_expression",
-            "named": true
-          },
-          {
-            "type": "call_expression",
-            "named": true
-          },
-          {
-            "type": "cast_expression",
-            "named": true
-          },
-          {
-            "type": "const_declaration",
-            "named": true
-          },
-          {
-            "type": "continue_expression",
-            "named": true
-          },
-          {
-            "type": "dereference_expression",
-            "named": true
-          },
-          {
-            "type": "field_expression",
-            "named": true
-          },
-          {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "if_expression",
-            "named": true
-          },
-          {
-            "type": "index_expression",
-            "named": true
-          },
-          {
-            "type": "integer_literal",
-            "named": true
-          },
-          {
-            "type": "match_expression",
-            "named": true
-          },
-          {
-            "type": "method_call_expression",
-            "named": true
-          },
-          {
-            "type": "mut_declaration",
-            "named": true
-          },
-          {
-            "type": "parenthesized_expression",
-            "named": true
-          },
-          {
-            "type": "record_literal",
-            "named": true
-          },
-          {
-            "type": "repeat_expression",
-            "named": true
-          },
-          {
-            "type": "return_expression",
-            "named": true
-          },
-          {
-            "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -852,10 +644,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -892,10 +680,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -928,10 +712,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -941,10 +721,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -1040,10 +816,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -1080,10 +852,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -1116,10 +884,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -1129,10 +893,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -1184,10 +944,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -1224,10 +980,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -1260,10 +1012,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -1273,10 +1021,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -1342,10 +1086,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -1386,10 +1126,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -1422,10 +1158,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -1435,10 +1167,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -1490,10 +1218,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -1530,10 +1254,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -1566,10 +1286,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -1579,10 +1295,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -1744,10 +1456,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -1784,10 +1492,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -1820,10 +1524,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -1833,10 +1533,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -2090,10 +1786,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -2130,10 +1822,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -2166,10 +1854,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -2179,10 +1863,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -2366,10 +2046,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -2406,10 +2082,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -2442,10 +2114,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -2455,10 +2123,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -2709,150 +2373,6 @@
     }
   },
   {
-    "type": "generalise_expression",
-    "named": true,
-    "fields": {
-      "value": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "address_of_expression",
-            "named": true
-          },
-          {
-            "type": "array_literal",
-            "named": true
-          },
-          {
-            "type": "assignment_expression",
-            "named": true
-          },
-          {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
-            "type": "binary_expression",
-            "named": true
-          },
-          {
-            "type": "block",
-            "named": true
-          },
-          {
-            "type": "break_expression",
-            "named": true
-          },
-          {
-            "type": "call_expression",
-            "named": true
-          },
-          {
-            "type": "cast_expression",
-            "named": true
-          },
-          {
-            "type": "const_declaration",
-            "named": true
-          },
-          {
-            "type": "continue_expression",
-            "named": true
-          },
-          {
-            "type": "dereference_expression",
-            "named": true
-          },
-          {
-            "type": "field_expression",
-            "named": true
-          },
-          {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "if_expression",
-            "named": true
-          },
-          {
-            "type": "index_expression",
-            "named": true
-          },
-          {
-            "type": "integer_literal",
-            "named": true
-          },
-          {
-            "type": "match_expression",
-            "named": true
-          },
-          {
-            "type": "method_call_expression",
-            "named": true
-          },
-          {
-            "type": "mut_declaration",
-            "named": true
-          },
-          {
-            "type": "parenthesized_expression",
-            "named": true
-          },
-          {
-            "type": "record_literal",
-            "named": true
-          },
-          {
-            "type": "repeat_expression",
-            "named": true
-          },
-          {
-            "type": "return_expression",
-            "named": true
-          },
-          {
-            "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
-            "named": true
-          },
-          {
-            "type": "string_literal",
-            "named": true
-          },
-          {
-            "type": "struct_literal",
-            "named": true
-          },
-          {
-            "type": "switch_expression",
-            "named": true
-          },
-          {
-            "type": "symbol_literal",
-            "named": true
-          },
-          {
-            "type": "tuple_literal",
-            "named": true
-          },
-          {
-            "type": "yield_expression",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "generic_type",
     "named": true,
     "fields": {
@@ -2904,10 +2424,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -2944,10 +2460,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -2980,10 +2492,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -2993,10 +2501,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3042,10 +2546,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3086,10 +2586,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3122,10 +2618,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3135,10 +2627,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3235,10 +2723,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3275,10 +2759,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3311,10 +2791,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3324,10 +2800,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3373,10 +2845,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3413,10 +2881,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3449,10 +2913,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3462,10 +2922,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3517,10 +2973,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3557,10 +3009,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3593,10 +3041,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3606,10 +3050,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3725,10 +3165,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3765,10 +3201,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3801,10 +3233,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3814,10 +3242,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -3899,10 +3323,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -3939,10 +3359,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -3975,10 +3391,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -3988,10 +3400,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -4119,10 +3527,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -4159,10 +3563,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -4195,10 +3595,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -4208,10 +3604,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -4344,10 +3736,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -4384,10 +3772,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -4420,10 +3804,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -4433,10 +3813,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -4582,21 +3958,6 @@
     "fields": {}
   },
   {
-    "type": "record_literal",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": false,
-      "required": true,
-      "types": [
-        {
-          "type": "struct_literal",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "repeat_expression",
     "named": true,
     "fields": {
@@ -4637,10 +3998,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -4677,10 +4034,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -4713,10 +4066,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -4726,10 +4075,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -4775,10 +4120,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -4815,10 +4156,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -4851,10 +4188,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -4864,10 +4197,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -4913,10 +4242,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -4953,10 +4278,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -4989,10 +4310,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -5002,10 +4319,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -5057,10 +4370,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -5097,10 +4406,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -5133,10 +4438,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -5146,10 +4447,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -5200,10 +4497,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -5240,10 +4533,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -5276,10 +4565,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -5289,154 +4574,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
-            "named": true
-          },
-          {
-            "type": "string_literal",
-            "named": true
-          },
-          {
-            "type": "struct_literal",
-            "named": true
-          },
-          {
-            "type": "switch_expression",
-            "named": true
-          },
-          {
-            "type": "symbol_literal",
-            "named": true
-          },
-          {
-            "type": "tuple_literal",
-            "named": true
-          },
-          {
-            "type": "yield_expression",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
-    "type": "slice_expression",
-    "named": true,
-    "fields": {
-      "value": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "address_of_expression",
-            "named": true
-          },
-          {
-            "type": "array_literal",
-            "named": true
-          },
-          {
-            "type": "assignment_expression",
-            "named": true
-          },
-          {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
-            "type": "binary_expression",
-            "named": true
-          },
-          {
-            "type": "block",
-            "named": true
-          },
-          {
-            "type": "break_expression",
-            "named": true
-          },
-          {
-            "type": "call_expression",
-            "named": true
-          },
-          {
-            "type": "cast_expression",
-            "named": true
-          },
-          {
-            "type": "const_declaration",
-            "named": true
-          },
-          {
-            "type": "continue_expression",
-            "named": true
-          },
-          {
-            "type": "dereference_expression",
-            "named": true
-          },
-          {
-            "type": "field_expression",
-            "named": true
-          },
-          {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "if_expression",
-            "named": true
-          },
-          {
-            "type": "index_expression",
-            "named": true
-          },
-          {
-            "type": "integer_literal",
-            "named": true
-          },
-          {
-            "type": "match_expression",
-            "named": true
-          },
-          {
-            "type": "method_call_expression",
-            "named": true
-          },
-          {
-            "type": "mut_declaration",
-            "named": true
-          },
-          {
-            "type": "parenthesized_expression",
-            "named": true
-          },
-          {
-            "type": "record_literal",
-            "named": true
-          },
-          {
-            "type": "repeat_expression",
-            "named": true
-          },
-          {
-            "type": "return_expression",
-            "named": true
-          },
-          {
-            "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -5561,10 +4698,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -5601,10 +4734,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -5637,10 +4766,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -5650,10 +4775,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -5801,10 +4922,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -5841,10 +4958,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -5877,10 +4990,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -5890,10 +4999,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -5939,10 +5044,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -5983,10 +5084,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -6019,10 +5116,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -6032,10 +5125,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -6087,10 +5176,6 @@
             "named": true
           },
           {
-            "type": "atom_expression",
-            "named": true
-          },
-          {
             "type": "binary_expression",
             "named": true
           },
@@ -6127,10 +5212,6 @@
             "named": true
           },
           {
-            "type": "generalise_expression",
-            "named": true
-          },
-          {
             "type": "identifier",
             "named": true
           },
@@ -6163,10 +5244,6 @@
             "named": true
           },
           {
-            "type": "record_literal",
-            "named": true
-          },
-          {
             "type": "repeat_expression",
             "named": true
           },
@@ -6176,10 +5253,6 @@
           },
           {
             "type": "sizeof_expression",
-            "named": true
-          },
-          {
-            "type": "slice_expression",
             "named": true
           },
           {
@@ -6241,10 +5314,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -6281,10 +5350,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -6317,10 +5382,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -6330,10 +5391,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -6696,10 +5753,6 @@
           "named": true
         },
         {
-          "type": "atom_expression",
-          "named": true
-        },
-        {
           "type": "binary_expression",
           "named": true
         },
@@ -6736,10 +5789,6 @@
           "named": true
         },
         {
-          "type": "generalise_expression",
-          "named": true
-        },
-        {
           "type": "identifier",
           "named": true
         },
@@ -6772,10 +5821,6 @@
           "named": true
         },
         {
-          "type": "record_literal",
-          "named": true
-        },
-        {
           "type": "repeat_expression",
           "named": true
         },
@@ -6785,10 +5830,6 @@
         },
         {
           "type": "sizeof_expression",
-          "named": true
-        },
-        {
-          "type": "slice_expression",
           "named": true
         },
         {
@@ -6927,23 +5968,7 @@
     "named": false
   },
   {
-    "type": "@atom",
-    "named": false
-  },
-  {
-    "type": "@generalise",
-    "named": false
-  },
-  {
-    "type": "@record",
-    "named": false
-  },
-  {
     "type": "@sizeOf",
-    "named": false
-  },
-  {
-    "type": "@slice",
     "named": false
   },
   {

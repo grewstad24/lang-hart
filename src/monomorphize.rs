@@ -279,11 +279,6 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
                 substitute_expression(&mut f.value, substitutions);
             }
         }
-        Expression::Record(fields) => {
-            for f in fields {
-                substitute_expression(&mut f.value, substitutions);
-            }
-        }
         Expression::Tuple(elements) => {
             for el in elements {
                 substitute_expression(el, substitutions);
@@ -508,11 +503,6 @@ fn scan_and_rewrite_expression(
             }
         }
         Expression::Struct(fields) => {
-            for f in fields {
-                scan_and_rewrite_expression(&mut f.value, scope, generated, changed)?;
-            }
-        }
-        Expression::Record(fields) => {
             for f in fields {
                 scan_and_rewrite_expression(&mut f.value, scope, generated, changed)?;
             }
@@ -824,11 +814,6 @@ fn concretize_expression(
             }
         }
         Expression::Struct(fields) => {
-            for f in fields {
-                concretize_expression(&mut f.value, templates, generated, changed)?;
-            }
-        }
-        Expression::Record(fields) => {
             for f in fields {
                 concretize_expression(&mut f.value, templates, generated, changed)?;
             }
@@ -1436,7 +1421,6 @@ fn infer_expr_type_internal(
             }
             Some(Type::Struct(struct_fields))
         }
-        Expression::Record(_) => Some(Type::Alias("Record".to_string())),
         Expression::Slice(inner) => {
             if let Some(inner_ty) = infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&inner_ty, scope);
@@ -2066,7 +2050,7 @@ fn scan_and_monomorphize_def(
                 scan_and_monomorphize_def(el, scope, def_templates, local_types, generated, changed)?;
             }
         }
-        Expression::Struct(fields) | Expression::Record(fields) => {
+        Expression::Struct(fields) => {
             for f in fields {
                 scan_and_monomorphize_def(&mut f.value, scope, def_templates, local_types, generated, changed)?;
             }

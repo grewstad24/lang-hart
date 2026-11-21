@@ -287,16 +287,6 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Struct(resolved))
         }
-        Expression::Record(fields) => {
-            let mut resolved = Vec::with_capacity(fields.len());
-            for field in fields {
-                resolved.push(StructFieldInit {
-                    name: field.name.clone(),
-                    value: canonicalize_expression(&field.value, checker)?,
-                });
-            }
-            Ok(Expression::Record(resolved))
-        }
         Expression::Tuple(elements) => {
             let mut resolved = Vec::with_capacity(elements.len());
             for el in elements {
