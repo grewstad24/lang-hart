@@ -149,7 +149,17 @@ func main(args: Slice<String>) -> :none {
       println(@slice [ "literal_usize + u8: ", sum ])
       if {
             b < literal_usize => println("b < literal_usize is true without casts")
-            else => :none
+      }
+
+      println("--- testing synthesized else => :none in if and switch ---")
+      mut test_synth_if := 0
+      if {
+            test_synth_if = 0 => println("if without else arm works!")
+      }
+
+      mut test_synth_sw := 1
+      switch test_synth_sw {
+            1 => println("switch without else arm works!")
       }
 
       println("--- testing yield expression in blocks and functions ---")

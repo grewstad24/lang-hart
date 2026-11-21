@@ -3053,7 +3053,10 @@ impl Parser {
         }
 
         if !has_else {
-            return Err("if block must contain an explicit 'else' arm".to_string());
+            arms.push(IfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Expression::Symbol("none".to_string())),
+            });
         }
 
         Ok(Expression::If { arms })
@@ -3129,7 +3132,10 @@ impl Parser {
         }
 
         if !has_else {
-            return Err("switch block must contain an explicit 'else' arm".to_string());
+            arms.push(IfArm {
+                condition: IfCondition::Else,
+                body: Box::new(Expression::Symbol("none".to_string())),
+            });
         }
 
         let if_expr = Expression::If { arms };

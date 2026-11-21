@@ -2109,17 +2109,17 @@ impl<'a> Checker<'a> {
             }
 
             Expression::If { arms } => {
-                let num_arms = arms.len();
                 let has_else = arms
                     .last()
                     .map(|arm| matches!(arm.condition, IfCondition::Else))
                     .unwrap_or(false);
                 if !has_else {
-                    return Err(format!(
-                        "{}: error: if expression requires an explicit 'else' arm",
-                        self.current_file_path
-                    ));
+                    arms.push(crate::syntax::IfArm {
+                        condition: IfCondition::Else,
+                        body: Box::new(Expression::Symbol("none".to_string())),
+                    });
                 }
+                let num_arms = arms.len();
 
                 let mut arm_types = Vec::new();
                 let scopes_before_if = self.local_scopes.clone();

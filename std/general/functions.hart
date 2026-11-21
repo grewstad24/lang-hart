@@ -2,6 +2,8 @@ export { not, and, or, xor, nand, nor, xnor, neg, str_eq } to .
 
 def neg(x) { 0 - x }
 
+# 1 -> 0
+# 0 -> 1
 def not(x) {
       return match x {
             :true => :false
@@ -9,6 +11,9 @@ def not(x) {
       }
 }
 
+# 1,1 -> 1
+# 1,0 -> 0
+# 0,0 -> 0
 def and(a, b) {
       return match a {
             :true => b
@@ -16,6 +21,9 @@ def and(a, b) {
       }
 }
 
+# 1,1 -> 1
+# 1,0 -> 1
+# 0,0 -> 0
 def or(a, b) {
       return match a {
             :true => :true
@@ -23,6 +31,9 @@ def or(a, b) {
       }
 }
 
+# 1,1 -> 0
+# 1,0 -> 1
+# 0,0 -> 0
 def xor(a, b) {
       return match a {
             :true => not(b)
