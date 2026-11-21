@@ -305,7 +305,6 @@ module.exports = grammar({
       $.switch_expression,
       $.match_expression,
       $.repeat_expression,
-      $.for_expression,
       $.return_expression,
       $.record_literal,
       $.slice_expression,
@@ -449,16 +448,12 @@ module.exports = grammar({
 
     repeat_expression: $ => prec.right(seq(
       'repeat',
-      field('count', $._expression),
-      optional(seq('using', field('binder', $.identifier))),
-      field('body', $.block)
-    )),
-
-    for_expression: $ => prec.right(seq(
-      'for',
-      field('iterable', $._expression),
-      optional(seq('using', field('binder', $.identifier))),
-      field('body', $.block)
+      choice(
+        seq('while', field('condition', $._expression), field('body', $.block)),
+        seq('until', field('condition', $._expression), field('body', $.block)),
+        seq('for', field('iterable', $._expression), optional(seq('using', field('binder', $.identifier))), field('body', $.block)),
+        seq(field('count', $._expression), optional(seq('using', field('binder', $.identifier))), field('body', $.block)),
+      ),
     )),
 
     return_expression: $ => prec.right(seq(

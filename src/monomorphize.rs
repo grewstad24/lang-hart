@@ -237,6 +237,14 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
             substitute_expression(count, substitutions);
             substitute_expression(body, substitutions);
         }
+        Expression::RepeatWhile { condition, body } => {
+            substitute_expression(condition, substitutions);
+            substitute_expression(body, substitutions);
+        }
+        Expression::RepeatUntil { condition, body } => {
+            substitute_expression(condition, substitutions);
+            substitute_expression(body, substitutions);
+        }
         Expression::For { iterable, body, .. } => {
             substitute_expression(iterable, substitutions);
             substitute_expression(body, substitutions);
@@ -458,6 +466,14 @@ fn scan_and_rewrite_expression(
         }
         Expression::Repeat { count, body, .. } => {
             scan_and_rewrite_expression(count, scope, generated, changed)?;
+            scan_and_rewrite_expression(body, scope, generated, changed)?;
+        }
+        Expression::RepeatWhile { condition, body } => {
+            scan_and_rewrite_expression(condition, scope, generated, changed)?;
+            scan_and_rewrite_expression(body, scope, generated, changed)?;
+        }
+        Expression::RepeatUntil { condition, body } => {
+            scan_and_rewrite_expression(condition, scope, generated, changed)?;
             scan_and_rewrite_expression(body, scope, generated, changed)?;
         }
         Expression::For { iterable, body, .. } => {
@@ -775,6 +791,14 @@ fn concretize_expression(
         }
         Expression::Repeat { count, body, .. } => {
             concretize_expression(count, templates, generated, changed)?;
+            concretize_expression(body, templates, generated, changed)?;
+        }
+        Expression::RepeatWhile { condition, body } => {
+            concretize_expression(condition, templates, generated, changed)?;
+            concretize_expression(body, templates, generated, changed)?;
+        }
+        Expression::RepeatUntil { condition, body } => {
+            concretize_expression(condition, templates, generated, changed)?;
             concretize_expression(body, templates, generated, changed)?;
         }
         Expression::For { iterable, body, .. } => {
@@ -1651,6 +1675,18 @@ fn scan_and_monomorphize_def(
                 local_types.insert(b.clone(), Type::USize);
             }
             scan_and_monomorphize_def(body, scope, def_templates, local_types, generated, changed)?;
+            *local_types = orig_locals;
+        }
+        Expression::RepeatWhile { condition, body } => {
+            scan_and_monomorphize_def(condition, scope, def_templates, local_types, generated, changed)?;
+            let orig_locals = local_types.clone();
+            scan_and_monomorphize_def(body, scope, def_templates, local_types, generated, changed)?;
+            *local_types = orig_locals;
+        }
+        Expression::RepeatUntil { condition, body } => {
+            let orig_locals = local_types.clone();
+            scan_and_monomorphize_def(body, scope, def_templates, local_types, generated, changed)?;
+            scan_and_monomorphize_def(condition, scope, def_templates, local_types, generated, changed)?;
             *local_types = orig_locals;
         }
         Expression::If { arms } => {

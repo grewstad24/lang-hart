@@ -1,4 +1,0 @@
-mod io
-
-
-extern func fflush(ptr: *u8) -> s32

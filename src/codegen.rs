@@ -356,9 +356,7 @@ impl<'ctx> Codegen<'ctx> {
                 continue;
             }
 
-            if let Some(sig) = &def.signature {
-                self.codegen_named_function(&def.name, Some(sig), &def.value)?;
-            } else {
+            if def.signature.is_none() {
                 let binding = self.codegen_expression(&def.value)?;
                 let ty = self.binding_type(&binding)?;
                 let llvm_ty = self.llvm_type(&ty)?;
@@ -379,6 +377,19 @@ impl<'ctx> Codegen<'ctx> {
                         pointer: global.as_pointer_value(),
                     },
                 );
+            }
+        }
+
+        for def in definitions {
+            if def.name == "main" {
+                continue;
+            }
+            if matches!(unspanned_expression(&def.value), Expression::Record(_)) {
+                continue;
+            }
+
+            if let Some(sig) = &def.signature {
+                self.codegen_named_function(&def.name, Some(sig), &def.value)?;
             }
         }
 
@@ -509,7 +520,8 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_main(&mut self, main_def: &Definition) -> Result<(), String> {
         let i32_type = self.context.i32_type();
-        let function_type = i32_type.fn_type(&[], false);
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let function_type = i32_type.fn_type(&[i32_type.into(), ptr_type.into()], false);
 
         let function = self.module.add_function("main", function_type, None);
         let entry = self.context.append_basic_block(function, "entry");
@@ -529,6 +541,163 @@ impl<'ctx> Codegen<'ctx> {
             self.builder
                 .build_store(global.pointer, value)
                 .map_err(|error| error.to_string())?;
+        }
+
+        if let Some(sig) = &main_def.signature {
+            if let Some(param) = sig.parameters.first() {
+                let usize_type = self.ptr_sized_int_type();
+                let string_struct_ty = self
+                    .context
+                    .struct_type(&[ptr_type.into(), usize_type.into()], false);
+                let slice_struct_ty = self
+                    .context
+                    .struct_type(&[ptr_type.into(), usize_type.into()], false);
+
+                let argc_val = function.get_nth_param(0).unwrap().into_int_value();
+                let argv_val = function.get_nth_param(1).unwrap().into_pointer_value();
+
+                let argc_usize = self
+                    .builder
+                    .build_int_z_extend(argc_val, usize_type, "argc_usize")
+                    .map_err(|e| e.to_string())?;
+
+                let malloc_fn = self.module.get_function("malloc").unwrap_or_else(|| {
+                    let fn_type = ptr_type.fn_type(&[usize_type.into()], false);
+                    self.module.add_function("malloc", fn_type, None)
+                });
+                let strlen_fn = self.module.get_function("strlen").unwrap_or_else(|| {
+                    let fn_type = usize_type.fn_type(&[ptr_type.into()], false);
+                    self.module.add_function("strlen", fn_type, None)
+                });
+
+                let sixteen = usize_type.const_int(16, false);
+                let alloc_size = self
+                    .builder
+                    .build_int_mul(argc_usize, sixteen, "alloc_size")
+                    .map_err(|e| e.to_string())?;
+                let malloc_call = self
+                    .builder
+                    .build_call(malloc_fn, &[alloc_size.into()], "args_mem")
+                    .map_err(|e| e.to_string())?;
+                let args_buffer = malloc_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| "malloc must return a pointer".to_string())?
+                    .into_pointer_value();
+
+                let loop_cond = self.context.append_basic_block(function, "args.loop.cond");
+                let loop_body = self.context.append_basic_block(function, "args.loop.body");
+                let loop_end = self.context.append_basic_block(function, "args.loop.end");
+
+                let i_alloca = self
+                    .builder
+                    .build_alloca(usize_type, "args.i")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(i_alloca, usize_type.const_zero())
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unconditional_branch(loop_cond)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(loop_cond);
+                let cur_i = self
+                    .builder
+                    .build_load(usize_type, i_alloca, "cur_i")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+                let has_more = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::ULT, cur_i, argc_usize, "has_more")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_conditional_branch(has_more, loop_body, loop_end)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(loop_body);
+                let arg_ptr_gep = unsafe {
+                    self.builder
+                        .build_gep(ptr_type, argv_val, &[cur_i], "arg_ptr_gep")
+                }
+                .map_err(|e| e.to_string())?;
+                let arg_cstr = self
+                    .builder
+                    .build_load(ptr_type, arg_ptr_gep, "arg_cstr")
+                    .map_err(|e| e.to_string())?
+                    .into_pointer_value();
+
+                let strlen_call = self
+                    .builder
+                    .build_call(strlen_fn, &[arg_cstr.into()], "arg_len")
+                    .map_err(|e| e.to_string())?;
+                let arg_len = strlen_call
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| "strlen must return a value".to_string())?
+                    .into_int_value();
+
+                let elem_gep = unsafe {
+                    self.builder
+                        .build_gep(string_struct_ty, args_buffer, &[cur_i], "elem_gep")
+                }
+                .map_err(|e| e.to_string())?;
+
+                let field0_gep = self
+                    .builder
+                    .build_struct_gep(string_struct_ty, elem_gep, 0, "elem_ptr_gep")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(field0_gep, arg_cstr)
+                    .map_err(|e| e.to_string())?;
+
+                let field1_gep = self
+                    .builder
+                    .build_struct_gep(string_struct_ty, elem_gep, 1, "elem_len_gep")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(field1_gep, arg_len)
+                    .map_err(|e| e.to_string())?;
+
+                let next_i = self
+                    .builder
+                    .build_int_add(cur_i, usize_type.const_int(1, false), "next_i")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(i_alloca, next_i)
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_unconditional_branch(loop_cond)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(loop_end);
+
+                let slice_alloca = self
+                    .builder
+                    .build_alloca(slice_struct_ty, &param.name)
+                    .map_err(|e| e.to_string())?;
+                let slice_ptr_gep = self
+                    .builder
+                    .build_struct_gep(slice_struct_ty, slice_alloca, 0, "slice_ptr_gep")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(slice_ptr_gep, args_buffer)
+                    .map_err(|e| e.to_string())?;
+                let slice_len_gep = self
+                    .builder
+                    .build_struct_gep(slice_struct_ty, slice_alloca, 1, "slice_len_gep")
+                    .map_err(|e| e.to_string())?;
+                self.builder
+                    .build_store(slice_len_gep, argc_usize)
+                    .map_err(|e| e.to_string())?;
+
+                self.local_scopes.last_mut().unwrap().insert(
+                    param.name.clone(),
+                    LocalVar {
+                        ty: param.ty.clone(),
+                        alloca: slice_alloca,
+                    },
+                );
+            }
         }
 
         let body_binding = self.codegen_expression(&main_def.value)?;
@@ -1215,6 +1384,100 @@ impl<'ctx> Codegen<'ctx> {
                 self.builder.position_at_end(merge_bb);
                 Ok(self.symbol_binding("none"))
             }
+            Expression::RepeatWhile { condition, body } => {
+                let current_block = self
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| "cannot generate repeat while outside basic block".to_string())?;
+                let current_fn = current_block
+                    .get_parent()
+                    .ok_or_else(|| "current block has no parent function".to_string())?;
+
+                let id = self.branch_counter;
+                self.branch_counter += 1;
+
+                let cond_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("while.cond.{}", id));
+                let body_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("while.body.{}", id));
+                let merge_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("while.merge.{}", id));
+
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(cond_bb);
+                let cond_binding = self.codegen_expression(condition)?;
+                let cond_val = self.binding_to_bool_val(&cond_binding)?;
+                self.builder
+                    .build_conditional_branch(cond_val, body_bb, merge_bb)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(body_bb);
+                self.codegen_expression(body)?;
+
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_none() {
+                        self.builder
+                            .build_unconditional_branch(cond_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                self.builder.position_at_end(merge_bb);
+                Ok(self.symbol_binding("none"))
+            }
+            Expression::RepeatUntil { condition, body } => {
+                let current_block = self
+                    .builder
+                    .get_insert_block()
+                    .ok_or_else(|| "cannot generate repeat until outside basic block".to_string())?;
+                let current_fn = current_block
+                    .get_parent()
+                    .ok_or_else(|| "current block has no parent function".to_string())?;
+
+                let id = self.branch_counter;
+                self.branch_counter += 1;
+
+                let body_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("until.body.{}", id));
+                let cond_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("until.cond.{}", id));
+                let merge_bb = self
+                    .context
+                    .append_basic_block(current_fn, &format!("until.merge.{}", id));
+
+                self.builder
+                    .build_unconditional_branch(body_bb)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(body_bb);
+                self.codegen_expression(body)?;
+
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_none() {
+                        self.builder
+                            .build_unconditional_branch(cond_bb)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                self.builder.position_at_end(cond_bb);
+                let cond_binding = self.codegen_expression(condition)?;
+                let cond_val = self.binding_to_bool_val(&cond_binding)?;
+                self.builder
+                    .build_conditional_branch(cond_val, merge_bb, body_bb)
+                    .map_err(|e| e.to_string())?;
+
+                self.builder.position_at_end(merge_bb);
+                Ok(self.symbol_binding("none"))
+            }
             Expression::If { arms } => self.codegen_if_expression(arms),
             Expression::Match {
                 target,
@@ -1627,6 +1890,37 @@ impl<'ctx> Codegen<'ctx> {
         })
     }
 
+    fn binding_to_bool_val(
+        &self,
+        binding: &Binding<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, String> {
+        match binding {
+            Binding::Union { value, .. } => {
+                let tag = self
+                    .builder
+                    .build_extract_value(*value, 0, "cond_tag")
+                    .map_err(|e| e.to_string())?
+                    .into_int_value();
+                self.builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        self.context.i8_type().const_int(1, false),
+                        "is_true",
+                    )
+                    .map_err(|e| e.to_string())
+            }
+            Binding::Symbol { name, .. } => {
+                if name == "true" {
+                    Ok(self.context.bool_type().const_int(1, false))
+                } else {
+                    Ok(self.context.bool_type().const_int(0, false))
+                }
+            }
+            _ => Err("condition must evaluate to Bool (:true | :false)".to_string()),
+        }
+    }
+
     fn codegen_if_expression(&mut self, arms: &[IfArm]) -> Result<Binding<'ctx>, String> {
         let current_block = self
             .builder
@@ -1663,31 +1957,7 @@ impl<'ctx> Codegen<'ctx> {
             match &arm.condition {
                 IfCondition::Expression(cond_expr) => {
                     let cond_binding = self.codegen_expression(cond_expr)?;
-                    let cond_val = match cond_binding {
-                        Binding::Union { value, .. } => {
-                            let tag = self
-                                .builder
-                                .build_extract_value(value, 0, "cond_tag")
-                                .map_err(|e| e.to_string())?
-                                .into_int_value();
-                            self.builder
-                                .build_int_compare(
-                                    IntPredicate::EQ,
-                                    tag,
-                                    self.context.i8_type().const_int(1, false),
-                                    "is_true",
-                                )
-                                .map_err(|e| e.to_string())?
-                        }
-                        Binding::Symbol { name, .. } => {
-                            if name == "true" {
-                                self.context.bool_type().const_int(1, false)
-                            } else {
-                                self.context.bool_type().const_int(0, false)
-                            }
-                        }
-                        _ => return Err("if condition must evaluate to Bool (:true | :false)".to_string()),
-                    };
+                    let cond_val = self.binding_to_bool_val(&cond_binding)?;
 
                     let then_bb = self
                         .context

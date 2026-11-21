@@ -30,4 +30,5 @@ def printa(arr) {
       repeat arr.len using i {
             print(arr[i])
       }
+      return :none
 }

@@ -1,0 +1,7 @@
+mod io
+
+extern func open(path: *u8, flags: s32, mode: s32) -> s32
+extern func close(fd: s32) -> s32
+extern func read(fd: s32, buf: *u8, bytes: usize) -> s64
+extern func write(fd: s32, buf: *u8, bytes: usize) -> s64
+extern func lseek(fd: s32, offset: s64, whence: s32) -> s64

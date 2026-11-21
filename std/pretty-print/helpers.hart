@@ -53,7 +53,7 @@ def pprint_array( z, indent_level, err ) {
             0 => :none
             else => print(:nl)
       }
-      for z using elem {
+      repeat for z using elem {
             switch indent_level {
                   0 => :none
                   else => {

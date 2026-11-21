@@ -396,6 +396,14 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             binder: binder.clone(),
             body: Box::new(canonicalize_expression(body, checker)?),
         }),
+        Expression::RepeatWhile { condition, body } => Ok(Expression::RepeatWhile {
+            condition: Box::new(canonicalize_expression(condition, checker)?),
+            body: Box::new(canonicalize_expression(body, checker)?),
+        }),
+        Expression::RepeatUntil { condition, body } => Ok(Expression::RepeatUntil {
+            condition: Box::new(canonicalize_expression(condition, checker)?),
+            body: Box::new(canonicalize_expression(body, checker)?),
+        }),
         Expression::For {
             iterable,
             binder,
@@ -571,8 +579,15 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                 if def.is_def {
                     continue;
                 }
-                let resolved_sig = def
-                    .signature
+                let mut def_sig = def.signature.clone();
+                if let Some(sig) = &mut def_sig {
+                    if *sig.return_type == Type::Inferred {
+                        if let Some(Type::Function { return_type, .. }) = checker.resolved_definitions.get(&def.name) {
+                            *sig.return_type = *return_type.clone();
+                        }
+                    }
+                }
+                let resolved_sig = def_sig
                     .as_ref()
                     .map(|s| canonicalize_signature(s, &checker))
                     .transpose()?;
@@ -586,6 +601,21 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                         ));
                     }
                     if let Some(sig) = &resolved_sig {
+                        if sig.parameters.len() > 1 {
+                            return Err(format!(
+                                "{}: error: entry point 'main' accepts either no arguments or a single argument typed 'Slice<String>'",
+                                file.file_path
+                            ));
+                        }
+                        if let Some(param) = sig.parameters.first() {
+                            let param_str = format!("{}", param.ty);
+                            if !param_str.contains("Slice") && !param_str.contains("String") {
+                                return Err(format!(
+                                    "{}: error: entry point 'main' parameter must be typed 'Slice<String>', found {}",
+                                    file.file_path, param.ty
+                                ));
+                            }
+                        }
                         let ret = &sig.return_type;
                         if **ret != Type::S32
                             && !matches!(**ret, Type::Symbol(ref name) if name == "none")

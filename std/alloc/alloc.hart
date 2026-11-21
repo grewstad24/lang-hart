@@ -1,12 +1,30 @@
 decl mod alloc {
       export {
-            { free, malloc, realloc, Vector } to .heap,
-            { malloc, free, realloc } to .heap.raw_libc
-      }
+            alloc, alloc_slice, dealloc, free_slice, Vector
+      } to .heap
 }
 
-extern func malloc( size: usize ) -> *mut opaque
-
+extern func malloc(size: usize) -> *mut opaque
 extern func free(ptr: *opaque) -> :none
-
 extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
+
+def alloc(size) {
+      return malloc(size as usize) as *mut u8
+}
+
+def alloc_slice(len) {
+      return { ptr: malloc(len as usize) as *mut u8, len: len as usize }
+}
+
+def free_slice(s) {
+      free(s.ptr as *opaque)
+}
+
+def dealloc(target) {
+      match target using p {
+            *opaque => free(p)
+            *u8 => free(p as *opaque)
+            *mut u8 => free(p as *opaque)
+            else => free(p.ptr as *opaque)
+      }
+}

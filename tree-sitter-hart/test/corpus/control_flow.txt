@@ -5,12 +5,20 @@ Loops and Matches
 func main() -> :none {
     mut arr := [1, 2, 3]
 
-    for arr using elem {
+    repeat for arr using elem {
         print(elem)
     }
 
     repeat 10 using i {
         print(i)
+    }
+
+    repeat while x < 10 {
+        print(x)
+    }
+
+    repeat until x >= 10 {
+        print(x)
     }
 
     match x using z {
@@ -38,7 +46,7 @@ func main() -> :none {
           (integer_literal)
           (integer_literal)
           (integer_literal)))
-      (for_expression
+      (repeat_expression
         iterable: (identifier)
         binder: (identifier)
         body: (block
@@ -49,6 +57,24 @@ func main() -> :none {
       (repeat_expression
         count: (integer_literal)
         binder: (identifier)
+        body: (block
+          (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (identifier)))))
+      (repeat_expression
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer_literal))
+        body: (block
+          (call_expression
+            function: (function_identifier)
+            arguments: (argument_list
+              (identifier)))))
+      (repeat_expression
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer_literal))
         body: (block
           (call_expression
             function: (function_identifier)

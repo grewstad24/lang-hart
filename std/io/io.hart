@@ -1,8 +1,12 @@
 decl mod io {
-        export {
-                { fopen, read, write, fflush } to .io
-        }
-        import { .heap }
+      export {
+            File,
+            open_file, create_file, append_file,
+            stdin, stdout, stderr,
+            copy, copy_to, stream,
+            read_file, write_file, append_to_file,
+            is_ok, is_err, close_file, write_data, read_all,
+            open, close, read, write, lseek
+      } to .io
+      import { .heap }
 }
-
-extern func fopen(path: *u8, mode: *u8) -> *opaque

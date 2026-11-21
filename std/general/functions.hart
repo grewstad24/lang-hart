@@ -1,4 +1,4 @@
-export { not, and, or, xor, nand, nor, xnor, neg } to .
+export { not, and, or, xor, nand, nor, xnor, neg, str_eq } to .
 
 def neg(x) { 0 - x }
 
@@ -31,3 +31,21 @@ def nand(a, b) { not(and(a, b)) }
 def nor(a, b) { not(or(a, b)) }
 
 def xnor(a, b) { not(xor(a, b)) }
+
+def str_eq(a, b) {
+      return if {
+            a.len != b.len => :false
+            else => {
+                  mut equal: Bool := :true
+                  repeat a.len using i {
+                        if {
+                              a[i] != b[i] => {
+                                    equal := :false
+                              }
+                              else => :none
+                        }
+                  }
+                  return equal
+            }
+      }
+}

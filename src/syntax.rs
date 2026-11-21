@@ -360,8 +360,22 @@ impl fmt::Display for Expression {
                 Ok(())
             }
             Expression::Assign { target, value } => write!(f, "{} = {}", target, value),
-            Expression::Repeat { count, .. } => write!(f, "repeat {}", count),
-            Expression::For { iterable, .. } => write!(f, "for {}", iterable),
+            Expression::Repeat { count, binder, .. } => {
+                if let Some(b) = binder {
+                    write!(f, "repeat {} using {}", count, b)
+                } else {
+                    write!(f, "repeat {}", count)
+                }
+            }
+            Expression::RepeatWhile { condition, .. } => write!(f, "repeat while {}", condition),
+            Expression::RepeatUntil { condition, .. } => write!(f, "repeat until {}", condition),
+            Expression::For { iterable, binder, .. } => {
+                if let Some(b) = binder {
+                    write!(f, "repeat for {} using {}", iterable, b)
+                } else {
+                    write!(f, "repeat for {}", iterable)
+                }
+            }
             Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
             Expression::Slice(expr) => write!(f, "@slice {}", expr),
         }
@@ -499,6 +513,14 @@ pub enum Expression {
     Repeat {
         count: Box<Expression>,
         binder: Option<String>,
+        body: Box<Expression>,
+    },
+    RepeatWhile {
+        condition: Box<Expression>,
+        body: Box<Expression>,
+    },
+    RepeatUntil {
+        condition: Box<Expression>,
         body: Box<Expression>,
     },
     For {
@@ -666,6 +688,8 @@ pub enum Token {
     Return,
     As,
     Repeat,
+    While,
+    Until,
     For,
     Mut,
     Decl,
@@ -745,6 +769,8 @@ impl fmt::Display for Token {
             Token::Return => write!(f, "'return'"),
             Token::As => write!(f, "'as'"),
             Token::Repeat => write!(f, "'repeat'"),
+            Token::While => write!(f, "'while'"),
+            Token::Until => write!(f, "'until'"),
             Token::For => write!(f, "'for'"),
             Token::Mut => write!(f, "'mut'"),
             Token::Decl => write!(f, "'decl'"),
@@ -1129,6 +1155,8 @@ impl Lexer {
             "usize" => Token::TypeUSize,
             "ssize" => Token::TypeSSize,
             "repeat" => Token::Repeat,
+            "while" => Token::While,
+            "until" => Token::Until,
             "for" => Token::For,
             "mut" => Token::Mut,
             "decl" => Token::Decl,
@@ -1434,6 +1462,14 @@ impl Parser {
             Token::Repeat => {
                 self.advance();
                 Ok("repeat".to_string())
+            }
+            Token::While => {
+                self.advance();
+                Ok("while".to_string())
+            }
+            Token::Until => {
+                self.advance();
+                Ok("until".to_string())
             }
             Token::For => {
                 self.advance();
@@ -2360,6 +2396,8 @@ impl Parser {
                 | Token::Return
                 | Token::As
                 | Token::Repeat
+                | Token::While
+                | Token::Until
                 | Token::For
                 | Token::Decl
                 | Token::Mod
@@ -2402,6 +2440,8 @@ impl Parser {
                 | Token::Return
                 | Token::As
                 | Token::Repeat
+                | Token::While
+                | Token::Until
                 | Token::For
                 | Token::Decl
                 | Token::Mod
@@ -2628,24 +2668,47 @@ impl Parser {
             Token::Repeat => {
                 self.advance();
                 self.skip_newlines();
-                let count = self.parse_expression()?;
-                self.skip_newlines();
-                let binder = if self.is(Token::Using) {
+                if self.is(Token::While) {
                     self.advance();
                     self.skip_newlines();
-                    Some(self.expect_identifier()?)
+                    let condition = self.parse_expression()?;
+                    self.skip_newlines();
+                    let body = self.parse_block()?;
+                    Ok(Expression::RepeatWhile {
+                        condition: Box::new(condition),
+                        body: Box::new(body),
+                    })
+                } else if self.is(Token::Until) {
+                    self.advance();
+                    self.skip_newlines();
+                    let condition = self.parse_expression()?;
+                    self.skip_newlines();
+                    let body = self.parse_block()?;
+                    Ok(Expression::RepeatUntil {
+                        condition: Box::new(condition),
+                        body: Box::new(body),
+                    })
+                } else if self.is(Token::For) {
+                    self.parse_for_expression()
                 } else {
-                    None
-                };
-                self.skip_newlines();
-                let body = self.parse_block()?;
-                Ok(Expression::Repeat {
-                    count: Box::new(count),
-                    binder,
-                    body: Box::new(body),
-                })
+                    let count = self.parse_expression()?;
+                    self.skip_newlines();
+                    let binder = if self.is(Token::Using) {
+                        self.advance();
+                        self.skip_newlines();
+                        Some(self.expect_identifier()?)
+                    } else {
+                        None
+                    };
+                    self.skip_newlines();
+                    let body = self.parse_block()?;
+                    Ok(Expression::Repeat {
+                        count: Box::new(count),
+                        binder,
+                        body: Box::new(body),
+                    })
+                }
             }
-            Token::For => self.parse_for_expression(),
             token => Err(format!("unexpected token in expression: {}", token)),
         }
     }

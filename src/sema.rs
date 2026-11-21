@@ -420,7 +420,7 @@ pub struct Checker<'a> {
     resolved_extern_functions: HashMap<String, Signature>,
     resolving_extern_functions: HashSet<String>,
 
-    resolved_definitions: HashMap<String, Type>,
+    pub resolved_definitions: HashMap<String, Type>,
     resolving_definitions: HashSet<String>,
     checked_bodies: HashSet<String>,
 
@@ -1169,6 +1169,13 @@ impl<'a> Checker<'a> {
         }
 
         if !self.checked_bodies.insert(def.name.clone()) {
+            if let Some(sig) = &mut def.signature {
+                if *sig.return_type == Type::Inferred {
+                    if let Some(Type::Function { return_type, .. }) = self.resolved_definitions.get(&def.name) {
+                        *sig.return_type = *return_type.clone();
+                    }
+                }
+            }
             return Ok(());
         }
 
@@ -1914,6 +1921,42 @@ impl<'a> Checker<'a> {
                 }
 
                 let body_result = self.type_of_expression(body);
+                self.restore_initialization_state(scopes_before_loop);
+                body_result?;
+                Ok(Type::Symbol("none".to_string()))
+            }
+
+            Expression::RepeatWhile { condition, body } => {
+                let raw_cond_ty = self.type_of_expression(condition)?;
+                let cond_ty = self.resolve_type(&raw_cond_ty)?;
+
+                if !self.is_bool_type(&cond_ty)? {
+                    return Err(format!(
+                        "{}: error: repeat while condition must evaluate to Bool (:true | :false), found {}",
+                        self.current_file_path, cond_ty
+                    ));
+                }
+
+                let scopes_before_loop = self.local_scopes.clone();
+                let body_result = self.type_of_expression(body);
+                self.restore_initialization_state(scopes_before_loop);
+                body_result?;
+                Ok(Type::Symbol("none".to_string()))
+            }
+
+            Expression::RepeatUntil { condition, body } => {
+                let scopes_before_loop = self.local_scopes.clone();
+                let body_result = self.type_of_expression(body);
+                let raw_cond_ty = self.type_of_expression(condition)?;
+                let cond_ty = self.resolve_type(&raw_cond_ty)?;
+
+                if !self.is_bool_type(&cond_ty)? {
+                    return Err(format!(
+                        "{}: error: repeat until condition must evaluate to Bool (:true | :false), found {}",
+                        self.current_file_path, cond_ty
+                    ));
+                }
+
                 self.restore_initialization_state(scopes_before_loop);
                 body_result?;
                 Ok(Type::Symbol("none".to_string()))

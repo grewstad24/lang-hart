@@ -1,53 +1,36 @@
-import { .print, .heap, .reman, .reman.heap, .print.pretty, .math, .io }
+import { .print }
 
-func double_num(n: s32) -> s32 {
-    return n + n
-}
+func main(args: Slice<String>) -> :none {
+      println("--- testing repeat while ---")
+      mut i := 0
+      repeat while i < 3 {
+            println(@slice [ "while i = ", i ])
+            i := i + 1
+      }
 
-func apply_fn(x: s32, f: func(s32) -> s32) -> s32 {
-    return f(x)
-}
+      println("--- testing repeat until ---")
+      mut j := 0
+      repeat until j >= 3 {
+            println(@slice [ "until j = ", j ])
+            j := j + 1
+      }
 
-type Runner := {
-    step: func(s32) -> s32
-}
+      println("--- testing repeat for array ---")
+      mut arr := [ 10, 20, 30 ]
+      repeat for arr using elem {
+            println(@slice [ "elem = ", elem ])
+      }
 
-func main() -> :none {
-      r := rcMalloc(64 as usize)
-      rcShare(r)
-      rcDrop(r)
-      rcDrop(r)
+      println("--- testing pre/post check semantics ---")
+      mut count_while := 0
+      repeat while :false {
+            count_while := count_while + 1
+      }
+      println(@slice [ "while executed times: ", count_while ])
 
-      # UFCS chaining with '.'
-      val := 10.neg().neg()
-      println(val)
-
-      # Higher-order function passed directly, called directly with f(x)
-      res := apply_fn(21, double_num)
-      println(res)
-
-      # Struct field holding function pointer: field has higher priority than UFCS
-      mut runner: Runner := { step: double_num }
-      res2 := runner.step(25)
-      println(res2)
-
-      # @sizeOf operating on value
-      sz := @sizeOf val
-      println(sz as s32)
-      sz2 := @sizeOf runner
-      println(sz2 as s32)
-
-      b := :true.not()
-      println(b)
-      b2 := :true.and(:false)
-      println(b2)
-      b3 := :true.or(:false)
-      println(b3)
-
-      pprint("Testing pprint")
-      pprint(@record { a: 1, b: 2 })
-      sum := add(5, 7)
-      println(sum)
-
-      print("Hello, World!")
+      mut count_until := 0
+      repeat until :true {
+            count_until := count_until + 1
+      }
+      println(@slice [ "until executed times: ", count_until ])
 }

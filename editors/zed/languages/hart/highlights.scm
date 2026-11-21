@@ -18,6 +18,8 @@
   "using"
   "repeat"
   "for"
+  "while"
+  "until"
   "return"
   "as"
   "mut"
@@ -47,9 +49,6 @@
   binder: (identifier) @variable.parameter)
 
 (repeat_expression
-  binder: (identifier) @variable.parameter)
-
-(for_expression
   binder: (identifier) @variable.parameter)
 
 ; Fields
