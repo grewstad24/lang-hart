@@ -18,7 +18,7 @@ def logDirect(msg) {
       @ctx.logger(:info, @caller_line_number, @caller_file_name, msg)
 }
 
-def\ child() {
+def child() {
       logInfo(42)
 }
 

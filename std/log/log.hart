@@ -28,4 +28,3 @@ def logWarn(item) {
 def logError(item) {
       @ctx.logger(:error, @caller_line_number, @caller_file_name, item)
 }
-
