@@ -296,7 +296,11 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         | Expression::Symbol(_)
         | Expression::Break
         | Expression::Continue
-        | Expression::Context => {}
+        | Expression::Context
+        | Expression::CallerLineNumber
+        | Expression::CallerFileName
+        | Expression::ThisLineNumber(_)
+        | Expression::ThisFileName(_) => {}
     }
 }
 
@@ -534,7 +538,11 @@ fn scan_and_rewrite_expression(
         | Expression::Symbol(_)
         | Expression::Break
         | Expression::Continue
-        | Expression::Context => {}
+        | Expression::Context
+        | Expression::CallerLineNumber
+        | Expression::CallerFileName
+        | Expression::ThisLineNumber(_)
+        | Expression::ThisFileName(_) => {}
     }
     Ok(())
 }
@@ -849,7 +857,11 @@ fn concretize_expression(
         | Expression::Identifier(_)
         | Expression::Break
         | Expression::Continue
-        | Expression::Context => {}
+        | Expression::Context
+        | Expression::CallerLineNumber
+        | Expression::CallerFileName
+        | Expression::ThisLineNumber(_)
+        | Expression::ThisFileName(_) => {}
     }
     Ok(())
 }
@@ -1720,6 +1732,10 @@ fn infer_expr_type_internal(
         Expression::Defer(_) => Some(Type::Symbol("none".to_string())),
         Expression::Break | Expression::Continue => Some(Type::Never),
         Expression::Context => Some(crate::sema::context_type()),
+        Expression::CallerLineNumber => Some(Type::U64),
+        Expression::CallerFileName => Some(Type::Alias("String".to_string())),
+        Expression::ThisLineNumber(_) => Some(Type::U64),
+        Expression::ThisFileName(_) => Some(Type::Alias("String".to_string())),
         Expression::Discard(inner) => {
             let mut unspanned = crate::syntax::unspanned_expression(inner);
             while let Expression::Discard(d) = unspanned {
@@ -2337,7 +2353,11 @@ fn scan_and_monomorphize_def(
         | Expression::Symbol(_)
         | Expression::Break
         | Expression::Continue
-        | Expression::Context => {}
+        | Expression::Context
+        | Expression::CallerLineNumber
+        | Expression::CallerFileName
+        | Expression::ThisLineNumber(_)
+        | Expression::ThisFileName(_) => {}
     }
     Ok(())
 }

@@ -80,6 +80,10 @@
 ; Builtins / Intrinsics
 "@sizeOf" @function.macro
 (context_expression) @variable.builtin
+(caller_line_expression) @variable.builtin
+(caller_file_expression) @variable.builtin
+(this_line_expression) @variable.builtin
+(this_file_expression) @variable.builtin
 
 ; Operators & Delimiters
 [

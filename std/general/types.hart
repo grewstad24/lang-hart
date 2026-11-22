@@ -1,4 +1,4 @@
-export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance, Error, ErrorAndReason, Context } to .
+export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance, Error, ErrorAndReason, LogLevel, Context } to .
 
 
 type String := Slice <u8>
@@ -41,6 +41,8 @@ type UnvoidGeneric :=
 
 type Generic := UnvoidGeneric | Voidance
 
+type LogLevel := :info | :warn | :error
+
 type Context := {
-      printer: func(Generic) -> :none
+      logger: func(LogLevel, u64, String, Generic) -> :none
 }

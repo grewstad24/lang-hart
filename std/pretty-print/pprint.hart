@@ -1,16 +1,11 @@
 decl mod pprint {
-      export { pprint, concretePprintln } to .print.pretty
+      export { pprint } to .print.pretty
       import { .print }
 }
 
 def pprint( item ) {
       internalPprint(item, 0, :false)
       print(:nl)
-}
-
-func concretePprintln(item: Generic) -> :none {
-      @ctx := { printer: concretePprintln }
-      pprint(item)
 }
 
 def internalPprint( item, indent_level, err ) {

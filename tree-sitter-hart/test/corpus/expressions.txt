@@ -140,3 +140,36 @@ func test() {
         arguments: (argument_list
           (string_literal))))))
 
+=====================
+Intrinsic Expressions
+=====================
+
+def log(msg) {
+    line := @caller_line_number
+    file := @caller_file_name
+    this_line := @this_line_number
+    this_file := @this_file_name
+}
+
+---
+
+(source_file
+  (def_definition
+    name: (function_identifier)
+    parameters: (def_parameter_list
+      (def_parameter
+        name: (identifier)))
+    body: (block
+      (assignment_expression
+        left: (identifier)
+        right: (caller_line_expression))
+      (assignment_expression
+        left: (identifier)
+        right: (caller_file_expression))
+      (assignment_expression
+        left: (identifier)
+        right: (this_line_expression))
+      (assignment_expression
+        left: (identifier)
+        right: (this_file_expression)))))
+

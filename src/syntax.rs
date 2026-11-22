@@ -378,6 +378,10 @@ impl fmt::Display for Expression {
             Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
             Expression::Slice(expr) => write!(f, "({} as Slice)", expr),
             Expression::Context => write!(f, "@ctx"),
+            Expression::CallerLineNumber => write!(f, "@caller_line_number"),
+            Expression::CallerFileName => write!(f, "@caller_file_name"),
+            Expression::ThisLineNumber(_) => write!(f, "@this_line_number"),
+            Expression::ThisFileName(_) => write!(f, "@this_file_name"),
         }
     }
 }
@@ -535,6 +539,10 @@ pub enum Expression {
     SizeOf(Box<Expression>),
     Slice(Box<Expression>),
     Context,
+    CallerLineNumber,
+    CallerFileName,
+    ThisLineNumber(u64),
+    ThisFileName(String),
 }
 
 pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
@@ -2618,6 +2626,7 @@ impl Parser {
                 Ok(Expression::Identifier(name))
             }
             Token::At => {
+                let span = self.current_span().clone();
                 self.advance();
                 let tag = self.expect_identifier()?;
                 self.skip_newlines();
@@ -2626,9 +2635,17 @@ impl Parser {
                     return Ok(Expression::SizeOf(Box::new(operand)));
                 } else if tag == "ctx" {
                     return Ok(Expression::Context);
+                } else if tag == "caller_line_number" {
+                    return Ok(Expression::CallerLineNumber);
+                } else if tag == "caller_file_name" {
+                    return Ok(Expression::CallerFileName);
+                } else if tag == "this_line_number" {
+                    return Ok(Expression::ThisLineNumber(span.line as u64));
+                } else if tag == "this_file_name" {
+                    return Ok(Expression::ThisFileName(span.file));
                 }
                 return Err(format!(
-                    "unknown tag '@{}', expected '@sizeOf' or '@ctx'",
+                    "unknown tag '@{}', expected '@sizeOf', '@ctx', '@caller_line_number', '@caller_file_name', '@this_line_number', or '@this_file_name'",
                     tag
                 ));
             }

@@ -459,6 +459,10 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::SizeOf(expr) => Ok(Expression::SizeOf(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Context => Ok(Expression::Context),
+        Expression::CallerLineNumber => Ok(Expression::CallerLineNumber),
+        Expression::CallerFileName => Ok(Expression::CallerFileName),
+        Expression::ThisLineNumber(line) => Ok(Expression::ThisLineNumber(*line)),
+        Expression::ThisFileName(file) => Ok(Expression::ThisFileName(file.clone())),
     }
 }
 

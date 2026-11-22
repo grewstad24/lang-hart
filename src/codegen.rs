@@ -15,7 +15,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use crate::sema::Checker;
 use crate::syntax::{
     BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
-    IfCondition, MatchArm, Program, Signature, StructFieldInit, StructFieldType, Type,
+    IfCondition, MatchArm, Program, Signature, Span, StructFieldInit, StructFieldType, Type,
     format_error, unspanned_expression,
 };
 
@@ -123,6 +123,9 @@ pub struct Codegen<'ctx> {
     current_context_ptr: Option<PointerValue<'ctx>>,
     context_is_local: bool,
     specialized_def_names: HashSet<String>,
+    current_span: Option<Span>,
+    current_caller_line: Option<IntValue<'ctx>>,
+    current_caller_file: Option<BasicValueEnum<'ctx>>,
 
     string_counter: usize,
     branch_counter: usize,
@@ -154,6 +157,9 @@ impl<'ctx> Codegen<'ctx> {
             current_context_ptr: None,
             context_is_local: false,
             specialized_def_names: HashSet::new(),
+            current_span: None,
+            current_caller_line: None,
+            current_caller_file: None,
             string_counter: 0,
             branch_counter: 0,
         }
@@ -816,6 +822,14 @@ impl<'ctx> Codegen<'ctx> {
                 param_types.push(BasicMetadataTypeEnum::from(
                     self.context.ptr_type(AddressSpace::default()),
                 ));
+                param_types.push(BasicMetadataTypeEnum::from(
+                    self.context.i64_type(),
+                ));
+                let string_alias = Type::Alias("String".to_string());
+                let str_ty = self.resolve_alias_root(&string_alias)?;
+                param_types.push(BasicMetadataTypeEnum::from(
+                    self.llvm_type(str_ty)?,
+                ));
             }
             for p in &sig.parameters {
                 let llvm_ty = self.llvm_type(&p.ty)?;
@@ -865,6 +879,8 @@ impl<'ctx> Codegen<'ctx> {
         self.defer_stack.push(Vec::new());
         let previous_context_ptr = self.current_context_ptr;
         let previous_context_is_local = self.context_is_local;
+        let previous_caller_line = self.current_caller_line;
+        let previous_caller_file = self.current_caller_file;
         let previous_return_type = self.current_function_return_type.take();
         if let Some(sig) = signature {
             self.current_function_return_type = Some((*sig.return_type).clone());
@@ -879,6 +895,17 @@ impl<'ctx> Codegen<'ctx> {
                 .into_pointer_value();
             self.current_context_ptr = Some(ctx_param);
             self.context_is_local = false;
+
+            let line_param = llvm_function
+                .get_nth_param(1)
+                .ok_or_else(|| format!("missing caller line parameter in '{}'", name))?
+                .into_int_value();
+            self.current_caller_line = Some(line_param);
+
+            let file_param = llvm_function
+                .get_nth_param(2)
+                .ok_or_else(|| format!("missing caller file parameter in '{}'", name))?;
+            self.current_caller_file = Some(file_param);
         } else {
             let ctx_ty = crate::sema::context_type();
             let llvm_ctx_ty = self.llvm_type(&ctx_ty)?;
@@ -888,10 +915,12 @@ impl<'ctx> Codegen<'ctx> {
                 .map_err(|e| e.to_string())?;
             self.current_context_ptr = Some(ctx_alloca);
             self.context_is_local = true;
+            self.current_caller_line = None;
+            self.current_caller_file = None;
         }
 
         if let Some(sig) = signature {
-            let param_offset = if is_specialized { 1 } else { 0 };
+            let param_offset = if is_specialized { 3 } else { 0 };
             for (index, parameter) in sig.parameters.iter().enumerate() {
                 let ty = &parameter.ty;
                 let llvm_ty = self.llvm_type(ty)?;
@@ -956,6 +985,8 @@ impl<'ctx> Codegen<'ctx> {
         self.current_function_return_type = previous_return_type;
         self.current_context_ptr = previous_context_ptr;
         self.context_is_local = previous_context_is_local;
+        self.current_caller_line = previous_caller_line;
+        self.current_caller_file = previous_caller_file;
         Ok(())
     }
 
@@ -974,6 +1005,10 @@ impl<'ctx> Codegen<'ctx> {
         self.defer_stack.push(Vec::new());
         let previous_context_ptr = self.current_context_ptr;
         let previous_context_is_local = self.context_is_local;
+        let previous_caller_line = self.current_caller_line;
+        let previous_caller_file = self.current_caller_file;
+        self.current_caller_line = None;
+        self.current_caller_file = None;
         let ctx_ty = crate::sema::context_type();
         let llvm_ctx_ty = self.llvm_type(&ctx_ty)?;
         let ctx_alloca = self
@@ -1187,6 +1222,8 @@ impl<'ctx> Codegen<'ctx> {
         self.current_function_return_type = previous_return_type;
         self.current_context_ptr = previous_context_ptr;
         self.context_is_local = previous_context_is_local;
+        self.current_caller_line = previous_caller_line;
+        self.current_caller_file = previous_caller_file;
         Ok(())
     }
 
@@ -1215,9 +1252,14 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_expression(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         match expression {
-            Expression::Spanned { expression, span } => self
-                .codegen_expression(expression)
-                .map_err(|error| format_error(span, &error)),
+            Expression::Spanned { expression, span } => {
+                let old_span = self.current_span.replace(span.clone());
+                let res = self
+                    .codegen_expression(expression)
+                    .map_err(|error| format_error(span, &error));
+                self.current_span = old_span;
+                res
+            }
             Expression::Integer(value) => Ok(Binding::Integer {
                 ty: Type::S32,
                 value: self.context.i32_type().const_int(*value as u64, true),
@@ -1249,6 +1291,34 @@ impl<'ctx> Codegen<'ctx> {
                     value: loaded,
                     storage: Some(ptr),
                 })
+            }
+            Expression::CallerLineNumber => {
+                let line_val = self
+                    .current_caller_line
+                    .ok_or_else(|| "@caller_line_number used outside of def function".to_string())?;
+                Ok(Binding::Integer {
+                    ty: Type::U64,
+                    value: line_val,
+                })
+            }
+            Expression::CallerFileName => {
+                let file_val = self
+                    .current_caller_file
+                    .ok_or_else(|| "@caller_file_name used outside of def function".to_string())?;
+                Ok(Binding::Struct {
+                    ty: Type::Alias("String".to_string()),
+                    value: file_val.into_struct_value(),
+                    storage: None,
+                })
+            }
+            Expression::ThisLineNumber(line) => {
+                Ok(Binding::Integer {
+                    ty: Type::U64,
+                    value: self.context.i64_type().const_int(*line, false),
+                })
+            }
+            Expression::ThisFileName(file) => {
+                self.codegen_string_literal(file.as_bytes())
             }
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
@@ -4062,12 +4132,25 @@ impl<'ctx> Codegen<'ctx> {
             argument_values.push(self.binding_basic_value(&coerced)?.into());
         }
 
-        if let Expression::Identifier(name) = target {
+        if let Expression::Identifier(name) = unspanned_expression(target) {
             if self.specialized_def_names.contains(name) {
                 let ctx_ptr = self
                     .current_context_ptr
                     .ok_or_else(|| format!("missing @ctx when calling '{}'", name))?;
+
+                let (line, file) = if let Some(span) = &self.current_span {
+                    (span.line as u64, span.file.clone())
+                } else {
+                    (0u64, String::new())
+                };
+
+                let line_val = self.context.i64_type().const_int(line, false);
+                let file_binding = self.codegen_string_literal(file.as_bytes())?;
+                let file_val = self.binding_basic_value(&file_binding)?;
+
                 argument_values.insert(0, ctx_ptr.into());
+                argument_values.insert(1, line_val.into());
+                argument_values.insert(2, file_val.into());
             }
         }
 

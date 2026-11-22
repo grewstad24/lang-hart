@@ -56,10 +56,21 @@ impl ModuleScope {
 }
 
 pub fn context_type() -> Type {
+    let mut variants = vec![
+        Type::Symbol("info".to_string()),
+        Type::Symbol("warn".to_string()),
+        Type::Symbol("error".to_string()),
+    ];
+    variants.sort_by(|a, b| Checker::canonical_type_key(a).cmp(&Checker::canonical_type_key(b)));
     Type::Struct(vec![StructFieldType {
-        name: "printer".to_string(),
+        name: "logger".to_string(),
         ty: Type::Function {
-            parameters: vec![Type::Alias("Generic".to_string())],
+            parameters: vec![
+                Type::Union(variants),
+                Type::U64,
+                Type::Alias("String".to_string()),
+                Type::Alias("Generic".to_string()),
+            ],
             return_type: Box::new(Type::Symbol("none".to_string())),
             is_variadic: false,
         },
@@ -443,6 +454,7 @@ pub struct Checker<'a> {
     block_yield_stack: Vec<Vec<Type>>,
     counter: usize,
     pub current_definition_name: Option<String>,
+    pub current_definition_is_def: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -499,6 +511,7 @@ impl<'a> Checker<'a> {
             block_yield_stack: Vec::new(),
             counter: 0,
             current_definition_name: None,
+            current_definition_is_def: false,
         };
 
         checker.predeclare_scope_signatures();
@@ -1358,11 +1371,14 @@ impl<'a> Checker<'a> {
                 .replace(expected_return.clone());
             let old_is_return_inferred = self.is_return_inferred;
             self.is_return_inferred = expected_return == Type::Inferred;
+            let old_is_def = self.current_definition_is_def;
+            self.current_definition_is_def = def.is_def || def.is_specialized_def;
 
             let body_ty_res = self.type_of_expression(&mut def.value);
             let captured_return = self.current_function_return_type.take();
             self.current_function_return_type = old_return_type;
             self.is_return_inferred = old_is_return_inferred;
+            self.current_definition_is_def = old_is_def;
             self.exit_scope();
 
             let mut body_ty = body_ty_res?;
@@ -1677,6 +1693,26 @@ impl<'a> Checker<'a> {
                 }
                 Ok(context_type())
             }
+            Expression::CallerLineNumber => {
+                if !self.current_definition_is_def {
+                    return Err(format!(
+                        "{}: error: '@caller_line_number' can only be used inside a 'def' function",
+                        self.current_file_path
+                    ));
+                }
+                Ok(Type::U64)
+            }
+            Expression::CallerFileName => {
+                if !self.current_definition_is_def {
+                    return Err(format!(
+                        "{}: error: '@caller_file_name' can only be used inside a 'def' function",
+                        self.current_file_path
+                    ));
+                }
+                Ok(Type::Alias("String".to_string()))
+            }
+            Expression::ThisLineNumber(_) => Ok(Type::U64),
+            Expression::ThisFileName(_) => Ok(Type::Alias("String".to_string())),
 
             Expression::Struct(fields) => {
                 let struct_fields = self.check_struct_fields(fields)?;

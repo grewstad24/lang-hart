@@ -314,6 +314,10 @@ module.exports = grammar({
       $.spread_expression,
       $.sizeof_expression,
       $.context_expression,
+      $.caller_line_expression,
+      $.caller_file_expression,
+      $.this_line_expression,
+      $.this_file_expression,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
       $.tuple_literal,
@@ -489,6 +493,14 @@ module.exports = grammar({
     )),
 
     context_expression: $ => prec(PREC.PRIMARY, '@ctx'),
+
+    caller_line_expression: $ => prec(PREC.PRIMARY, '@caller_line_number'),
+
+    caller_file_expression: $ => prec(PREC.PRIMARY, '@caller_file_name'),
+
+    this_line_expression: $ => prec(PREC.PRIMARY, '@this_line_number'),
+
+    this_file_expression: $ => prec(PREC.PRIMARY, '@this_file_name'),
 
     parenthesized_expression: $ => prec(PREC.PRIMARY, seq(
       '(',

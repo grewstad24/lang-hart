@@ -1821,6 +1821,22 @@
         },
         {
           "type": "SYMBOL",
+          "name": "caller_line_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "caller_file_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "this_line_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "this_file_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "parenthesized_expression"
         },
         {
@@ -3057,6 +3073,38 @@
       "content": {
         "type": "STRING",
         "value": "@ctx"
+      }
+    },
+    "caller_line_expression": {
+      "type": "PREC",
+      "value": 10,
+      "content": {
+        "type": "STRING",
+        "value": "@caller_line_number"
+      }
+    },
+    "caller_file_expression": {
+      "type": "PREC",
+      "value": 10,
+      "content": {
+        "type": "STRING",
+        "value": "@caller_file_name"
+      }
+    },
+    "this_line_expression": {
+      "type": "PREC",
+      "value": 10,
+      "content": {
+        "type": "STRING",
+        "value": "@this_line_number"
+      }
+    },
+    "this_file_expression": {
+      "type": "PREC",
+      "value": 10,
+      "content": {
+        "type": "STRING",
+        "value": "@this_file_name"
       }
     },
     "parenthesized_expression": {

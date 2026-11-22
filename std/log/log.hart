@@ -1,0 +1,31 @@
+decl mod log {
+      export { stdLogger, logInfo, logWarn, logError } to .log
+      import { .print, .print.pretty }
+}
+
+func stdLogger(level: LogLevel, line: u64, file: String, item: Generic) -> :none {
+      @ctx := { logger: stdLogger }
+      match level using lvl {
+            :info => print("[INFO] ")
+            :warn => print("[WARN] ")
+            :error => print("[ERROR] ")
+      }
+      print(file)
+      print(":")
+      print(line)
+      print(": ")
+      pprint(item)
+}
+
+def logInfo(item) {
+      @ctx.logger(:info, @caller_line_number, @caller_file_name, item)
+}
+
+def logWarn(item) {
+      @ctx.logger(:warn, @caller_line_number, @caller_file_name, item)
+}
+
+def logError(item) {
+      @ctx.logger(:error, @caller_line_number, @caller_file_name, item)
+}
+
