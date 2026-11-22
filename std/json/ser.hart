@@ -3,5 +3,3 @@ decl mod json {
             { stringify_json } to .json
       }
 }
-
-def stringify_json( item, buffer ) {}

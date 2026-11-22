@@ -1,27 +1,27 @@
 mod print
 
 
-def print_string(s) {
+def printString(s) {
       printf("%s".ptr, s.ptr)
 }
 
 
-def pr_nl() {
+def prNl() {
       printf("\n".ptr)
 }
 
 
-def pr_tab() {
+def prTab() {
       printf("\t".ptr)
 }
 
 
-def print_sint(num) {
+def printSint(num) {
       printf("%lld".ptr, num as s64)
 }
 
 
-def print_uint(num) {
+def printUint(num) {
       printf("%llu".ptr, num as u64)
 }
 

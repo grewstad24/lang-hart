@@ -313,6 +313,7 @@ module.exports = grammar({
       $.continue_expression,
       $.spread_expression,
       $.sizeof_expression,
+      $.context_expression,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
       $.tuple_literal,
@@ -330,7 +331,7 @@ module.exports = grammar({
     )),
 
     assignment_expression: $ => prec.right(PREC.ASSIGN, seq(
-      field('left', choice($.identifier, $.dereference_expression, $.field_expression, $.index_expression)),
+      field('left', choice($.identifier, $.context_expression, $.dereference_expression, $.field_expression, $.index_expression)),
       field('operator', choice(':=', '+=', '-=', '*=', '/=')),
       field('right', $._expression)
     )),
@@ -486,6 +487,8 @@ module.exports = grammar({
       '@sizeOf',
       field('value', $._expression)
     )),
+
+    context_expression: $ => prec(PREC.PRIMARY, '@ctx'),
 
     parenthesized_expression: $ => prec(PREC.PRIMARY, seq(
       '(',

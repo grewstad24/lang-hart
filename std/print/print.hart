@@ -1,6 +1,6 @@
 decl mod print {
       export {
-            { print, println } to .print,
+            { print, println, printString, printSint, printUint, prNl, prTab, printa } to .print,
             { printf } to .print.raw_printf
       }
 }
@@ -21,11 +21,11 @@ type Printable :=
 
 def print( x ) {
       match x using z {
-            String => print_string(z)
-            SignedInteger => print_sint(z)
-            UnsignedInteger => print_uint(z)
-            :nl => pr_nl()
-            :t => pr_tab()
+            String => printString(z)
+            SignedInteger => printSint(z)
+            UnsignedInteger => printUint(z)
+            :nl => prNl()
+            :t => prTab()
             ( :softTab, Integer ) => repeat (z.1 as usize) { print(" ") }
             Slice <Printable> => printa(z)
             Bool => match z {
@@ -38,5 +38,5 @@ def print( x ) {
 
 def println( x ) {
       print(x)
-      pr_nl()
+      prNl()
 }

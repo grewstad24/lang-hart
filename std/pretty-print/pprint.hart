@@ -1,22 +1,27 @@
 decl mod pprint {
-      export { pprint } to .print.pretty
+      export { pprint, concretePprintln } to .print.pretty
       import { .print }
 }
 
 def pprint( item ) {
-      internal_pprint(item, 0, :false)
+      internalPprint(item, 0, :false)
       print(:nl)
 }
 
-def internal_pprint( item, indent_level, err ) {
+func concretePprintln(item: Generic) -> :none {
+      @ctx := { printer: concretePprintln }
+      pprint(item)
+}
+
+def internalPprint( item, indent_level, err ) {
       match item using z {
-            Bool => pprint_bool(z)
-            Integer => pprint_integer(z)
-            String => pprint_string(z)
-            Atom => pprint_atom(z, err)
-            Slice<Generic> => pprint_array(z, indent_level, err)
-            Record => pprint_record(z, indent_level, err)
+            Bool => pprintBool(z)
+            Integer => pprintInteger(z)
+            String => pprintString(z)
+            Atom => pprintAtom(z, err)
+            Slice<Generic> => pprintArray(z, indent_level, err)
+            Record => pprintRecord(z, indent_level, err)
             *Generic => pprint(z.*)
-            Voidance => pprint_voidance(z, indent_level)
+            Voidance => pprintVoidance(z, indent_level)
       }
 }

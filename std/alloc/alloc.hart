@@ -1,6 +1,6 @@
 decl mod alloc {
       export {
-            alloc, alloc_slice, dealloc, free_slice, Vector
+            alloc, allocSlice, dealloc, freeSlice, Vector
       } to .heap
 }
 
@@ -12,11 +12,11 @@ def alloc(size) {
       return malloc(size as usize) as *mut u8
 }
 
-def alloc_slice(len) {
+def allocSlice(len) {
       return { ptr: malloc(len as usize) as *mut u8, len: len as usize }
 }
 
-def free_slice(s) {
+def freeSlice(s) {
       free(s.ptr as *opaque)
 }
 

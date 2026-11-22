@@ -8,7 +8,7 @@ const stdin := { fd: 0 }
 const stdout := { fd: 1 }
 const stderr := { fd: 2 }
 
-def to_c_str(path) {
+def toCStr(path) {
       return match path using p {
             String => p.ptr
             *u8 => p
@@ -16,40 +16,40 @@ def to_c_str(path) {
       }
 }
 
-def open_file(path) { { fd: open(to_c_str(path), oReadOnly, 0) } }
+def openFile(path) { { fd: open(toCStr(path), o_read_only, 0) } }
 
-def create_file(path) { { fd: open(to_c_str(path), oCreateWrite, defaultFileMode) } }
+def createFile(path) { { fd: open(toCStr(path), o_create_write, default_file_mode) } }
 
-def append_file(path) { { fd: open(to_c_str(path), oCreateAppend, defaultFileMode) } }
+def appendFile(path) { { fd: open(toCStr(path), o_create_append, default_file_mode) } }
 
-def is_ok(file) { file.fd >= 0 }
+def isOk(file) { file.fd >= 0 }
 
-def is_err(file) { file.fd < 0 }
+def isErr(file) { file.fd < 0 }
 
-def close_file(file) { close(file.fd) }
+def closeFile(file) { close(file.fd) }
 
-def copy_to(src, dst) {
+def copyTo(src, dst) {
       return match dst using d {
-            File => copy_stream(src.fd, d.fd, defaultBufferSize)
-            Integer => copy_stream(src.fd, d as s32, defaultBufferSize)
+            File => copyStream(src.fd, d.fd, default_buffer_size)
+            Integer => copyStream(src.fd, d as s32, default_buffer_size)
       }
 }
 
 def copy(src, dst) {
       return match src using s {
-            File => s.copy_to(dst)
+            File => s.copyTo(dst)
             Integer => {
                   mut f := { fd: s as s32 }
-                  yield f.copy_to(dst)
+                  yield f.copyTo(dst)
             }
       }
 }
 
 def stream(file, chunk_size, callback) {
-      stream_fd(file.fd, chunk_size, callback)
+      streamFd(file.fd, chunk_size, callback)
 }
 
-def write_data(file, data) {
+def writeData(file, data) {
       mut remaining := data.len
       mut curr_ptr := data.ptr
       repeat while remaining > 0 {
@@ -66,9 +66,9 @@ def write_data(file, data) {
       return :ok
 }
 
-def read_all(file) {
-      mut size := lseek(file.fd, 0, seekEnd)
-      lseek(file.fd, 0, seekSet)
+def readAll(file) {
+      mut size := lseek(file.fd, 0, seek_end)
+      lseek(file.fd, 0, seek_set)
       if {
             size < 0 => return (:error, :seek_failed)
             else => :none
@@ -91,32 +91,32 @@ def read_all(file) {
       return { ptr: buf as *u8, len: total_read }
 }
 
-def read_file(path) {
-      mut file := open_file(path)
+def readFile(path) {
+      mut file := openFile(path)
       if {
-            file.is_err() => return (:error, :open_failed)
+            file.isErr() => return (:error, :open_failed)
             else => :none
       }
-      defer file.close_file()
-      return file.read_all()
+      defer file.closeFile()
+      return file.readAll()
 }
 
-def write_file(path, data) {
-      mut file := create_file(path)
+def writeFile(path, data) {
+      mut file := createFile(path)
       if {
-            file.is_err() => return (:error, :open_failed)
+            file.isErr() => return (:error, :open_failed)
             else => :none
       }
-      defer file.close_file()
-      return file.write_data(data)
+      defer file.closeFile()
+      return file.writeData(data)
 }
 
-def append_to_file(path, data) {
-      mut file := append_file(path)
+def appendToFile(path, data) {
+      mut file := appendFile(path)
       if {
-            file.is_err() => return (:error, :open_failed)
+            file.isErr() => return (:error, :open_failed)
             else => :none
       }
-      defer file.close_file()
-      return file.write_data(data)
+      defer file.closeFile()
+      return file.writeData(data)
 }

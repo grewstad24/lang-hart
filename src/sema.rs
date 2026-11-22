@@ -55,6 +55,17 @@ impl ModuleScope {
     }
 }
 
+pub fn context_type() -> Type {
+    Type::Struct(vec![StructFieldType {
+        name: "printer".to_string(),
+        ty: Type::Function {
+            parameters: vec![Type::Alias("Generic".to_string())],
+            return_type: Box::new(Type::Symbol("none".to_string())),
+            is_variadic: false,
+        },
+    }])
+}
+
 pub struct ModuleResolver {
     namespace_registry: HashMap<NamespacePath, ExportRegistry>,
 }
@@ -1329,6 +1340,15 @@ impl<'a> Checker<'a> {
                     },
                 );
             }
+            let is_ctx_initialized = def.is_def || def.is_specialized_def;
+            self.local_scopes.last_mut().unwrap().insert(
+                "@ctx".to_string(),
+                BindingInfo {
+                    ty: context_type(),
+                    is_mutable: true,
+                    is_initialized: is_ctx_initialized,
+                },
+            );
             self.validate_user_type(&sig.return_type)?;
             let expected_return = self.resolve_type(sig.return_type.as_ref())?;
             *sig.return_type = expected_return.clone();
@@ -1625,6 +1645,7 @@ impl<'a> Checker<'a> {
                     )),
                 }
             }
+            Expression::Context => Ok(()),
             _ => Err(format!(
                 "{}: error: invalid assignment target: expression is not an lvalue",
                 self.current_file_path
@@ -1644,6 +1665,18 @@ impl<'a> Checker<'a> {
                 Ok(Type::Symbol(name.clone()))
             }
             Expression::String(_) => Ok(Type::Alias("String".to_string())),
+            Expression::Context => {
+                if let Some(info) = self.lookup_binding("@ctx") {
+                    if !info.is_initialized {
+                        return Err(format!(
+                            "{}: error: context '@ctx' is accessed before it is initialized",
+                            self.current_file_path
+                        ));
+                    }
+                    return Ok(info.ty);
+                }
+                Ok(context_type())
+            }
 
             Expression::Struct(fields) => {
                 let struct_fields = self.check_struct_fields(fields)?;
@@ -1942,6 +1975,21 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Assign { target, value } => match unspanned_expression_mut(target) {
+                Expression::Context => {
+                    let mut val_ty = self.type_of_expression(value)?;
+                    let expected_ty = context_type();
+                    val_ty = self.coerce_expression_to_type(value, &val_ty, &expected_ty)?;
+                    if !self.are_types_compatible(&val_ty, &expected_ty)? {
+                        return Err(format!(
+                            "{}: error: type mismatch assigning to '@ctx': expected {}, found {}",
+                            self.current_file_path, expected_ty, val_ty
+                        ));
+                    }
+                    if let Some(info_mut) = self.lookup_binding_mut("@ctx") {
+                        info_mut.is_initialized = true;
+                    }
+                    Ok(Type::Symbol("none".to_string()))
+                }
                 Expression::Identifier(name) => {
                     let name = name.clone();
                     let mut val_ty = self.type_of_expression(value)?;
@@ -2029,7 +2077,12 @@ impl<'a> Checker<'a> {
                 }
                 Expression::Member { expression: base, field } => {
                     let field = field.clone();
-                    let raw_base_ty = self.type_of_expression(base.as_mut())?;
+                    let is_context_base = matches!(unspanned_expression(base.as_ref()), Expression::Context);
+                    let raw_base_ty = if is_context_base {
+                        context_type()
+                    } else {
+                        self.type_of_expression(base.as_mut())?
+                    };
                     let base_ty = self.resolve_type(&raw_base_ty)?;
                     let target_ty = match &base_ty {
                         Type::Struct(flds) => {
@@ -2076,6 +2129,11 @@ impl<'a> Checker<'a> {
                             "{}: error: type mismatch assigning to field '{}': expected {}, found {}",
                             self.current_file_path, field, target_ty, val_ty
                         ));
+                    }
+                    if is_context_base {
+                        if let Some(info_mut) = self.lookup_binding_mut("@ctx") {
+                            info_mut.is_initialized = true;
+                        }
                     }
                     Ok(Type::Symbol("none".to_string()))
                 }
@@ -2948,6 +3006,26 @@ impl<'a> Checker<'a> {
                     *arguments = expanded;
                 }
 
+                let is_calling_def = if let Expression::Identifier(fn_name) = crate::syntax::unspanned_expression(target) {
+                    if let Some(def) = self.scope.lookup_definition(fn_name) {
+                        def.is_def || def.is_specialized_def
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if is_calling_def {
+                    if let Some(info) = self.lookup_binding("@ctx") {
+                        if !info.is_initialized {
+                            return Err(format!(
+                                "{}: error: '@ctx' must be initialized before calling 'def' function",
+                                self.current_file_path
+                            ));
+                        }
+                    }
+                }
+
                 let raw_target_ty = self.type_of_expression(target)?;
                 let target_type = self.resolve_type(&raw_target_ty)?;
 
@@ -3153,6 +3231,9 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Expression::Member { .. } => {
+                        self.type_of_expression(expression)?
+                    }
+                    Expression::Context => {
                         self.type_of_expression(expression)?
                     }
                     _ => {

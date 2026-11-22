@@ -79,6 +79,7 @@
 
 ; Builtins / Intrinsics
 "@sizeOf" @function.macro
+(context_expression) @variable.builtin
 
 ; Operators & Delimiters
 [

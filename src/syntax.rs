@@ -377,6 +377,7 @@ impl fmt::Display for Expression {
             }
             Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
             Expression::Slice(expr) => write!(f, "({} as Slice)", expr),
+            Expression::Context => write!(f, "@ctx"),
         }
     }
 }
@@ -533,6 +534,7 @@ pub enum Expression {
     },
     SizeOf(Box<Expression>),
     Slice(Box<Expression>),
+    Context,
 }
 
 pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
@@ -582,6 +584,7 @@ pub struct Definition {
     pub signature: Option<Signature>,
     pub value: Expression,
     pub is_def: bool,
+    pub is_specialized_def: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2001,6 +2004,7 @@ impl Parser {
                         signature: None,
                         value,
                         is_def: false,
+                        is_specialized_def: false,
                     });
                 }
                 Token::Extern => {
@@ -2168,6 +2172,7 @@ impl Parser {
             signature: Some(signature),
             value: body,
             is_def: false,
+            is_specialized_def: false,
         })
     }
 
@@ -2229,6 +2234,7 @@ impl Parser {
             signature: Some(signature),
             value: body,
             is_def: true,
+            is_specialized_def: false,
         })
     }
 
@@ -2618,9 +2624,11 @@ impl Parser {
                 if tag == "sizeOf" {
                     let operand = self.parse_unary()?;
                     return Ok(Expression::SizeOf(Box::new(operand)));
+                } else if tag == "ctx" {
+                    return Ok(Expression::Context);
                 }
                 return Err(format!(
-                    "unknown tag '@{}', expected '@sizeOf'",
+                    "unknown tag '@{}', expected '@sizeOf' or '@ctx'",
                     tag
                 ));
             }

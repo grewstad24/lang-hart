@@ -111,3 +111,32 @@ func test() {
         arguments: (argument_list
           (integer_literal)
           (integer_literal))))))
+
+==================
+Context Expression
+==================
+
+func test() {
+    @ctx := { printer: println }
+    @ctx.printer("hello")
+}
+
+---
+
+(source_file
+  (function_definition
+    name: (function_identifier)
+    parameters: (parameter_list)
+    body: (block
+      (assignment_expression
+        left: (context_expression)
+        right: (struct_literal
+          (struct_field_init
+            name: (identifier)
+            value: (identifier))))
+      (method_call_expression
+        receiver: (context_expression)
+        method: (function_identifier)
+        arguments: (argument_list
+          (string_literal))))))
+

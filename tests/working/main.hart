@@ -1,54 +1,23 @@
-import { .print }
+import { .print.pretty }
 
-func add(a: s32, b: s32, c: s32) -> s32 {
-      return a + b + c
+func customPrinter(x: Generic) -> :none {
+      concretePprintln("[custom]")
+      concretePprintln(x)
+      return :none
 }
 
-func square(x: s32) -> s32 {
-      return x * x
+def child() {
+      @ctx.printer(42)
 }
 
-def greet(greeting, name) {
-      print(greeting)
-      print(" ")
-      println(name)
+def intermediate() {
+      @ctx.printer := customPrinter
+      child()
 }
 
 func main(args: Slice<String>) -> :none {
-      # 1. Array spread
-      items := [ 3, 4 ]
-      arr := [ 1, 2, ...items, 5 ]
-      repeat for arr using n {
-            println(n)
-      }
+      @ctx := { printer: concretePprintln }
 
-      # 2. Function argument spread
-      pair := [ 20, 30 ]
-      println(add(10, ...pair))
-
-      words := [ "hello", "hart" ]
-      greet(...words)
-
-      # 3. Struct spread
-      defaults := { host: "localhost", port: 80 }
-      config := { ...defaults, port: 8080 }
-      println(config.port)
-
-      # 4. Monadic chaining with and_then
-      5     .and_then(square, [])
-            .and_then(add, [ 10, 5 ])
-            .println()
-
-      mut void_val: s32 | :none := :none
-      mut err_val: s32 | Error := (:error, :failed)
-
-      match void_val.and_then(square, []) {
-            Voidance => println("none")
-            else => println("val")
-      }
-
-      match err_val.and_then(square, []) {
-            Voidance => println("error")
-            else => println("val")
-      }
+      intermediate()
+      @ctx.printer("caller context preserved")
 }

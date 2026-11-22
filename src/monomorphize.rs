@@ -295,7 +295,8 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         | Expression::String(_)
         | Expression::Symbol(_)
         | Expression::Break
-        | Expression::Continue => {}
+        | Expression::Continue
+        | Expression::Context => {}
     }
 }
 
@@ -532,7 +533,8 @@ fn scan_and_rewrite_expression(
         | Expression::String(_)
         | Expression::Symbol(_)
         | Expression::Break
-        | Expression::Continue => {}
+        | Expression::Continue
+        | Expression::Context => {}
     }
     Ok(())
 }
@@ -846,7 +848,8 @@ fn concretize_expression(
         | Expression::Symbol(_)
         | Expression::Identifier(_)
         | Expression::Break
-        | Expression::Continue => {}
+        | Expression::Continue
+        | Expression::Context => {}
     }
     Ok(())
 }
@@ -1716,6 +1719,7 @@ fn infer_expr_type_internal(
         Expression::Yield(inner) => infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1),
         Expression::Defer(_) => Some(Type::Symbol("none".to_string())),
         Expression::Break | Expression::Continue => Some(Type::Never),
+        Expression::Context => Some(crate::sema::context_type()),
         Expression::Discard(inner) => {
             let mut unspanned = crate::syntax::unspanned_expression(inner);
             while let Expression::Discard(d) = unspanned {
@@ -2043,6 +2047,7 @@ fn scan_and_monomorphize_def(
                         let mut specialized_def = template.clone();
                         specialized_def.name = mangled_name.clone();
                         specialized_def.is_def = false;
+                        specialized_def.is_specialized_def = true;
 
                         let mut param_types_map = HashMap::new();
                         if let Some(spec_sig) = &mut specialized_def.signature {
@@ -2058,7 +2063,9 @@ fn scan_and_monomorphize_def(
                             if *spec_sig.return_type == Type::Inferred {
                                 let ret_ty = infer_function_return_type(&specialized_def.value, &param_types_map, scope, generated, &mut HashSet::new(), 0)
                                     .unwrap_or(Type::Symbol("none".to_string()));
-                                spec_sig.return_type = Box::new(ret_ty);
+                                if ret_ty != Type::Never {
+                                    spec_sig.return_type = Box::new(ret_ty);
+                                }
                             }
                         }
 
@@ -2329,7 +2336,8 @@ fn scan_and_monomorphize_def(
         | Expression::String(_)
         | Expression::Symbol(_)
         | Expression::Break
-        | Expression::Continue => {}
+        | Expression::Continue
+        | Expression::Context => {}
     }
     Ok(())
 }

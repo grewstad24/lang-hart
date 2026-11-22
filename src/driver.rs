@@ -458,6 +458,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         }
         Expression::SizeOf(expr) => Ok(Expression::SizeOf(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
+        Expression::Context => Ok(Expression::Context),
     }
 }
 
@@ -636,6 +637,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                         signature: resolved_sig,
                         value: resolved_value,
                         is_def: false,
+                        is_specialized_def: false,
                     });
                     continue;
                 }
@@ -649,6 +651,7 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
                     signature: resolved_sig,
                     value: resolved_value,
                     is_def: false,
+                    is_specialized_def: def.is_specialized_def,
                 });
             }
 

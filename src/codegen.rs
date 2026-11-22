@@ -120,6 +120,10 @@ pub struct Codegen<'ctx> {
     block_stack: Vec<BlockContext<'ctx>>,
     defer_stack: Vec<Vec<Expression>>,
 
+    current_context_ptr: Option<PointerValue<'ctx>>,
+    context_is_local: bool,
+    specialized_def_names: HashSet<String>,
+
     string_counter: usize,
     branch_counter: usize,
 }
@@ -147,6 +151,9 @@ impl<'ctx> Codegen<'ctx> {
             loop_stack: Vec::new(),
             block_stack: Vec::new(),
             defer_stack: Vec::new(),
+            current_context_ptr: None,
+            context_is_local: false,
+            specialized_def_names: HashSet::new(),
             string_counter: 0,
             branch_counter: 0,
         }
@@ -167,6 +174,37 @@ impl<'ctx> Codegen<'ctx> {
             None => builder.position_at_end(entry),
         }
         builder.build_alloca(llvm_ty, name).map_err(|e| e.to_string())
+    }
+
+    fn ensure_context_is_local(&mut self) -> Result<PointerValue<'ctx>, String> {
+        let current_ptr = self
+            .current_context_ptr
+            .ok_or_else(|| "missing @ctx".to_string())?;
+        if self.context_is_local {
+            return Ok(current_ptr);
+        }
+
+        let ctx_ty = crate::sema::context_type();
+        let llvm_ctx_ty = self.llvm_type(&ctx_ty)?;
+        let current_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .ok_or_else(|| "cannot locate current function for COW context".to_string())?;
+        let local_alloca =
+            self.create_entry_block_alloca(current_fn, llvm_ctx_ty, "__cow_ctx_storage")?;
+
+        let loaded = self
+            .builder
+            .build_load(llvm_ctx_ty, current_ptr, "cow_ctx_load")
+            .map_err(|e| e.to_string())?;
+        self.builder
+            .build_store(local_alloca, loaded)
+            .map_err(|e| e.to_string())?;
+
+        self.current_context_ptr = Some(local_alloca);
+        self.context_is_local = true;
+        Ok(local_alloca)
     }
 
     fn ptr_sized_int_type(&self) -> IntType<'ctx> {
@@ -660,7 +698,10 @@ impl<'ctx> Codegen<'ctx> {
             if let Some(sig) = &def.signature {
                 self.function_signatures
                     .insert(def.name.clone(), sig.clone());
-                let fn_type = self.signature_to_function_type(Some(sig))?;
+                if def.is_specialized_def {
+                    self.specialized_def_names.insert(def.name.clone());
+                }
+                let fn_type = self.signature_to_function_type_with_def(Some(sig), def.is_specialized_def)?;
                 let f = self.module.add_function(&def.name, fn_type, None);
                 if *sig.return_type == Type::Never {
                     let attr_id =
@@ -761,15 +802,25 @@ impl<'ctx> Codegen<'ctx> {
         &self,
         signature: Option<&Signature>,
     ) -> Result<FunctionType<'ctx>, String> {
+        self.signature_to_function_type_with_def(signature, false)
+    }
+
+    fn signature_to_function_type_with_def(
+        &self,
+        signature: Option<&Signature>,
+        is_specialized_def: bool,
+    ) -> Result<FunctionType<'ctx>, String> {
         if let Some(sig) = signature {
-            let param_types = sig
-                .parameters
-                .iter()
-                .map(|p| {
-                    let llvm_ty = self.llvm_type(&p.ty)?;
-                    Ok(BasicMetadataTypeEnum::from(llvm_ty))
-                })
-                .collect::<Result<Vec<_>, String>>()?;
+            let mut param_types = Vec::new();
+            if is_specialized_def {
+                param_types.push(BasicMetadataTypeEnum::from(
+                    self.context.ptr_type(AddressSpace::default()),
+                ));
+            }
+            for p in &sig.parameters {
+                let llvm_ty = self.llvm_type(&p.ty)?;
+                param_types.push(BasicMetadataTypeEnum::from(llvm_ty));
+            }
 
             let ret_type = &sig.return_type;
             if **ret_type == Type::Never {
@@ -812,18 +863,40 @@ impl<'ctx> Codegen<'ctx> {
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let previous_defers = std::mem::take(&mut self.defer_stack);
         self.defer_stack.push(Vec::new());
+        let previous_context_ptr = self.current_context_ptr;
+        let previous_context_is_local = self.context_is_local;
         let previous_return_type = self.current_function_return_type.take();
         if let Some(sig) = signature {
             self.current_function_return_type = Some((*sig.return_type).clone());
         }
         let stack_ptr = self.enter_scope()?;
 
+        let is_specialized = self.specialized_def_names.contains(name);
+        if is_specialized {
+            let ctx_param = llvm_function
+                .get_nth_param(0)
+                .ok_or_else(|| format!("missing context parameter in '{}'", name))?
+                .into_pointer_value();
+            self.current_context_ptr = Some(ctx_param);
+            self.context_is_local = false;
+        } else {
+            let ctx_ty = crate::sema::context_type();
+            let llvm_ctx_ty = self.llvm_type(&ctx_ty)?;
+            let ctx_alloca = self
+                .builder
+                .build_alloca(llvm_ctx_ty, "__ctx_storage")
+                .map_err(|e| e.to_string())?;
+            self.current_context_ptr = Some(ctx_alloca);
+            self.context_is_local = true;
+        }
+
         if let Some(sig) = signature {
+            let param_offset = if is_specialized { 1 } else { 0 };
             for (index, parameter) in sig.parameters.iter().enumerate() {
                 let ty = &parameter.ty;
                 let llvm_ty = self.llvm_type(ty)?;
                 let param_val = llvm_function
-                    .get_nth_param(index as u32)
+                    .get_nth_param((index + param_offset) as u32)
                     .ok_or_else(|| format!("missing parameter {}", index))?;
 
                 let alloca = self
@@ -881,6 +954,8 @@ impl<'ctx> Codegen<'ctx> {
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
         self.current_function_return_type = previous_return_type;
+        self.current_context_ptr = previous_context_ptr;
+        self.context_is_local = previous_context_is_local;
         Ok(())
     }
 
@@ -897,6 +972,16 @@ impl<'ctx> Codegen<'ctx> {
         let previous_stack_ptrs = std::mem::take(&mut self.scope_stack_ptrs);
         let previous_defers = std::mem::take(&mut self.defer_stack);
         self.defer_stack.push(Vec::new());
+        let previous_context_ptr = self.current_context_ptr;
+        let previous_context_is_local = self.context_is_local;
+        let ctx_ty = crate::sema::context_type();
+        let llvm_ctx_ty = self.llvm_type(&ctx_ty)?;
+        let ctx_alloca = self
+            .builder
+            .build_alloca(llvm_ctx_ty, "__ctx_storage")
+            .map_err(|e| e.to_string())?;
+        self.current_context_ptr = Some(ctx_alloca);
+        self.context_is_local = true;
         let previous_return_type = self.current_function_return_type.take();
         if let Some(sig) = &main_def.signature {
             self.current_function_return_type = Some((*sig.return_type).clone());
@@ -1100,6 +1185,8 @@ impl<'ctx> Codegen<'ctx> {
         self.local_scopes = previous_scopes;
         self.scope_stack_ptrs = previous_stack_ptrs;
         self.current_function_return_type = previous_return_type;
+        self.current_context_ptr = previous_context_ptr;
+        self.context_is_local = previous_context_is_local;
         Ok(())
     }
 
@@ -1146,6 +1233,23 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Struct(fields) => self.codegen_struct_literal(fields),
             Expression::Spread(inner) => self.codegen_expression(inner),
             Expression::Tuple(elements) => self.codegen_tuple_literal(elements),
+            Expression::Context => {
+                let ptr = self
+                    .current_context_ptr
+                    .ok_or_else(|| "missing @ctx in current function".to_string())?;
+                let ctx_ty = crate::sema::context_type();
+                let llvm_ty = self.llvm_type(&ctx_ty)?;
+                let loaded = self
+                    .builder
+                    .build_load(llvm_ty, ptr, "ctx_val")
+                    .map_err(|e| e.to_string())?
+                    .into_struct_value();
+                Ok(Binding::Struct {
+                    ty: ctx_ty,
+                    value: loaded,
+                    storage: Some(ptr),
+                })
+            }
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
                     let resolved_local_ty = self.resolve_alias_root(&local.ty)?;
@@ -1525,6 +1629,17 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Assign { target, value } => {
                 let current_binding = self.codegen_expression(value)?;
                 match unspanned_expression(target) {
+                    Expression::Context => {
+                        let ptr = self.ensure_context_is_local()?;
+                        let ctx_ty = crate::sema::context_type();
+                        let coerced_binding = self.coerce_to_type(current_binding, &ctx_ty)?;
+                        let val = self.binding_basic_value(&coerced_binding)?;
+                        self.builder
+                            .build_store(ptr, val)
+                            .map_err(|e| e.to_string())?;
+
+                        Ok(self.symbol_binding("none"))
+                    }
                     Expression::Identifier(name) => {
                         let (local_alloca, local_ty) = if let Some(local) = self.lookup_local(name) {
                             (local.alloca, local.ty.clone())
@@ -1584,6 +1699,11 @@ impl<'ctx> Codegen<'ctx> {
                         Ok(self.symbol_binding("none"))
                     }
                     Expression::Member { .. } => {
+                        if let Expression::Member { expression: base, .. } = unspanned_expression(target) {
+                            if matches!(unspanned_expression(base), Expression::Context) {
+                                self.ensure_context_is_local()?;
+                            }
+                        }
                         let dest_ptr_binding = self.codegen_address_of(target)?;
                         let Type::Pointer { element, .. } = self.binding_type(&dest_ptr_binding)? else {
                             return Err("expected pointer from address-of member in assignment".to_string());
@@ -3854,7 +3974,8 @@ impl<'ctx> Codegen<'ctx> {
                             let pts = sig.parameters.iter().map(|p| p.ty.clone()).collect();
                             ((*sig.return_type).clone(), fn_ty, pts)
                         } else if let Some(sig) = self.function_signatures.get(name) {
-                            let fn_ty = self.signature_to_function_type(Some(sig))?;
+                            let is_def = self.specialized_def_names.contains(name);
+                            let fn_ty = self.signature_to_function_type_with_def(Some(sig), is_def)?;
                             let pts = sig.parameters.iter().map(|p| p.ty.clone()).collect();
                             ((*sig.return_type).clone(), fn_ty, pts)
                         } else {
@@ -3939,6 +4060,15 @@ impl<'ctx> Codegen<'ctx> {
                 binding
             };
             argument_values.push(self.binding_basic_value(&coerced)?.into());
+        }
+
+        if let Expression::Identifier(name) = target {
+            if self.specialized_def_names.contains(name) {
+                let ctx_ptr = self
+                    .current_context_ptr
+                    .ok_or_else(|| format!("missing @ctx when calling '{}'", name))?;
+                argument_values.insert(0, ctx_ptr.into());
+            }
         }
 
         let call = self
@@ -4116,6 +4246,18 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_address_of(&mut self, expression: &Expression) -> Result<Binding<'ctx>, String> {
         match unspanned_expression(expression) {
+            Expression::Context => {
+                let ptr = self
+                    .current_context_ptr
+                    .ok_or_else(|| "missing @ctx".to_string())?;
+                Ok(Binding::Pointer {
+                    ty: Type::Pointer {
+                        element: Box::new(crate::sema::context_type()),
+                        is_mut: true,
+                    },
+                    value: ptr,
+                })
+            }
             Expression::Dereference(pointer_expression) => {
                 let pointer = self.codegen_expression(pointer_expression)?;
                 if matches!(self.binding_type(&pointer)?, Type::Pointer { .. }) {
