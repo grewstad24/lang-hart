@@ -22,6 +22,7 @@ module.exports = grammar({
   conflicts: $ => [
     [$.argument_list, $.tuple_literal],
     [$.mut_declaration, $.assignment_expression],
+    [$._non_assignment_expression, $.struct_field_init],
   ],
 
   rules: {
@@ -310,6 +311,7 @@ module.exports = grammar({
       $.yield_expression,
       $.break_expression,
       $.continue_expression,
+      $.spread_expression,
       $.sizeof_expression,
       $.parenthesized_expression,
       prec(1, $.struct_literal),
@@ -475,6 +477,11 @@ module.exports = grammar({
 
     continue_expression: $ => seq('continue'),
 
+    spread_expression: $ => prec(PREC.UNARY, seq(
+      '...',
+      field('value', $._expression)
+    )),
+
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',
       field('value', $._expression)
@@ -503,11 +510,14 @@ module.exports = grammar({
       )
     ),
 
-    struct_field_init: $ => prec(PREC.ASSIGN + 1, seq(
-      field('name', $.identifier),
-      ':',
-      field('value', $._expression)
-    )),
+    struct_field_init: $ => choice(
+      prec(PREC.ASSIGN + 1, seq(
+        field('name', $.identifier),
+        ':',
+        field('value', $._expression)
+      )),
+      $.spread_expression,
+    ),
 
     array_literal: $ => seq(
       '[',

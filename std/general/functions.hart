@@ -1,4 +1,4 @@
-export { not, and, or, xor, nand, nor, xnor, neg, str_eq } to .
+export { not, and, or, xor, nand, nor, xnor, neg, str_eq, and_then } to .
 
 def neg(x) { 0 - x }
 
@@ -62,3 +62,11 @@ def str_eq(a, b) {
       }
       return :true
 }
+
+def and_then(v, callback, arr) {
+      match v {
+            Voidance => return v
+            else => return callback(v, ...arr)
+      }
+}
+

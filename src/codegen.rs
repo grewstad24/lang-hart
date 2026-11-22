@@ -1144,6 +1144,7 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::String(value) => self.codegen_string_literal(value),
             Expression::Struct(fields) => self.codegen_struct_literal(fields),
+            Expression::Spread(inner) => self.codegen_expression(inner),
             Expression::Tuple(elements) => self.codegen_tuple_literal(elements),
             Expression::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
@@ -2205,7 +2206,7 @@ impl<'ctx> Codegen<'ctx> {
             let val = self.binding_basic_value(&binding)?;
 
             field_types.push(StructFieldType {
-                name: f.name.clone(),
+                name: f.name.clone().unwrap_or_default(),
                 ty,
             });
             field_values.push(val);
@@ -2860,7 +2861,25 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_array_literal(&mut self, elements: &[Expression]) -> Result<Binding<'ctx>, String> {
         if elements.is_empty() {
-            return Err("cannot generate an empty array literal".to_string());
+            let llvm_elem_ty = self.context.i8_type();
+            let llvm_arr_ty = llvm_elem_ty.array_type(0);
+            let backing_alloca = self
+                .builder
+                .build_alloca(llvm_arr_ty, "arr_empty_backing")
+                .map_err(|e| e.to_string())?;
+            let loaded = self
+                .builder
+                .build_load(llvm_arr_ty, backing_alloca, "arr_empty_val")
+                .map_err(|e| e.to_string())?
+                .into_array_value();
+            return Ok(Binding::Array {
+                ty: Type::Array {
+                    element: Box::new(Type::U8),
+                    size: 0,
+                },
+                value: loaded,
+                storage: Some(backing_alloca),
+            });
         }
 
         let mut bindings = Vec::with_capacity(elements.len());
@@ -3684,6 +3703,11 @@ impl<'ctx> Codegen<'ctx> {
                 .build_load(self.context.i8_type(), tag_ptr, "tag")
                 .map_err(|e| e.to_string())?
                 .into_int_value();
+            let payload_ptr = self
+                .builder
+                .build_struct_gep(union_llvm_ty, storage, 1, "payload_ptr")
+                .map_err(|e| e.to_string())?;
+
             let current_bb = self.builder.get_insert_block().unwrap();
             let current_fn = current_bb.get_parent().unwrap();
             let merge_bb = self.context.append_basic_block(current_fn, "unbox.merge");
@@ -3702,11 +3726,6 @@ impl<'ctx> Codegen<'ctx> {
             self.builder.position_at_end(fail_bb);
             self.builder
                 .build_unreachable()
-                .map_err(|e| e.to_string())?;
-
-            let payload_ptr = self
-                .builder
-                .build_struct_gep(union_llvm_ty, storage, 1, "payload_ptr")
                 .map_err(|e| e.to_string())?;
 
             let mut incoming =

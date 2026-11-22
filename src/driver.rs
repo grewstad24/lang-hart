@@ -287,6 +287,9 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             }
             Ok(Expression::Struct(resolved))
         }
+        Expression::Spread(expr) => {
+            Ok(Expression::Spread(Box::new(canonicalize_expression(expr, checker)?)))
+        }
         Expression::Tuple(elements) => {
             let mut resolved = Vec::with_capacity(elements.len());
             for el in elements {

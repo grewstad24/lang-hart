@@ -431,6 +431,7 @@ pub struct Checker<'a> {
     loop_depth: usize,
     block_yield_stack: Vec<Vec<Type>>,
     counter: usize,
+    pub current_definition_name: Option<String>,
 }
 
 impl<'a> Checker<'a> {
@@ -486,6 +487,7 @@ impl<'a> Checker<'a> {
             loop_depth: 0,
             block_yield_stack: Vec::new(),
             counter: 0,
+            current_definition_name: None,
         };
 
         checker.predeclare_scope_signatures();
@@ -917,21 +919,59 @@ impl<'a> Checker<'a> {
 
     fn check_struct_fields(
         &mut self,
-        fields: &mut [StructFieldInit],
+        fields: &mut Vec<StructFieldInit>,
     ) -> Result<Vec<StructFieldType>, String> {
+        if fields.iter().any(|f| f.name.is_none()) {
+            let mut expanded_fields: Vec<StructFieldInit> = Vec::new();
+            for mut field in fields.drain(..) {
+                if field.name.is_none() {
+                    let val_ty = self.type_of_expression(&mut field.value)?;
+                    let resolved = self.resolve_type(&val_ty)?;
+                    match resolved {
+                        Type::Struct(s_fields) => {
+                            for sf in s_fields {
+                                let member_expr = Expression::Member {
+                                    expression: Box::new(field.value.clone()),
+                                    field: sf.name.clone(),
+                                };
+                                if let Some(existing) = expanded_fields.iter_mut().find(|f| f.name.as_ref() == Some(&sf.name)) {
+                                    existing.value = member_expr;
+                                } else {
+                                    expanded_fields.push(StructFieldInit {
+                                        name: Some(sf.name),
+                                        value: member_expr,
+                                    });
+                                }
+                            }
+                        }
+                        _ => return Err(format!("{}: error: cannot spread non-struct type {} in struct literal", self.current_file_path, resolved)),
+                    }
+                } else {
+                    let name = field.name.as_ref().unwrap();
+                    if let Some(existing) = expanded_fields.iter_mut().find(|f| f.name.as_ref() == Some(name)) {
+                        existing.value = field.value;
+                    } else {
+                        expanded_fields.push(field);
+                    }
+                }
+            }
+            *fields = expanded_fields;
+        }
+
         let mut struct_fields = Vec::with_capacity(fields.len());
         let mut seen_fields = HashSet::new();
 
         for field in fields {
-            if !seen_fields.insert(field.name.clone()) {
+            let name = field.name.clone().unwrap();
+            if !seen_fields.insert(name.clone()) {
                 return Err(format!(
                     "{}: error: duplicate field '@{}' in struct literal",
-                    self.current_file_path, field.name
+                    self.current_file_path, name
                 ));
             }
             let field_ty = self.type_of_expression(&mut field.value)?;
             struct_fields.push(StructFieldType {
-                name: field.name.clone(),
+                name,
                 ty: field_ty,
             });
         }
@@ -1237,6 +1277,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_definition_body(&mut self, def: &mut Definition) -> Result<(), String> {
+        self.current_definition_name = Some(def.name.clone());
         if def.name == "main" && def.is_def {
             return Err(format!(
                 "{}: error: entry point 'main' must be a function ('func'), never a 'def'",
@@ -1596,6 +1637,7 @@ impl<'a> Checker<'a> {
             Expression::Spanned { expression, span } => self
                 .type_of_expression(expression)
                 .map_err(|error| format_error(span, &error)),
+            Expression::Spread(inner) => self.type_of_expression(inner),
             Expression::Integer(_) => Ok(Type::S32),
             Expression::Symbol(name) => {
                 self.intern_symbol(name);
@@ -1609,6 +1651,47 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Tuple(elements) => {
+                if elements.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
+                    let mut expanded = Vec::new();
+                    for el in elements.drain(..) {
+                        let is_spread = matches!(crate::syntax::unspanned_expression(&el), Expression::Spread(_));
+                        if is_spread {
+                            let mut inner = match el {
+                                Expression::Spread(inner) => *inner,
+                                Expression::Spanned { expression, .. } => match *expression {
+                                    Expression::Spread(inner) => *inner,
+                                    _ => unreachable!(),
+                                },
+                                _ => unreachable!(),
+                            };
+                            let inner_ty = self.type_of_expression(&mut inner)?;
+                            let resolved = self.resolve_type(&inner_ty)?;
+                            match resolved {
+                                Type::Array { size, .. } => {
+                                    for i in 0..size {
+                                        expanded.push(Expression::Index {
+                                            expression: Box::new(inner.clone()),
+                                            index: Box::new(Expression::Integer(i as i64)),
+                                        });
+                                    }
+                                }
+                                Type::Tuple(tys) => {
+                                    for i in 0..tys.len() {
+                                        expanded.push(Expression::Member {
+                                            expression: Box::new(inner.clone()),
+                                            field: i.to_string(),
+                                        });
+                                    }
+                                }
+                                _ => return Err(format!("{}: error: spread operator in tuple requires fixed-size array or tuple, found {}", self.current_file_path, resolved)),
+                            }
+                        } else {
+                            expanded.push(el);
+                        }
+                    }
+                    *elements = expanded;
+                }
+
                 let mut elem_types = Vec::with_capacity(elements.len());
                 for elem in elements.iter_mut() {
                     let ty = self.type_of_expression(elem)?;
@@ -2271,7 +2354,12 @@ impl<'a> Checker<'a> {
                         _ => unreachable!(),
                     };
 
-                    *expression = if b_name.is_empty() {
+                    let is_same_ident = match unspanned_expression(&target_expr) {
+                        Expression::Identifier(id) => id == &b_name,
+                        _ => false,
+                    };
+
+                    *expression = if b_name.is_empty() || b_name == "_" {
                         Expression::Block(vec![
                             Expression::Discard(Box::new(target_expr)),
                             *matched_arm.body,
@@ -2294,7 +2382,7 @@ impl<'a> Checker<'a> {
                         {
                             if let Expression::Symbol(sym_name) = unspanned_expression(&target_expr) {
                                 Expression::Struct(vec![StructFieldInit {
-                                    name: "str".to_string(),
+                                    name: Some("str".to_string()),
                                     value: Expression::String(sym_name.clone().into_bytes()),
                                 }])
                             } else {
@@ -2316,13 +2404,18 @@ impl<'a> Checker<'a> {
                         } else {
                             target_expr
                         };
-                        Expression::Block(vec![
-                            Expression::Let {
-                                name: b_name,
-                                value: Box::new(bound_expr),
-                            },
-                            *matched_arm.body,
-                        ])
+
+                        if is_same_ident && matches!(unspanned_expression(&bound_expr), Expression::Identifier(id) if id == &b_name) {
+                            *matched_arm.body
+                        } else {
+                            Expression::Block(vec![
+                                Expression::Let {
+                                    name: b_name,
+                                    value: Box::new(bound_expr),
+                                },
+                                *matched_arm.body,
+                            ])
+                        }
                     };
 
                     return self.type_of_expression(expression);
@@ -2457,11 +2550,52 @@ impl<'a> Checker<'a> {
             }
 
             Expression::Array(elements) => {
+                if elements.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
+                    let mut expanded = Vec::new();
+                    for el in elements.drain(..) {
+                        let is_spread = matches!(crate::syntax::unspanned_expression(&el), Expression::Spread(_));
+                        if is_spread {
+                            let mut inner = match el {
+                                Expression::Spread(inner) => *inner,
+                                Expression::Spanned { expression, .. } => match *expression {
+                                    Expression::Spread(inner) => *inner,
+                                    _ => unreachable!(),
+                                },
+                                _ => unreachable!(),
+                            };
+                            let inner_ty = self.type_of_expression(&mut inner)?;
+                            let resolved = self.resolve_type(&inner_ty)?;
+                            match resolved {
+                                Type::Array { size, .. } => {
+                                    for i in 0..size {
+                                        expanded.push(Expression::Index {
+                                            expression: Box::new(inner.clone()),
+                                            index: Box::new(Expression::Integer(i as i64)),
+                                        });
+                                    }
+                                }
+                                Type::Tuple(tys) => {
+                                    for i in 0..tys.len() {
+                                        expanded.push(Expression::Member {
+                                            expression: Box::new(inner.clone()),
+                                            field: i.to_string(),
+                                        });
+                                    }
+                                }
+                                _ => return Err(format!("{}: error: spread operator in array requires fixed-size array or tuple, found {}", self.current_file_path, resolved)),
+                            }
+                        } else {
+                            expanded.push(el);
+                        }
+                    }
+                    *elements = expanded;
+                }
+
                 if elements.is_empty() {
-                    return Err(format!(
-                        "{}: error: cannot infer type of empty array",
-                        self.current_file_path
-                    ));
+                    return Ok(Type::Array {
+                        element: Box::new(Type::U8),
+                        size: 0,
+                    });
                 }
 
                 let mut elem_types = Vec::new();
@@ -2771,6 +2905,47 @@ impl<'a> Checker<'a> {
                         };
                         return self.type_of_expression(expression);
                     }
+                }
+
+                if arguments.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
+                    let mut expanded = Vec::new();
+                    for el in arguments.drain(..) {
+                        let is_spread = matches!(crate::syntax::unspanned_expression(&el), Expression::Spread(_));
+                        if is_spread {
+                            let mut inner = match el {
+                                Expression::Spread(inner) => *inner,
+                                Expression::Spanned { expression, .. } => match *expression {
+                                    Expression::Spread(inner) => *inner,
+                                    _ => unreachable!(),
+                                },
+                                _ => unreachable!(),
+                            };
+                            let inner_ty = self.type_of_expression(&mut inner)?;
+                            let resolved = self.resolve_type(&inner_ty)?;
+                            match resolved {
+                                Type::Array { size, .. } => {
+                                    for i in 0..size {
+                                        expanded.push(Expression::Index {
+                                            expression: Box::new(inner.clone()),
+                                            index: Box::new(Expression::Integer(i as i64)),
+                                        });
+                                    }
+                                }
+                                Type::Tuple(tys) => {
+                                    for i in 0..tys.len() {
+                                        expanded.push(Expression::Member {
+                                            expression: Box::new(inner.clone()),
+                                            field: i.to_string(),
+                                        });
+                                    }
+                                }
+                                _ => return Err(format!("{}: error: spread operator in function arguments requires fixed-size array or tuple, found {}", self.current_file_path, resolved)),
+                            }
+                        } else {
+                            expanded.push(el);
+                        }
+                    }
+                    *arguments = expanded;
                 }
 
                 let raw_target_ty = self.type_of_expression(target)?;

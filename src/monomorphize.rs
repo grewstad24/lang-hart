@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::sema::ModuleScope;
 use crate::syntax::{
-    Definition, Expression, LogicalModule, StructFieldType, Type, TypeAlias,
+    Definition, Expression, LogicalModule, StructFieldInit, StructFieldType, Type, TypeAlias,
 };
 
 pub fn mangle_type(ty: &Type) -> String {
@@ -287,6 +287,9 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
                 substitute_expression(el, substitutions);
             }
         }
+        Expression::Spread(inner) => {
+            substitute_expression(inner, substitutions);
+        }
         Expression::Identifier(_)
         | Expression::Integer(_)
         | Expression::String(_)
@@ -519,6 +522,9 @@ fn scan_and_rewrite_expression(
             }
         }
         Expression::SizeOf(inner) => {
+            scan_and_rewrite_expression(inner, scope, generated, changed)?;
+        }
+        Expression::Spread(inner) => {
             scan_and_rewrite_expression(inner, scope, generated, changed)?;
         }
         Expression::Identifier(_)
@@ -831,6 +837,9 @@ fn concretize_expression(
             for el in elements {
                 concretize_expression(el, templates, generated, changed)?;
             }
+        }
+        Expression::Spread(inner) => {
+            concretize_expression(inner, templates, generated, changed)?;
         }
         Expression::Integer(_)
         | Expression::String(_)
@@ -1159,6 +1168,34 @@ fn collect_returns(
             }
         }
         Expression::Match { target, binding_name, arms } => {
+            let target_ty_opt = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1);
+            if let Some(ref target_ty) = target_ty_opt {
+                let resolved_target = resolve_type_alias_deep(target_ty, scope);
+                if !matches!(resolved_target, Type::Union(_)) {
+                    let mut matched_arm_idx = None;
+                    for (idx, arm) in arms.iter().enumerate() {
+                        if let Some(vt) = &arm.variant_type {
+                            if type_matches_pattern(target_ty, vt, scope) {
+                                matched_arm_idx = Some(idx);
+                                break;
+                            }
+                        } else {
+                            matched_arm_idx = Some(idx);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = matched_arm_idx {
+                        let arm = &arms[idx];
+                        let mut arm_locals = local_types.clone();
+                        if !binding_name.is_empty() {
+                            arm_locals.insert(binding_name.clone(), target_ty.clone());
+                        }
+                        collect_returns(&arm.body, &arm_locals, scope, generated, returns, visiting, depth + 1);
+                        return;
+                    }
+                }
+            }
+
             for arm in arms {
                 let mut arm_locals = local_types.clone();
                 if !binding_name.is_empty() {
@@ -1388,11 +1425,32 @@ fn infer_expr_type_internal(
         }
         Expression::Array(elements) => {
             if elements.is_empty() {
-                None
+                Some(Type::Array {
+                    element: Box::new(Type::U8),
+                    size: 0,
+                })
             } else {
                 let mut elem_types = Vec::new();
                 for el in elements {
-                    if let Some(t) = infer_expr_type_internal(el, local_types, scope, generated, visiting, depth + 1) {
+                    let unspanned = crate::syntax::unspanned_expression(el);
+                    if let Expression::Spread(inner) = unspanned {
+                        if let Some(t) = infer_expr_type_internal(inner, local_types, scope, generated, visiting, depth + 1) {
+                            let resolved = resolve_type_alias_deep(&t, scope);
+                            match resolved {
+                                Type::Array { element, .. } => {
+                                    elem_types.push(*element);
+                                }
+                                Type::Tuple(tys) => {
+                                    for ty in tys {
+                                        elem_types.push(ty);
+                                    }
+                                }
+                                _ => elem_types.push(t),
+                            }
+                        } else {
+                            return None;
+                        }
+                    } else if let Some(t) = infer_expr_type_internal(el, local_types, scope, generated, visiting, depth + 1) {
                         elem_types.push(t);
                     } else {
                         return None;
@@ -1419,13 +1477,34 @@ fn infer_expr_type_internal(
         Expression::Struct(fields) => {
             let mut struct_fields = Vec::with_capacity(fields.len());
             for f in fields {
-                if let Some(t) = infer_expr_type_internal(&f.value, local_types, scope, generated, visiting, depth + 1) {
-                    struct_fields.push(StructFieldType {
-                        name: f.name.clone(),
-                        ty: t,
-                    });
+                if let Some(name) = &f.name {
+                    if let Some(t) = infer_expr_type_internal(&f.value, local_types, scope, generated, visiting, depth + 1) {
+                        if let Some(existing) = struct_fields.iter_mut().find(|sf: &&mut StructFieldType| sf.name == *name) {
+                            existing.ty = t;
+                        } else {
+                            struct_fields.push(StructFieldType {
+                                name: name.clone(),
+                                ty: t,
+                            });
+                        }
+                    } else {
+                        return None;
+                    }
                 } else {
-                    return None;
+                    if let Some(t) = infer_expr_type_internal(&f.value, local_types, scope, generated, visiting, depth + 1) {
+                        let resolved = resolve_type_alias_deep(&t, scope);
+                        if let Type::Struct(s_fields) = resolved {
+                            for sf in s_fields {
+                                if let Some(existing) = struct_fields.iter_mut().find(|existing: &&mut StructFieldType| existing.name == sf.name) {
+                                    existing.ty = sf.ty;
+                                } else {
+                                    struct_fields.push(sf);
+                                }
+                            }
+                        }
+                    } else {
+                        return None;
+                    }
                 }
             }
             Some(Type::Struct(struct_fields))
@@ -1574,7 +1653,7 @@ fn infer_expr_type_internal(
                 }
             }
             if arm_types.is_empty() {
-                None
+                Some(Type::Never)
             } else if arm_types.len() == 1 {
                 Some(arm_types.remove(0))
             } else {
@@ -1582,6 +1661,33 @@ fn infer_expr_type_internal(
             }
         }
         Expression::Match { target, binding_name, arms } => {
+            let target_ty_opt = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1);
+            if let Some(ref target_ty) = target_ty_opt {
+                let resolved_target = resolve_type_alias_deep(target_ty, scope);
+                if !matches!(resolved_target, Type::Union(_)) {
+                    let mut matched_arm_idx = None;
+                    for (idx, arm) in arms.iter().enumerate() {
+                        if let Some(vt) = &arm.variant_type {
+                            if type_matches_pattern(target_ty, vt, scope) {
+                                matched_arm_idx = Some(idx);
+                                break;
+                            }
+                        } else {
+                            matched_arm_idx = Some(idx);
+                            break;
+                        }
+                    }
+                    if let Some(idx) = matched_arm_idx {
+                        let arm = &arms[idx];
+                        let mut arm_locals = local_types.clone();
+                        if !binding_name.is_empty() {
+                            arm_locals.insert(binding_name.clone(), target_ty.clone());
+                        }
+                        return infer_expr_type_internal(&arm.body, &arm_locals, scope, generated, visiting, depth + 1);
+                    }
+                }
+            }
+
             let mut arm_types = Vec::new();
             for arm in arms {
                 let mut arm_locals = local_types.clone();
@@ -1599,7 +1705,7 @@ fn infer_expr_type_internal(
                 }
             }
             if arm_types.is_empty() {
-                None
+                Some(Type::Never)
             } else if arm_types.len() == 1 {
                 Some(arm_types.remove(0))
             } else {
@@ -1618,7 +1724,12 @@ fn infer_expr_type_internal(
             if let Expression::Return(_) = unspanned {
                 Some(Type::Never)
             } else {
-                Some(Type::Symbol("none".to_string()))
+                let inner_ty = infer_expr_type_internal(unspanned, local_types, scope, generated, visiting, depth + 1);
+                if let Some(Type::Never) = inner_ty {
+                    Some(Type::Never)
+                } else {
+                    Some(Type::Symbol("none".to_string()))
+                }
             }
         }
         Expression::Call { target, .. } => {
@@ -1839,6 +1950,49 @@ fn scan_and_monomorphize_def(
             }
             scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
 
+            if arguments.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
+                let mut expanded = Vec::new();
+                let mut all_known = true;
+                for el in arguments.iter() {
+                    if let Expression::Spread(inner) = crate::syntax::unspanned_expression(el) {
+                        if let Some(t) = infer_expr_type_with_generated(inner, local_types, scope, generated) {
+                            let resolved = resolve_type_alias_deep(&t, scope);
+                            match resolved {
+                                Type::Array { size, .. } => {
+                                    for i in 0..size {
+                                        expanded.push(Expression::Index {
+                                            expression: inner.clone(),
+                                            index: Box::new(Expression::Integer(i as i64)),
+                                        });
+                                    }
+                                }
+                                Type::Tuple(tys) => {
+                                    for i in 0..tys.len() {
+                                        expanded.push(Expression::Member {
+                                            expression: inner.clone(),
+                                            field: i.to_string(),
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    all_known = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            all_known = false;
+                            break;
+                        }
+                    } else {
+                        expanded.push(el.clone());
+                    }
+                }
+                if all_known {
+                    *arguments = expanded;
+                    *changed = true;
+                }
+            }
+
             if let Some(fn_name) = unwrap_identifier_name(target) {
                 let template_opt = if let Some(prov) = scope.definitions.get(&fn_name) {
                     if prov.item.is_def {
@@ -1866,22 +2020,11 @@ fn scan_and_monomorphize_def(
 
                     let mut arg_types = Vec::with_capacity(arguments.len());
                     for (param, arg) in sig.parameters.iter().zip(arguments.iter()) {
-                        let inferred_arg_ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
-                        let resolved_param_ty = resolve_type_alias_deep(&param.ty, scope);
-                        let is_polymorphic = param.ty == Type::Inferred
-                            || matches!(resolved_param_ty, Type::Union(_))
-                            || matches!(param.ty, Type::Alias(ref n) if n == "Generic");
-
-                        if is_polymorphic && inferred_arg_ty != Type::Inferred {
-                            if param.ty != Type::Inferred && !type_matches_pattern(&inferred_arg_ty, &param.ty, scope) {
-                                return Err(format!(
-                                    "def function '{}' expects parameter '{}' matching {}, found {}",
-                                    fn_name, param.name, param.ty, inferred_arg_ty
-                                ));
-                            }
-                            arg_types.push(inferred_arg_ty);
-                        } else {
+                        if param.ty != Type::Inferred {
                             arg_types.push(param.ty.clone());
+                        } else {
+                            let ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
+                            arg_types.push(ty);
                         }
                     }
 
@@ -1904,12 +2047,7 @@ fn scan_and_monomorphize_def(
                         let mut param_types_map = HashMap::new();
                         if let Some(spec_sig) = &mut specialized_def.signature {
                             for (p, arg_ty) in spec_sig.parameters.iter_mut().zip(arg_types.iter()) {
-                                let resolved_p_ty = resolve_type_alias_deep(&p.ty, scope);
-                                let is_polymorphic = p.ty == Type::Inferred
-                                    || matches!(resolved_p_ty, Type::Union(_))
-                                    || matches!(p.ty, Type::Alias(ref n) if n == "Generic");
-
-                                if is_polymorphic && *arg_ty != Type::Inferred {
+                                if p.ty == Type::Inferred && *arg_ty != Type::Inferred {
                                     p.ty = arg_ty.clone();
                                 }
                                 param_types_map.insert(p.name.clone(), p.ty.clone());
@@ -2073,13 +2211,102 @@ fn scan_and_monomorphize_def(
             scan_and_monomorphize_def(expression, scope, def_templates, local_types, generated, changed)?;
         }
         Expression::Array(elements) | Expression::Tuple(elements) => {
-            for el in elements {
+            for el in elements.iter_mut() {
                 scan_and_monomorphize_def(el, scope, def_templates, local_types, generated, changed)?;
+            }
+            if elements.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
+                let mut expanded = Vec::new();
+                let mut all_known = true;
+                for el in elements.iter() {
+                    if let Expression::Spread(inner) = crate::syntax::unspanned_expression(el) {
+                        if let Some(t) = infer_expr_type_with_generated(inner, local_types, scope, generated) {
+                            let resolved = resolve_type_alias_deep(&t, scope);
+                            match resolved {
+                                Type::Array { size, .. } => {
+                                    for i in 0..size {
+                                        expanded.push(Expression::Index {
+                                            expression: inner.clone(),
+                                            index: Box::new(Expression::Integer(i as i64)),
+                                        });
+                                    }
+                                }
+                                Type::Tuple(tys) => {
+                                    for i in 0..tys.len() {
+                                        expanded.push(Expression::Member {
+                                            expression: inner.clone(),
+                                            field: i.to_string(),
+                                        });
+                                    }
+                                }
+                                _ => {
+                                    all_known = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            all_known = false;
+                            break;
+                        }
+                    } else {
+                        expanded.push(el.clone());
+                    }
+                }
+                if all_known {
+                    *elements = expanded;
+                    *changed = true;
+                }
             }
         }
         Expression::Struct(fields) => {
-            for f in fields {
+            for f in fields.iter_mut() {
                 scan_and_monomorphize_def(&mut f.value, scope, def_templates, local_types, generated, changed)?;
+            }
+            if fields.iter().any(|f| f.name.is_none()) {
+                let mut expanded_fields: Vec<StructFieldInit> = Vec::new();
+                let mut all_known = true;
+                for f in fields.iter() {
+                    if f.name.is_none() {
+                        if let Some(t) = infer_expr_type_with_generated(&f.value, local_types, scope, generated) {
+                            let resolved = resolve_type_alias_deep(&t, scope);
+                            match resolved {
+                                Type::Struct(s_fields) => {
+                                    for sf in s_fields {
+                                        let member_expr = Expression::Member {
+                                            expression: Box::new(f.value.clone()),
+                                            field: sf.name.clone(),
+                                        };
+                                        if let Some(existing) = expanded_fields.iter_mut().find(|ex| ex.name.as_ref() == Some(&sf.name)) {
+                                            existing.value = member_expr;
+                                        } else {
+                                            expanded_fields.push(StructFieldInit {
+                                                name: Some(sf.name),
+                                                value: member_expr,
+                                            });
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    all_known = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            all_known = false;
+                            break;
+                        }
+                    } else {
+                        let name = f.name.as_ref().unwrap();
+                        if let Some(existing) = expanded_fields.iter_mut().find(|ex| ex.name.as_ref() == Some(name)) {
+                            existing.value = f.value.clone();
+                        } else {
+                            expanded_fields.push(f.clone());
+                        }
+                    }
+                }
+                if all_known {
+                    *fields = expanded_fields;
+                    *changed = true;
+                }
             }
         }
         Expression::Let { value, .. } => {
@@ -2093,6 +2320,9 @@ fn scan_and_monomorphize_def(
         Expression::Assign { target, value } => {
             scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
             scan_and_monomorphize_def(value, scope, def_templates, local_types, generated, changed)?;
+        }
+        Expression::Spread(inner) => {
+            scan_and_monomorphize_def(inner, scope, def_templates, local_types, generated, changed)?;
         }
         Expression::Identifier(_)
         | Expression::Integer(_)

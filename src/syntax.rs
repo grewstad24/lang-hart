@@ -75,7 +75,7 @@ pub struct StructFieldType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructFieldInit {
-    pub name: String,
+    pub name: Option<String>,
     pub value: Expression,
 }
 
@@ -272,13 +272,18 @@ impl fmt::Display for Expression {
                 }
                 write!(f, "]")
             }
+            Expression::Spread(expr) => write!(f, "...{}", expr),
             Expression::Struct(fields) => {
                 write!(f, "{{ ")?;
                 for (i, field) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{} := {}", field.name, field.value)?;
+                    if let Some(name) = &field.name {
+                        write!(f, "{}: {}", name, field.value)?;
+                    } else {
+                        write!(f, "...{}", field.value)?;
+                    }
                 }
                 write!(f, " }}")
             }
@@ -441,6 +446,7 @@ pub enum Expression {
     Identifier(String),
     Array(Vec<Expression>),
     Struct(Vec<StructFieldInit>),
+    Spread(Box<Expression>),
     Tuple(Vec<Expression>),
     Member {
         expression: Box<Expression>,
@@ -2575,6 +2581,7 @@ impl Parser {
                     }
                     return idx < self.tokens.len() && self.tokens[idx] == Token::Colon;
                 }
+                Token::DotDotDot => return true,
                 _ => {}
             }
         }
@@ -2590,6 +2597,11 @@ impl Parser {
             Token::String(value) => {
                 self.advance();
                 Ok(Expression::String(value))
+            }
+            Token::DotDotDot => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                Ok(Expression::Spread(Box::new(operand)))
             }
             Token::Symbol(name) => {
                 self.advance();
@@ -2827,14 +2839,20 @@ impl Parser {
                 break;
             }
 
-            let name = self.expect_field_name()?;
-            self.skip_newlines();
-            self.expect(Token::Colon)?;
-            self.skip_newlines();
+            if self.is(Token::DotDotDot) {
+                self.advance();
+                let value = self.parse_expression()?;
+                fields.push(StructFieldInit { name: None, value });
+            } else {
+                let name = self.expect_field_name()?;
+                self.skip_newlines();
+                self.expect(Token::Colon)?;
+                self.skip_newlines();
 
-            let value = self.parse_expression()?;
+                let value = self.parse_expression()?;
 
-            fields.push(StructFieldInit { name, value });
+                fields.push(StructFieldInit { name: Some(name), value });
+            }
 
             self.skip_newlines();
             while self.is(Token::Comma) {
@@ -2862,6 +2880,8 @@ impl Parser {
             let name = self.expect_identifier()?;
             self.skip_newlines();
             name
+        } else if let Expression::Identifier(name) = unspanned_expression(&target) {
+            name.clone()
         } else {
             "_".to_string()
         };
