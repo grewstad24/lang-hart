@@ -41,8 +41,9 @@ type UnvoidGeneric :=
 
 type Generic := UnvoidGeneric | Voidance
 
-type LogLevel := :info | :warn | :error
+type LogLevel := :info | :warn | :error | :never
 
 type Context := {
-      logger: func(LogLevel, u64, String, Generic) -> :none
+      logger: func(LogLevel, LogLevel, u64, String, Generic) -> :none
+      log_level: LogLevel
 }

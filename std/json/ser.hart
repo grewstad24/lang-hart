@@ -1,8 +1,0 @@
-decl mod json {
-      export {
-            { stringifyJson } to .json
-      }
-}
-
-def stringifyJson( item, buffer ) {}
-

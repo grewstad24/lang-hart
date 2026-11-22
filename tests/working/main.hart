@@ -1,40 +1,47 @@
 import { .print, .print.pretty, .log }
 
-func customLogger(level: LogLevel, line: u64, file: String, item: Generic) -> :none {
-      @ctx := { logger: customLogger }
-      match level using lvl {
-            :info => print("[CUSTOM-INFO] ")
-            :warn => print("[CUSTOM-WARN] ")
-            :error => print("[CUSTOM-ERROR] ")
+def loadConfig(path) {
+      logInfo("loading configuration file")
+      logWarn("cache directory not configured, falling back to /tmp/cache")
+      return :true
+}
+
+def processItem(id, status) {
+      match status {
+            :ok => {
+                  logInfo("task completed successfully")
+            }
+            :stale => {
+                  logWarn("task is stale, queuing refresh")
+            }
+            :corrupt => {
+                  logError("task failed checksum validation")
+            }
       }
-      print(file)
-      print(":")
-      print(line)
-      print(": ")
-      pprint(item)
 }
 
-def logDirect(msg) {
-      @ctx.logger(:info, @caller_line_number, @caller_file_name, msg)
-}
-
-def child() {
-      logInfo(42)
-}
-
-def intermediate() {
-      @ctx.logger := customLogger
-      child()
+def noisyWorker() {
+      # Suppress verbose info logs for this worker subtree
+      @ctx.log_level := :warn
+      logInfo("this verbose message will be filtered out")
+      logWarn("high memory threshold exceeded in worker pool")
 }
 
 func main(args: Slice<String>) -> :none {
-      @ctx := { logger: stdLogger }
+      @ctx := default_context
+      @ctx.log_level := :never
 
-      @ctx.logger(:info, @this_line_number, @this_file_name, "direct log from main")
+      logInfo("initializing background daemon")
 
-      logDirect("logged via def function")
+      loadConfig("/etc/hart/daemon.conf")
 
-      intermediate()
+      logInfo("processing incoming queue...")
+      processItem(101, :ok)
+      processItem(102, :stale)
+      processItem(103, :ok)
+      processItem(104, :corrupt)
 
-      @ctx.logger(:warn, @this_line_number, @this_file_name, "caller context preserved")
+      noisyWorker()
+
+      logInfo("daemon shutdown gracefully")
 }

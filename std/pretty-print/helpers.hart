@@ -29,8 +29,11 @@ def pprintAtom(z, err) {
       }
 }
 
-def pprintString(z) {
-      [ style_yellow, "'", z, "'", style_reset ].print()
+def pprintString(z, err) {
+      match err {
+            :false => [ style_yellow, "'", z, "'", style_reset ].print()
+            :true => [ style_bright_red, "'", z, "'", style_reset ].print()
+      }
 }
 
 def pprintInteger(z) {
@@ -53,7 +56,8 @@ def pprintArray( z, indent_level, err ) {
             0 => :none
             else => print(:nl)
       }
-      repeat for z using elem {
+      repeat z.len using idx {
+            elem := z[idx]
             switch indent_level {
                   0 => :none
                   else => {
@@ -75,8 +79,11 @@ def pprintArray( z, indent_level, err ) {
                   }
                   else => {
                         internalPprint(inner, indent_level, err)
-                        print(:nl)
                   }
+            }
+            if {
+                  idx < z.len - 1 => print(:nl)
+                  else => :none
             }
       }
 }
@@ -92,17 +99,19 @@ def pprintRecord( item, indent_level, err ) {
             k := rec.*.key[i]
             v := rec.*.val[i]
             match err {
-                  :true => print([style_bright_red, k, style_reset])
-                  :false => print(k)
+                  :true => print([style_bright_red, k, style_reset, style_blue, style_bold, ": ", style_reset])
+                  :false => print([k, style_blue, style_bold, ": ", style_reset])
             }
-            print([ style_blue, style_bold, ": ", style_reset ])
             match v using inner {
                   Record => pprintRecord(inner, indent_level + 1, err)
                   Slice <Generic> => pprintArray(inner, indent_level + 1, err)
                   else => {
                         internalPprint(v, indent_level, err)
-                        print(:nl)
                   }
+            }
+            if {
+                  i < rec.*.len - 1 => print(:nl)
+                  else => :none
             }
       }
 }

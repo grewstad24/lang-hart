@@ -60,21 +60,29 @@ pub fn context_type() -> Type {
         Type::Symbol("info".to_string()),
         Type::Symbol("warn".to_string()),
         Type::Symbol("error".to_string()),
+        Type::Symbol("never".to_string()),
     ];
     variants.sort_by(|a, b| Checker::canonical_type_key(a).cmp(&Checker::canonical_type_key(b)));
-    Type::Struct(vec![StructFieldType {
-        name: "logger".to_string(),
-        ty: Type::Function {
-            parameters: vec![
-                Type::Union(variants),
-                Type::U64,
-                Type::Alias("String".to_string()),
-                Type::Alias("Generic".to_string()),
-            ],
-            return_type: Box::new(Type::Symbol("none".to_string())),
-            is_variadic: false,
+    Type::Struct(vec![
+        StructFieldType {
+            name: "logger".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    Type::Union(variants.clone()),
+                    Type::Union(variants.clone()),
+                    Type::U64,
+                    Type::Alias("String".to_string()),
+                    Type::Alias("Generic".to_string()),
+                ],
+                return_type: Box::new(Type::Symbol("none".to_string())),
+                is_variadic: false,
+            },
         },
-    }])
+        StructFieldType {
+            name: "log_level".to_string(),
+            ty: Type::Union(variants),
+        },
+    ])
 }
 
 pub struct ModuleResolver {

@@ -1,30 +1,52 @@
-decl mod log {
-      export { stdLogger, logInfo, logWarn, logError } to .log
-      import { .print, .print.pretty }
+export { stdLogger, logInfo, logWarn, logError, isLogged } to .log
+import { .print, .print.pretty }
+
+func isLogged(target: LogLevel, min_level: LogLevel) -> Bool {
+      return match min_level {
+            :info => :true
+            :warn => match target {
+                  :info => :false
+                  else => :true
+            }
+            :error => match target {
+                  :error => :true
+                  else => :false
+            }
+            :never => :false
+      }
 }
 
-func stdLogger(level: LogLevel, line: u64, file: String, item: Generic) -> :none {
-      @ctx := { logger: stdLogger }
-      match level using lvl {
-            :info => print("[INFO] ")
-            :warn => print("[WARN] ")
-            :error => print("[ERROR] ")
+func stdLogger(level: LogLevel, min_level: LogLevel, line: u64, file: String, item: Generic) -> :none {
+      @ctx := default_context
+      if {
+            isLogged(level, min_level) = :false => return :none
+            else => :none
       }
-      print(file)
-      print(":")
-      print(line)
-      print(": ")
-      pprint(item)
+      match level {
+            :error => {
+                  print([style_bright_red, "‼ error ", style_reset, file, ":", line, ": "])
+                  pprintlnErr(item)
+            }
+            :warn => {
+                  print([style_yellow, "⚠ warn ", style_reset, file, ":", line, ": "])
+                  pprintln(item)
+            }
+            :info => {
+                  print([file, ":", line, ": "])
+                  pprintln(item)
+            }
+            :never => :none
+      }
 }
 
 def logInfo(item) {
-      @ctx.logger(:info, @caller_line_number, @caller_file_name, item)
+      @ctx.logger(:info, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }
 
 def logWarn(item) {
-      @ctx.logger(:warn, @caller_line_number, @caller_file_name, item)
+      @ctx.logger(:warn, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }
 
 def logError(item) {
-      @ctx.logger(:error, @caller_line_number, @caller_file_name, item)
+      @ctx.logger(:error, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }

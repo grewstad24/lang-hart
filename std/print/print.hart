@@ -37,6 +37,5 @@ def print( x ) {
 
 
 def println( x ) {
-      print(x)
-      prNl()
+      print([x, :nl])
 }
