@@ -173,6 +173,10 @@ pub fn substitute_expression(expr: &mut Expression, substitutions: &HashMap<Stri
         Expression::SizeOf(inner) => {
             substitute_expression(inner, substitutions);
         }
+        Expression::AsTypeOf { expression, target } => {
+            substitute_expression(expression, substitutions);
+            substitute_expression(target, substitutions);
+        }
         Expression::Slice(expr) => {
             substitute_expression(expr, substitutions);
         }
@@ -386,7 +390,8 @@ fn is_function_in_scope<V>(
     scope: &ModuleScope,
     def_templates: &HashMap<String, V>,
 ) -> bool {
-    scope.definitions.contains_key(name)
+    crate::syntax::is_intrinsic_function(name)
+        || scope.definitions.contains_key(name)
         || scope.lookup_extern(name).is_some()
         || def_templates.contains_key(name)
 }
@@ -424,6 +429,25 @@ fn scan_and_rewrite_expression(
                 scan_and_rewrite_expression(arg, scope, generated, changed)?;
             }
             scan_and_rewrite_expression(target, scope, generated, changed)?;
+
+            if let Expression::Identifier(name) = crate::syntax::unspanned_expression(target) {
+                if name == "@asTypeOf" && arguments.len() == 2 {
+                    let target_expr = arguments.pop().unwrap();
+                    let src_expr = arguments.pop().unwrap();
+                    *expr = Expression::AsTypeOf {
+                        expression: Box::new(src_expr),
+                        target: Box::new(target_expr),
+                    };
+                    *changed = true;
+                    return scan_and_rewrite_expression(expr, scope, generated, changed);
+                }
+                if name == "@sizeOf" && arguments.len() == 1 {
+                    let src_expr = arguments.pop().unwrap();
+                    *expr = Expression::SizeOf(Box::new(src_expr));
+                    *changed = true;
+                    return scan_and_rewrite_expression(expr, scope, generated, changed);
+                }
+            }
         }
         Expression::Index { expression, index } => {
             scan_and_rewrite_expression(expression, scope, generated, changed)?;
@@ -528,6 +552,10 @@ fn scan_and_rewrite_expression(
         }
         Expression::SizeOf(inner) => {
             scan_and_rewrite_expression(inner, scope, generated, changed)?;
+        }
+        Expression::AsTypeOf { expression, target } => {
+            scan_and_rewrite_expression(expression, scope, generated, changed)?;
+            scan_and_rewrite_expression(target, scope, generated, changed)?;
         }
         Expression::Spread(inner) => {
             scan_and_rewrite_expression(inner, scope, generated, changed)?;
@@ -733,6 +761,10 @@ fn concretize_expression(
         }
         Expression::SizeOf(operand) => {
             concretize_expression(operand, templates, generated, changed)?;
+        }
+        Expression::AsTypeOf { expression, target } => {
+            concretize_expression(expression, templates, generated, changed)?;
+            concretize_expression(target, templates, generated, changed)?;
         }
         Expression::Slice(operand) => {
             concretize_expression(operand, templates, generated, changed)?;
@@ -1371,6 +1403,9 @@ fn infer_expr_type_internal(
             }
         }
         Expression::SizeOf(_) => Some(Type::USize),
+        Expression::AsTypeOf { target, .. } => {
+            infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1)
+        }
         Expression::Identifier(name) => {
             if let Some(ty) = local_types.get(name) {
                 return Some(ty.clone());
@@ -1545,6 +1580,9 @@ fn infer_expr_type_internal(
             }
         }
         Expression::Member { expression, field } => {
+            if field == "@sizeOf" && !receiver_has_field(expression, field, local_types, scope, generated) {
+                return Some(Type::USize);
+            }
             if let Some(expr_ty) = infer_expr_type_internal(expression, local_types, scope, generated, visiting, depth + 1) {
                 let resolved = resolve_type_alias_deep(&expr_ty, scope);
                 match resolved {
@@ -1752,7 +1790,7 @@ fn infer_expr_type_internal(
                 }
             }
         }
-        Expression::Call { target, .. } => {
+        Expression::Call { target, arguments } => {
             let fn_name_opt = unwrap_identifier_name(target).or_else(|| {
                 if let Expression::Member { field, .. } = crate::syntax::unspanned_expression(target) {
                     Some(field.clone())
@@ -1761,6 +1799,12 @@ fn infer_expr_type_internal(
                 }
             });
             if let Some(fn_name) = fn_name_opt {
+                if fn_name == "@asTypeOf" && !arguments.is_empty() {
+                    return infer_expr_type_internal(arguments.last().unwrap(), local_types, scope, generated, visiting, depth + 1);
+                }
+                if fn_name == "@sizeOf" {
+                    return Some(Type::USize);
+                }
                 if let Some(g) = generated.iter().rev().find(|g| g.specialized_def.name == fn_name) {
                     if let Some(sig) = &g.specialized_def.signature {
                         if *sig.return_type != Type::Inferred {
@@ -1969,6 +2013,25 @@ fn scan_and_monomorphize_def(
                 scan_and_monomorphize_def(arg, scope, def_templates, local_types, generated, changed)?;
             }
             scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
+
+            if let Expression::Identifier(name) = crate::syntax::unspanned_expression(target) {
+                if name == "@asTypeOf" && arguments.len() == 2 {
+                    let target_expr = arguments.pop().unwrap();
+                    let src_expr = arguments.pop().unwrap();
+                    *expr = Expression::AsTypeOf {
+                        expression: Box::new(src_expr),
+                        target: Box::new(target_expr),
+                    };
+                    *changed = true;
+                    return scan_and_monomorphize_def(expr, scope, def_templates, local_types, generated, changed);
+                }
+                if name == "@sizeOf" && arguments.len() == 1 {
+                    let src_expr = arguments.pop().unwrap();
+                    *expr = Expression::SizeOf(Box::new(src_expr));
+                    *changed = true;
+                    return scan_and_monomorphize_def(expr, scope, def_templates, local_types, generated, changed);
+                }
+            }
 
             if arguments.iter().any(|e| matches!(crate::syntax::unspanned_expression(e), Expression::Spread(_))) {
                 let mut expanded = Vec::new();
@@ -2225,6 +2288,10 @@ fn scan_and_monomorphize_def(
         | Expression::Return(expression)
         | Expression::Yield(expression) => {
             scan_and_monomorphize_def(expression, scope, def_templates, local_types, generated, changed)?;
+        }
+        Expression::AsTypeOf { expression, target } => {
+            scan_and_monomorphize_def(expression, scope, def_templates, local_types, generated, changed)?;
+            scan_and_monomorphize_def(target, scope, def_templates, local_types, generated, changed)?;
         }
         Expression::Index { expression, index } => {
             scan_and_monomorphize_def(expression, scope, def_templates, local_types, generated, changed)?;

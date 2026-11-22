@@ -457,6 +457,10 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
             })
         }
         Expression::SizeOf(expr) => Ok(Expression::SizeOf(Box::new(canonicalize_expression(expr, checker)?))),
+        Expression::AsTypeOf { expression, target } => Ok(Expression::AsTypeOf {
+            expression: Box::new(canonicalize_expression(expression, checker)?),
+            target: Box::new(canonicalize_expression(target, checker)?),
+        }),
         Expression::Slice(expr) => Ok(Expression::Slice(Box::new(canonicalize_expression(expr, checker)?))),
         Expression::Context => Ok(Expression::Context),
         Expression::CallerLineNumber => Ok(Expression::CallerLineNumber),
@@ -549,10 +553,38 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     println!("  [3/6] Specialise & monomorphize  ({})", format_duration(step_start.elapsed()));
 
     let step_start = Instant::now();
+    let mut global_resolved_definitions: HashMap<String, Type> = HashMap::new();
+
+    for _ in 0..10 {
+        let mut progress = false;
+        for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
+            let mut checker = Checker::new(scope);
+            checker.resolved_definitions.clone_from(&global_resolved_definitions);
+            for file in &mut module.source_files {
+                checker.current_file_path = file.file_path.clone();
+                for def in &file.definitions {
+                    if !def.is_def && def.signature.is_none() && !global_resolved_definitions.contains_key(&def.name) {
+                        if let Ok(ty) = checker.resolve_definition(&def.name) {
+                            global_resolved_definitions.insert(def.name.clone(), ty);
+                            progress = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
     for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
         let mut checker = Checker::new(scope);
+        checker.resolved_definitions.clone_from(&global_resolved_definitions);
         for file in &mut module.source_files {
             checker.check_file(file)?;
+        }
+        for (k, v) in checker.resolved_definitions {
+            global_resolved_definitions.insert(k, v);
         }
     }
     println!("  [4/6] Type check                 ({})", format_duration(step_start.elapsed()));

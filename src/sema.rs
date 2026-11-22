@@ -82,6 +82,45 @@ pub fn context_type() -> Type {
             name: "log_level".to_string(),
             ty: Type::Union(variants),
         },
+        StructFieldType {
+            name: "memalloc".to_string(),
+            ty: Type::Function {
+                parameters: vec![Type::USize],
+                return_type: Box::new(Type::Pointer {
+                    element: Box::new(Type::Opaque),
+                    is_mut: true,
+                }),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "resizeAlloc".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Opaque),
+                        is_mut: false,
+                    },
+                    Type::USize,
+                ],
+                return_type: Box::new(Type::Pointer {
+                    element: Box::new(Type::Opaque),
+                    is_mut: true,
+                }),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "dealloc".to_string(),
+            ty: Type::Function {
+                parameters: vec![Type::Pointer {
+                    element: Box::new(Type::Opaque),
+                    is_mut: false,
+                }],
+                return_type: Box::new(Type::Symbol("none".to_string())),
+                is_variadic: false,
+            },
+        },
     ])
 }
 
@@ -445,7 +484,7 @@ struct BindingInfo {
 
 pub struct Checker<'a> {
     pub scope: &'a ModuleScope,
-    current_file_path: String,
+    pub current_file_path: String,
 
     resolved_extern_functions: HashMap<String, Signature>,
     resolving_extern_functions: HashSet<String>,
@@ -1483,7 +1522,7 @@ impl<'a> Checker<'a> {
         Ok(signature)
     }
 
-    fn resolve_definition(&mut self, name: &str) -> Result<Type, String> {
+    pub fn resolve_definition(&mut self, name: &str) -> Result<Type, String> {
         if let Some(ty) = self.resolved_definitions.get(name) {
             if let Type::Function { return_type, .. } = ty {
                 if **return_type != Type::Inferred {
@@ -1509,7 +1548,23 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        if def.signature.is_some() {
+        if let Some(sig) = &def.signature {
+            let param_types = sig
+                .parameters
+                .iter()
+                .map(|p| self.resolve_type(&p.ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            let ret_ty = self.resolve_type(sig.return_type.as_ref())?;
+            if ret_ty != Type::Inferred {
+                let fn_ty = Type::Function {
+                    parameters: param_types,
+                    return_type: Box::new(ret_ty),
+                    is_variadic: sig.is_variadic,
+                };
+                self.resolved_definitions
+                    .insert(name.to_string(), fn_ty.clone());
+                return Ok(fn_ty);
+            }
             let mut def_clone = def.clone();
             self.check_definition_body(&mut def_clone)?;
             if let Some(resolved) = self.resolved_definitions.get(name) {
@@ -2960,7 +3015,8 @@ impl<'a> Checker<'a> {
 
             Expression::Call { target, arguments } => {
                 if let Expression::Member { expression: receiver, field } = target.as_mut() {
-                    let is_fn_in_scope = self.scope.definitions.contains_key(field)
+                    let is_fn_in_scope = crate::syntax::is_intrinsic_function(field)
+                        || self.scope.definitions.contains_key(field)
                         || self.scope.lookup_extern(field).is_some()
                         || self.resolved_definitions.contains_key(field);
 
@@ -3048,6 +3104,23 @@ impl<'a> Checker<'a> {
                         }
                     }
                     *arguments = expanded;
+                }
+
+                if let Expression::Identifier(name) = crate::syntax::unspanned_expression(target) {
+                    if name == "@asTypeOf" && arguments.len() == 2 {
+                        let target_expr = arguments.pop().unwrap();
+                        let src_expr = arguments.pop().unwrap();
+                        *expression = Expression::AsTypeOf {
+                            expression: Box::new(src_expr),
+                            target: Box::new(target_expr),
+                        };
+                        return self.type_of_expression(expression);
+                    }
+                    if name == "@sizeOf" && arguments.len() == 1 {
+                        let src_expr = arguments.pop().unwrap();
+                        *expression = Expression::SizeOf(Box::new(src_expr));
+                        return self.type_of_expression(expression);
+                    }
                 }
 
                 let is_calling_def = if let Expression::Identifier(fn_name) = crate::syntax::unspanned_expression(target) {
@@ -3176,6 +3249,27 @@ impl<'a> Checker<'a> {
                 let raw_expr_type = self.type_of_expression(expression)?;
                 let expr_type = self.resolve_type(&raw_expr_type)?;
 
+                if field == "@sizeOf" {
+                    let has_field = match &expr_type {
+                        Type::Struct(fields) => fields.iter().any(|f| f.name == *field),
+                        Type::Pointer { element, .. } => {
+                            if let Ok(elem_ty) = self.resolve_type(element) {
+                                if let Type::Struct(fields) = elem_ty {
+                                    fields.iter().any(|f| f.name == *field)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !has_field {
+                        return Ok(Type::USize);
+                    }
+                }
+
                 match expr_type {
                     Type::Struct(fields) => {
                         if let Some(f) = fields.iter().find(|f| f.name == *field) {
@@ -3296,6 +3390,26 @@ impl<'a> Checker<'a> {
             Expression::SizeOf(inner) => {
                 let _ = self.type_of_expression(inner)?;
                 Ok(Type::USize)
+            }
+
+            Expression::AsTypeOf { expression: inner, target } => {
+                let source_type = self.type_of_expression(inner)?;
+                let target_type = self.type_of_expression(target)?;
+                let resolved_target = self.resolve_type(&target_type)?;
+
+                let coerced_source = self.coerce_expression_to_type(inner, &source_type, &resolved_target)?;
+                if !Self::is_supported_cast_with_aliases(&coerced_source, &resolved_target, &self.alias_targets()) {
+                    return Err(format!(
+                        "{}: error: unsupported cast from {} to {}",
+                        self.current_file_path, coerced_source, resolved_target
+                    ));
+                }
+
+                *expression = Expression::Cast {
+                    expression: inner.clone(),
+                    ty: resolved_target.clone(),
+                };
+                self.type_of_expression(expression)
             }
 
             Expression::Slice(expr) => {

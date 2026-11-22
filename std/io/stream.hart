@@ -1,7 +1,7 @@
 mod io
 
 def copyStream(src_fd, dst_fd, chunk_size) {
-      mut buf := alloc(chunk_size)
+      mut buf := memalloc(chunk_size)
       defer dealloc(buf)
       mut n: s64 := 0
       repeat until n <= 0 {
@@ -16,7 +16,7 @@ def copyStream(src_fd, dst_fd, chunk_size) {
 }
 
 def streamFd(fd, chunk_size, callback) {
-      mut buf := alloc(chunk_size)
+      mut buf := memalloc(chunk_size)
       defer dealloc(buf)
       mut n: s64 := 0
       repeat until n <= 0 {

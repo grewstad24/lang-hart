@@ -2289,6 +2289,15 @@ impl<'ctx> Codegen<'ctx> {
             Expression::Index { expression, index } => self.codegen_index(expression, index),
             Expression::Member { expression, field } => self.codegen_member(expression, field),
             Expression::AddressOf { expression, is_mut } => {
+                if *is_mut {
+                    if let Expression::Context = unspanned_expression(expression) {
+                        self.ensure_context_is_local()?;
+                    } else if let Expression::Member { expression: base, .. } = unspanned_expression(expression) {
+                        if let Expression::Context = unspanned_expression(base) {
+                            self.ensure_context_is_local()?;
+                        }
+                    }
+                }
                 let binding = self.codegen_address_of(expression)?;
                 match binding {
                     Binding::Pointer {
@@ -2320,6 +2329,12 @@ impl<'ctx> Codegen<'ctx> {
                     ty: Type::USize,
                     value: self.ptr_sized_int_type().const_int(size, false),
                 })
+            }
+            Expression::AsTypeOf { expression, target } => {
+                let binding = self.codegen_expression(expression)?;
+                let target_binding = self.codegen_expression(target)?;
+                let target_ty = self.binding_type(&target_binding)?;
+                self.codegen_cast(binding, target_ty)
             }
             Expression::Slice(expr) => {
                 let binding = self.codegen_expression(expr)?;

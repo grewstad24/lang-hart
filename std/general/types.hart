@@ -46,4 +46,7 @@ type LogLevel := :info | :warn | :error | :never
 type Context := {
       logger: func(LogLevel, LogLevel, u64, String, Generic) -> :none
       log_level: LogLevel
+      memalloc: func(usize) -> *mut opaque
+      resizeAlloc: func(*opaque, usize) -> *mut opaque
+      dealloc: func(*opaque) -> :none
 }

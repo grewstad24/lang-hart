@@ -1,4 +1,7 @@
-export { stdLogger, logInfo, logWarn, logError, isLogged } to .log
+export {
+      { logInfo, logWarn, logError } to .log
+      { stdLogger } to .std_impl.log
+}
 import { .print, .print.pretty }
 
 func isLogged(target: LogLevel, min_level: LogLevel) -> Bool {
@@ -50,3 +53,6 @@ def logWarn(item) {
 def logError(item) {
       @ctx.logger(:error, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }
+
+def log(level, line, file, item)
+{ @ctx.logger(level, @ctx.log_level, line, file, item) }

@@ -313,6 +313,7 @@ module.exports = grammar({
       $.continue_expression,
       $.spread_expression,
       $.sizeof_expression,
+      $.astypeof_expression,
       $.context_expression,
       $.caller_line_expression,
       $.caller_file_expression,
@@ -365,7 +366,7 @@ module.exports = grammar({
     field_expression: $ => prec(PREC.POSTFIX, seq(
       field('expression', $._expression),
       '.',
-      field('field', choice($.identifier, $.integer_literal))
+      field('field', choice($.identifier, $.integer_literal, '@sizeOf', '@asTypeOf'))
     )),
 
     dereference_expression: $ => prec(PREC.POSTFIX, seq(
@@ -394,7 +395,7 @@ module.exports = grammar({
     method_call_expression: $ => prec(PREC.CALL + 1, seq(
       field('receiver', $._expression),
       '.',
-      field('method', alias($.identifier, $.function_identifier)),
+      field('method', alias(choice($.identifier, '@sizeOf', '@asTypeOf'), $.function_identifier)),
       field('arguments', $.argument_list)
     )),
 
@@ -490,6 +491,15 @@ module.exports = grammar({
     sizeof_expression: $ => prec(PREC.PRIMARY, seq(
       '@sizeOf',
       field('value', $._expression)
+    )),
+
+    astypeof_expression: $ => prec(PREC.PRIMARY, seq(
+      '@asTypeOf',
+      '(',
+      field('expression', $._expression),
+      ',',
+      field('target', $._expression),
+      ')'
     )),
 
     context_expression: $ => prec(PREC.PRIMARY, '@ctx'),

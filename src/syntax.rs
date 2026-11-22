@@ -376,6 +376,7 @@ impl fmt::Display for Expression {
                 }
             }
             Expression::SizeOf(expr) => write!(f, "@sizeOf {}", expr),
+            Expression::AsTypeOf { expression, target } => write!(f, "@asTypeOf({}, {})", expression, target),
             Expression::Slice(expr) => write!(f, "({} as Slice)", expr),
             Expression::Context => write!(f, "@ctx"),
             Expression::CallerLineNumber => write!(f, "@caller_line_number"),
@@ -536,6 +537,10 @@ pub enum Expression {
         binder: Option<String>,
         body: Box<Expression>,
     },
+    AsTypeOf {
+        expression: Box<Expression>,
+        target: Box<Expression>,
+    },
     SizeOf(Box<Expression>),
     Slice(Box<Expression>),
     Context,
@@ -543,6 +548,18 @@ pub enum Expression {
     CallerFileName,
     ThisLineNumber(u64),
     ThisFileName(String),
+}
+
+pub fn is_intrinsic_function(name: &str) -> bool {
+    matches!(
+        name,
+        "@asTypeOf"
+            | "@sizeOf"
+            | "@caller_line_number"
+            | "@caller_file_name"
+            | "@this_line_number"
+            | "@this_file_name"
+    )
 }
 
 pub fn unspanned_expression(mut expression: &Expression) -> &Expression {
@@ -2450,6 +2467,13 @@ impl Parser {
                             expression: Box::new(expression),
                             is_mut,
                         };
+                    } else if self.is(Token::At) {
+                        self.advance();
+                        let tag = self.expect_identifier()?;
+                        expression = Expression::Member {
+                            expression: Box::new(expression),
+                            field: format!("@{}", tag),
+                        };
                     } else if let Token::Integer(value) = self.peek() {
                         let field = value.to_string();
                         self.advance();
@@ -2633,6 +2657,16 @@ impl Parser {
                 if tag == "sizeOf" {
                     let operand = self.parse_unary()?;
                     return Ok(Expression::SizeOf(Box::new(operand)));
+                } else if tag == "asTypeOf" {
+                    self.expect(Token::LParen)?;
+                    let expr = self.parse_expression()?;
+                    self.expect(Token::Comma)?;
+                    let target = self.parse_expression()?;
+                    self.expect(Token::RParen)?;
+                    return Ok(Expression::AsTypeOf {
+                        expression: Box::new(expr),
+                        target: Box::new(target),
+                    });
                 } else if tag == "ctx" {
                     return Ok(Expression::Context);
                 } else if tag == "caller_line_number" {
@@ -2645,7 +2679,7 @@ impl Parser {
                     return Ok(Expression::ThisFileName(span.file));
                 }
                 return Err(format!(
-                    "unknown tag '@{}', expected '@sizeOf', '@ctx', '@caller_line_number', '@caller_file_name', '@this_line_number', or '@this_file_name'",
+                    "unknown tag '@{}', expected '@asTypeOf', '@sizeOf', '@ctx', '@caller_line_number', '@caller_file_name', '@this_line_number', or '@this_file_name'",
                     tag
                 ));
             }

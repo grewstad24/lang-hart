@@ -1,47 +1,26 @@
-import { .print, .print.pretty, .log }
-
-def loadConfig(path) {
-      logInfo("loading configuration file")
-      logWarn("cache directory not configured, falling back to /tmp/cache")
-      return :true
-}
-
-def processItem(id, status) {
-      match status {
-            :ok => {
-                  logInfo("task completed successfully")
-            }
-            :stale => {
-                  logWarn("task is stale, queuing refresh")
-            }
-            :corrupt => {
-                  logError("task failed checksum validation")
-            }
-      }
-}
-
-def noisyWorker() {
-      # Suppress verbose info logs for this worker subtree
-      @ctx.log_level := :warn
-      logInfo("this verbose message will be filtered out")
-      logWarn("high memory threshold exceeded in worker pool")
-}
+import { .log, .heap }
 
 func main(args: Slice<String>) -> :none {
       @ctx := default_context
-      @ctx.log_level := :never
+      @ctx.log_level := :info
 
-      logInfo("initializing background daemon")
+      logInfo("hart testing suite initialized")
 
-      loadConfig("/etc/hart/daemon.conf")
+      mut buf := memalloc(32)
+      buf := resizeAlloc(buf, 64)
+      dealloc(buf)
 
-      logInfo("processing incoming queue...")
-      processItem(101, :ok)
-      processItem(102, :stale)
-      processItem(103, :ok)
-      processItem(104, :corrupt)
+      val := heapNew(42)
+      raw := memalloc(8)
+      typed := raw.@asTypeOf(val)
+      typed.* := 100
 
-      noisyWorker()
+      logInfo(val.*)
+      logInfo(typed.*)
+      logInfo(@sizeOf(val))
 
-      logInfo("daemon shutdown gracefully")
+      dealloc(val)
+      dealloc(raw)
+
+      logWarn("heap validation passed")
 }

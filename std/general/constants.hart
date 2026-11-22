@@ -1,7 +1,10 @@
-import { .log }
+import { .std_impl.log, .std_impl.heap }
 export { default_context } to .
 
 const default_context := {
       logger: stdLogger
-      log_level: :info
+      log_level: :warn
+      memalloc: stdMemalloc
+      resizeAlloc: stdResizeAlloc
+      dealloc: stdDealloc
 }

@@ -74,7 +74,7 @@ def readAll(file) {
             else => :none
       }
       mut u_size := size as usize
-      mut buf := alloc(u_size + 1)
+      mut buf := memalloc(u_size + 1)
       mut total_read: usize := 0
       mut curr_ptr := buf as *u8
       repeat while total_read < u_size {

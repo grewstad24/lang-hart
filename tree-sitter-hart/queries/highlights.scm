@@ -79,6 +79,7 @@
 
 ; Builtins / Intrinsics
 "@sizeOf" @function.macro
+"@asTypeOf" @function.macro
 (context_expression) @variable.builtin
 (caller_line_expression) @variable.builtin
 (caller_file_expression) @variable.builtin

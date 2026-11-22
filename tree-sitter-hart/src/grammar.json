@@ -1817,6 +1817,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "astypeof_expression"
+        },
+        {
+          "type": "SYMBOL",
           "name": "context_expression"
         },
         {
@@ -2226,6 +2230,14 @@
                 {
                   "type": "SYMBOL",
                   "name": "integer_literal"
+                },
+                {
+                  "type": "STRING",
+                  "value": "@sizeOf"
+                },
+                {
+                  "type": "STRING",
+                  "value": "@asTypeOf"
                 }
               ]
             }
@@ -2406,8 +2418,21 @@
             "content": {
               "type": "ALIAS",
               "content": {
-                "type": "SYMBOL",
-                "name": "identifier"
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  },
+                  {
+                    "type": "STRING",
+                    "value": "@sizeOf"
+                  },
+                  {
+                    "type": "STRING",
+                    "value": "@asTypeOf"
+                  }
+                ]
               },
               "named": true,
               "value": "function_identifier"
@@ -3063,6 +3088,47 @@
               "type": "SYMBOL",
               "name": "_expression"
             }
+          }
+        ]
+      }
+    },
+    "astypeof_expression": {
+      "type": "PREC",
+      "value": 10,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "@asTypeOf"
+          },
+          {
+            "type": "STRING",
+            "value": "("
+          },
+          {
+            "type": "FIELD",
+            "name": "expression",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": ","
+          },
+          {
+            "type": "FIELD",
+            "name": "target",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": ")"
           }
         ]
       }

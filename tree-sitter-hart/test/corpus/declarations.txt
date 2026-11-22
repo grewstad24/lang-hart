@@ -2,7 +2,7 @@
 Functions and modules
 ==================
 
-import { .print, .alloc }
+import { .print, .heap }
 
 decl mod io {
     export { read, write } to .io.raw

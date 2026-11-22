@@ -1,6 +1,0 @@
-mod alloc
-
-type Vector <T> := {
-      arr: Slice <T>,
-      capacity: usize
-}
