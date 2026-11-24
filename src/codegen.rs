@@ -707,7 +707,10 @@ impl<'ctx> Codegen<'ctx> {
                 if def.is_specialized_def {
                     self.specialized_def_names.insert(def.name.clone());
                 }
-                let fn_type = self.signature_to_function_type_with_def(Some(sig), def.is_specialized_def)?;
+                let fn_type = match self.signature_to_function_type_with_def(Some(sig), def.is_specialized_def) {
+                    Ok(ty) => ty,
+                    Err(e) => return Err(format!("in definition '{}': {}", def.name, e)),
+                };
                 let f = self.module.add_function(&def.name, fn_type, None);
                 if *sig.return_type == Type::Never {
                     let attr_id =
@@ -832,7 +835,12 @@ impl<'ctx> Codegen<'ctx> {
                 ));
             }
             for p in &sig.parameters {
-                let llvm_ty = self.llvm_type(&p.ty)?;
+                let llvm_ty = match self.llvm_type(&p.ty) {
+                    Ok(ty) => ty,
+                    Err(e) => {
+                        return Err(format!("parameter '{}' (type {:?}): {}", p.name, p.ty, e));
+                    }
+                };
                 param_types.push(BasicMetadataTypeEnum::from(llvm_ty));
             }
 
@@ -2564,12 +2572,11 @@ impl<'ctx> Codegen<'ctx> {
                     self.builder.position_at_end(then_bb);
                     let body_binding = self.codegen_expression(&arm.body)?;
 
-                    if result_type.is_none() {
-                        result_type = Some(self.binding_type(&body_binding)?);
-                    }
-
                     let end_of_arm = self.builder.get_insert_block().unwrap();
                     if end_of_arm.get_terminator().is_none() {
+                        if result_type.is_none() {
+                            result_type = Some(self.binding_type(&body_binding)?);
+                        }
                         if let Ok(val) = self.binding_basic_value(&body_binding) {
                             incoming.push((val, end_of_arm));
                         }
@@ -2583,12 +2590,11 @@ impl<'ctx> Codegen<'ctx> {
                 IfCondition::Else => {
                     let body_binding = self.codegen_expression(&arm.body)?;
 
-                    if result_type.is_none() {
-                        result_type = Some(self.binding_type(&body_binding)?);
-                    }
-
                     let end_of_arm = self.builder.get_insert_block().unwrap();
                     if end_of_arm.get_terminator().is_none() {
+                        if result_type.is_none() {
+                            result_type = Some(self.binding_type(&body_binding)?);
+                        }
                         if let Ok(val) = self.binding_basic_value(&body_binding) {
                             incoming.push((val, end_of_arm));
                         }
@@ -2876,12 +2882,11 @@ impl<'ctx> Codegen<'ctx> {
             let arm_binding = self.codegen_expression(&arm.body)?;
             self.local_scopes.pop();
 
-            if result_type.is_none() {
-                result_type = Some(self.binding_type(&arm_binding)?);
-            }
-
             let end_bb = self.builder.get_insert_block().unwrap();
             if end_bb.get_terminator().is_none() {
+                if result_type.is_none() {
+                    result_type = Some(self.binding_type(&arm_binding)?);
+                }
                 if let Ok(val) = self.binding_basic_value(&arm_binding) {
                     incoming.push((val, end_bb));
                 }

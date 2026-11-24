@@ -1,25 +1,21 @@
 export {
-      { logInfo, logWarn, logError } to .log
+      { stdLogger, isLogged } to .std.impl
       { stdLogger } to .std_impl.log
+      { log, logWarn, logError, logWithLineAndFile } to .std
+      { log, logWarn, logError, logWithLineAndFile } to .log
 }
 import { .print, .print.pretty }
 
-func isLogged(target: LogLevel, min_level: LogLevel) -> Bool {
-      return match min_level {
-            :info => :true
-            :warn => match target {
-                  :info => :false
-                  else => :true
-            }
-            :error => match target {
-                  :error => :true
-                  else => :false
-            }
+func isLogged(target: :info | :warn | :error | :never, min_level: LogLevel) -> Bool {
+      return match target {
+            :info => min_level.info
+            :warn => min_level.warn
+            :error => min_level.error
             :never => :false
       }
 }
 
-func stdLogger(level: LogLevel, min_level: LogLevel, line: u64, file: String, item: Generic) -> :none {
+func stdLogger(level: :info | :warn | :error | :never, min_level: LogLevel, line: u64, file: String, item: Generic) -> :none {
       @ctx := default_context
       if {
             isLogged(level, min_level) = :false => return :none
@@ -42,7 +38,7 @@ func stdLogger(level: LogLevel, min_level: LogLevel, line: u64, file: String, it
       }
 }
 
-def logInfo(item) {
+def log(item) {
       @ctx.logger(:info, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }
 
@@ -54,5 +50,6 @@ def logError(item) {
       @ctx.logger(:error, @ctx.log_level, @caller_line_number, @caller_file_name, item)
 }
 
-def log(level, line, file, item)
-{ @ctx.logger(level, @ctx.log_level, line, file, item) }
+def logWithLineAndFile(level, line, file, item) {
+      @ctx.logger(level, @ctx.log_level, line, file, item)
+}

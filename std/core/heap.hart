@@ -1,14 +1,10 @@
-decl mod heap {
-      export {
-            { stdMemalloc, stdResizeAlloc, stdDealloc } to .std_impl.heap
-            { memalloc, dealloc, resizeAlloc, heapNew } to .heap
-      }
+export {
+      { stdMemalloc, stdResizeAlloc, stdDealloc } to .std.impl
+      { stdMemalloc, stdResizeAlloc, stdDealloc } to .std_impl.heap
+      { memalloc, dealloc, resizeAlloc, heapNew } to .std
+      { memalloc, dealloc, resizeAlloc, heapNew } to .heap
 }
-
-extern func malloc(size: usize) -> *mut opaque
-extern func free(ptr: *opaque) -> :none
-extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
-
+import { .std.libc }
 
 func stdMemalloc(size: usize) -> *mut opaque {
       return malloc(size)
@@ -21,7 +17,6 @@ func stdResizeAlloc(ptr: *opaque, new_size: usize) -> *mut opaque {
 func stdDealloc(ptr: *opaque) -> :none {
       free(ptr)
 }
-
 
 def memalloc(size) {
       return @ctx.memalloc(size as usize)

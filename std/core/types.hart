@@ -1,5 +1,9 @@
-export { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool, UnvoidGeneric, Voidance, Error, ErrorAndReason, LogLevel, Context } to .
-
+export {
+      { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool,
+        UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason, LogLevel, Context } to .,
+      { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool,
+        UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason, LogLevel, Context } to .std
+}
 
 type String := Slice <u8>
 
@@ -14,6 +18,8 @@ type Record := *{
       key: *String
       val: *Generic
 }
+
+type ErrorWithReason <T> := (:error, T)
 
 type ErrorAndReason := (:error, Atom | Record)
 
@@ -41,10 +47,14 @@ type UnvoidGeneric :=
 
 type Generic := UnvoidGeneric | Voidance
 
-type LogLevel := :info | :warn | :error | :never
+type LogLevel := {
+      info: Bool
+      warn: Bool
+      error: Bool
+}
 
 type Context := {
-      logger: func(LogLevel, LogLevel, u64, String, Generic) -> :none
+      logger: func(:info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
       log_level: LogLevel
       memalloc: func(usize) -> *mut opaque
       resizeAlloc: func(*opaque, usize) -> *mut opaque

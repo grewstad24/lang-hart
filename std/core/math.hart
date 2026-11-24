@@ -1,4 +1,7 @@
-export { add, sub, mul, div } to .math
+export {
+      { add, sub, mul, div } to .std,
+      { add, sub, mul, div } to .math
+}
 
 def add(a, b) { a + b }
 

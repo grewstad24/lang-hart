@@ -1,0 +1,10 @@
+export {
+      malloc, free, realloc,
+      abort
+} to .std.libc
+
+extern func malloc(size: usize) -> *mut opaque
+extern func free(ptr: *opaque) -> :none
+extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
+extern func abort() -> never
+

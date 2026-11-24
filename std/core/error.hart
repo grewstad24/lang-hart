@@ -1,0 +1,19 @@
+export {
+      { try, raise } to .std
+      { try, raise } to .error
+      { try, raise } to .
+}
+import { .std.libc }
+
+def raise(err) {
+      logError(err)
+      abort()
+}
+
+def try(val) {
+      match val using v {
+            :error => raise("error")
+            ErrorWithReason <Generic> => raise(v.1)
+            else => v
+      }
+}

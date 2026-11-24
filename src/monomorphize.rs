@@ -1592,14 +1592,38 @@ fn infer_expr_type_internal(
                     Type::Tuple(elements) => {
                         field.parse::<usize>().ok().and_then(|idx| elements.get(idx).cloned())
                     }
-                    Type::GenericInstance { name, type_arguments } if name == "Slice" => {
-                        if field == "len" {
-                            Some(Type::USize)
-                        } else if field == "ptr" {
-                            type_arguments.first().map(|elem| Type::Pointer {
-                                element: Box::new(elem.clone()),
-                                is_mut: false,
-                            })
+                    Type::GenericInstance { name, type_arguments } => {
+                        if let Some(alias) = scope.lookup_type_alias(&name) {
+                            if alias.is_meta && alias.type_parameters.len() == type_arguments.len() {
+                                let mut substitutions = HashMap::new();
+                                for (param, arg) in alias.type_parameters.iter().zip(type_arguments.iter()) {
+                                    substitutions.insert(param.clone(), arg.clone());
+                                }
+                                let target_concrete = substitute_type(&alias.target, &substitutions);
+                                let resolved_target = resolve_type_alias_deep(&target_concrete, scope);
+                                match resolved_target {
+                                    Type::Struct(fields) => {
+                                        fields.iter().find(|f| f.name == *field).map(|f| f.ty.clone())
+                                    }
+                                    Type::Tuple(elements) => {
+                                        field.parse::<usize>().ok().and_then(|idx| elements.get(idx).cloned())
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        } else if name == "Slice" {
+                            if field == "len" {
+                                Some(Type::USize)
+                            } else if field == "ptr" {
+                                type_arguments.first().map(|elem| Type::Pointer {
+                                    element: Box::new(elem.clone()),
+                                    is_mut: false,
+                                })
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }

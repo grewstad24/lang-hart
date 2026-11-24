@@ -63,13 +63,27 @@ pub fn context_type() -> Type {
         Type::Symbol("never".to_string()),
     ];
     variants.sort_by(|a, b| Checker::canonical_type_key(a).cmp(&Checker::canonical_type_key(b)));
+    let log_level_struct = Type::Struct(vec![
+        StructFieldType {
+            name: "info".to_string(),
+            ty: Type::Alias("Bool".to_string()),
+        },
+        StructFieldType {
+            name: "warn".to_string(),
+            ty: Type::Alias("Bool".to_string()),
+        },
+        StructFieldType {
+            name: "error".to_string(),
+            ty: Type::Alias("Bool".to_string()),
+        },
+    ]);
     Type::Struct(vec![
         StructFieldType {
             name: "logger".to_string(),
             ty: Type::Function {
                 parameters: vec![
                     Type::Union(variants.clone()),
-                    Type::Union(variants.clone()),
+                    log_level_struct.clone(),
                     Type::U64,
                     Type::Alias("String".to_string()),
                     Type::Alias("Generic".to_string()),
@@ -80,7 +94,7 @@ pub fn context_type() -> Type {
         },
         StructFieldType {
             name: "log_level".to_string(),
-            ty: Type::Union(variants),
+            ty: log_level_struct,
         },
         StructFieldType {
             name: "memalloc".to_string(),
@@ -673,6 +687,30 @@ impl<'a> Checker<'a> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    pub fn type_may_contain_error(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve_type(ty)?;
+        match &resolved {
+            Type::Symbol(s) if s == "error" => Ok(true),
+            Type::Tuple(elems) if !elems.is_empty() => {
+                let first = self.resolve_type(&elems[0])?;
+                if matches!(&first, Type::Symbol(s) if s == "error") {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Type::Union(variants) => {
+                for v in variants {
+                    if self.type_may_contain_error(v)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
     }
 
     pub fn canonical_type_key(ty: &Type) -> String {
@@ -1913,6 +1951,12 @@ impl<'a> Checker<'a> {
 
             Expression::Discard(expr) => {
                 let ty = self.type_of_expression(expr)?;
+                if self.type_may_contain_error(&ty)? {
+                    return Err(format!(
+                        "{}: error: expression of type '{}' may be an error and cannot be discarded",
+                        self.current_file_path, ty
+                    ));
+                }
                 if ty == Type::Never {
                     Ok(Type::Never)
                 } else {

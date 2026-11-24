@@ -1,10 +1,10 @@
-import { .log, .heap }
+import { .std }
 
 func main(args: Slice<String>) -> :none {
       @ctx := default_context
-      @ctx.log_level := :info
+      @ctx.log_level.info := :true
 
-      logInfo("hart testing suite initialized")
+      log("hart testing suite initialized")
 
       mut buf := memalloc(32)
       buf := resizeAlloc(buf, 64)
@@ -15,9 +15,9 @@ func main(args: Slice<String>) -> :none {
       typed := raw.@asTypeOf(val)
       typed.* := 100
 
-      logInfo(val.*)
-      logInfo(typed.*)
-      logInfo(@sizeOf(val))
+      log(val.*)
+      log(typed.*)
+      log(@sizeOf(val))
 
       dealloc(val)
       dealloc(raw)
