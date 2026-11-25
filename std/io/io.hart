@@ -8,6 +8,6 @@ decl mod io {
             isOk, isErr, closeFile, writeData, readAll,
             open, close, read, write, lseek,
             default_buffer_size
-      } to .io
-      import { .heap }
+      } to io
+      import { std }
 }

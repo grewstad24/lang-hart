@@ -82,6 +82,10 @@ pub fn context_type() -> Type {
             name: "logger".to_string(),
             ty: Type::Function {
                 parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
                     Type::Union(variants.clone()),
                     log_level_struct.clone(),
                     Type::U64,
@@ -99,11 +103,20 @@ pub fn context_type() -> Type {
         StructFieldType {
             name: "memalloc".to_string(),
             ty: Type::Function {
-                parameters: vec![Type::USize],
-                return_type: Box::new(Type::Pointer {
-                    element: Box::new(Type::Opaque),
-                    is_mut: true,
-                }),
+                parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
+                    Type::USize,
+                ],
+                return_type: Box::new(Type::Union(vec![
+                    Type::Symbol("error".to_string()),
+                    Type::Pointer {
+                        element: Box::new(Type::Opaque),
+                        is_mut: true,
+                    },
+                ])),
                 is_variadic: false,
             },
         },
@@ -112,26 +125,70 @@ pub fn context_type() -> Type {
             ty: Type::Function {
                 parameters: vec![
                     Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
+                    Type::Pointer {
                         element: Box::new(Type::Opaque),
                         is_mut: false,
                     },
                     Type::USize,
                 ],
-                return_type: Box::new(Type::Pointer {
-                    element: Box::new(Type::Opaque),
-                    is_mut: true,
-                }),
+                return_type: Box::new(Type::Union(vec![
+                    Type::Symbol("error".to_string()),
+                    Type::Pointer {
+                        element: Box::new(Type::Opaque),
+                        is_mut: true,
+                    },
+                ])),
                 is_variadic: false,
             },
         },
         StructFieldType {
             name: "dealloc".to_string(),
             ty: Type::Function {
-                parameters: vec![Type::Pointer {
-                    element: Box::new(Type::Opaque),
-                    is_mut: false,
-                }],
+                parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
+                    Type::Pointer {
+                        element: Box::new(Type::Opaque),
+                        is_mut: false,
+                    },
+                ],
                 return_type: Box::new(Type::Symbol("none".to_string())),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "printer".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
+                    Type::Alias("Generic".to_string()),
+                ],
+                return_type: Box::new(Type::Union(vec![
+                    Type::Symbol("error".to_string()),
+                    Type::Symbol("none".to_string()),
+                ])),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "panic".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    Type::Pointer {
+                        element: Box::new(Type::Alias("Context".to_string())),
+                        is_mut: false,
+                    },
+                    Type::Alias("Generic".to_string()),
+                ],
+                return_type: Box::new(Type::Never),
                 is_variadic: false,
             },
         },
@@ -452,10 +509,7 @@ impl ModuleResolver {
                 }
             }
 
-            let mut imports = module.imports.clone();
-            if !imports.contains(&NamespacePath::root()) {
-                imports.insert(0, NamespacePath::root());
-            }
+            let imports = module.imports.clone();
 
             for ns in &imports {
                 if let Some(exported) = self.namespace_registry.get(ns) {

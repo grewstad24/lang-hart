@@ -1,8 +1,4 @@
-import { .std.impl, .std_impl.log, .std_impl.heap }
-export {
-      { default_context } to .,
-      { default_context } to .std
-}
+mod core
 
 const default_context := {
       logger: stdLogger
@@ -14,4 +10,6 @@ const default_context := {
       memalloc: stdMemalloc
       resizeAlloc: stdResizeAlloc
       dealloc: stdDealloc
+      printer: stdPrinter
+      panic: stdPanic
 }

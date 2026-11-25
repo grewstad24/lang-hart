@@ -1,9 +1,4 @@
-export {
-      { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool,
-        UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason, LogLevel, Context } to .,
-      { String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Atom, Slice, Bool,
-        UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason, LogLevel, Context } to .std
-}
+mod core
 
 type String := Slice <u8>
 
@@ -54,9 +49,11 @@ type LogLevel := {
 }
 
 type Context := {
-      logger: func(:info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
+      logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
       log_level: LogLevel
-      memalloc: func(usize) -> *mut opaque
-      resizeAlloc: func(*opaque, usize) -> *mut opaque
-      dealloc: func(*opaque) -> :none
+      memalloc: func(*Context, usize) -> *mut opaque | :error
+      resizeAlloc: func(*Context, *opaque, usize) -> *mut opaque | :error
+      dealloc: func(*Context, *opaque) -> :none
+      printer: func(*Context, Generic) -> :none | :error
+      panic: func(*Context, Generic) -> never
 }

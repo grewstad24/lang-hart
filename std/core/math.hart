@@ -1,7 +1,4 @@
-export {
-      { add, sub, mul, div } to .std,
-      { add, sub, mul, div } to .math
-}
+mod core
 
 def add(a, b) { a + b }
 

@@ -185,10 +185,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
                 entry.1.push(parsed_file.source_file);
             }
             None => {
-                let mut imports = parsed_file.imports;
-                if !imports.contains(&NamespacePath::root()) {
-                    imports.insert(0, NamespacePath::root());
-                }
+                let imports = parsed_file.imports;
                 unnamed_modules.push(LogicalModule {
                     name: None,
                     dir_path: path.parent().unwrap_or(Path::new("")).display().to_string(),
@@ -208,10 +205,7 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
     for name in named_keys {
         let (decl, files) = named_modules.remove(&name).unwrap();
         match decl {
-            Some((exports, mut imports, decl_path)) => {
-                if !imports.contains(&NamespacePath::root()) {
-                    imports.insert(0, NamespacePath::root());
-                }
+            Some((exports, imports, decl_path)) => {
                 result.push(LogicalModule {
                     name: Some(name),
                     dir_path: decl_path

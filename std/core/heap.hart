@@ -1,38 +1,40 @@
-export {
-      { stdMemalloc, stdResizeAlloc, stdDealloc } to .std.impl
-      { stdMemalloc, stdResizeAlloc, stdDealloc } to .std_impl.heap
-      { memalloc, dealloc, resizeAlloc, heapNew } to .std
-      { memalloc, dealloc, resizeAlloc, heapNew } to .heap
-}
-import { .std.libc }
+mod core
 
-func stdMemalloc(size: usize) -> *mut opaque {
-      return malloc(size)
+func stdMemalloc(ctx: *Context, size: usize) -> *mut opaque | :error {
+      raw := malloc(size)
+      if {
+            raw as usize = 0 as usize => return :error
+            else => return raw
+      }
 }
 
-func stdResizeAlloc(ptr: *opaque, new_size: usize) -> *mut opaque {
-      return realloc(ptr, new_size)
+func stdResizeAlloc(ctx: *Context, ptr: *opaque, new_size: usize) -> *mut opaque | :error {
+      raw := realloc(ptr, new_size)
+      if {
+            raw as usize = 0 as usize => return :error
+            else => return raw
+      }
 }
 
-func stdDealloc(ptr: *opaque) -> :none {
+func stdDealloc(ctx: *Context, ptr: *opaque) -> :none {
       free(ptr)
 }
 
 def memalloc(size) {
-      return @ctx.memalloc(size as usize)
+      return @ctx.memalloc(@ctx.&mut, size as usize)
 }
 
 def dealloc(ptr) {
-      @ctx.dealloc(ptr)
+      @ctx.dealloc(@ctx.&mut, ptr)
 }
 
 def resizeAlloc(ptr, new_size) {
-      return @ctx.resizeAlloc(ptr, new_size as usize)
+      return @ctx.resizeAlloc(@ctx.&mut, ptr, new_size as usize)
 }
 
 def heapNew(x) {
       mut val := x
-      ptr := memalloc(@sizeOf val)
+      ptr := assertOk(memalloc(@sizeOf val))
       typed_ptr := @asTypeOf(ptr, val.&mut)
       typed_ptr.* := val
       return typed_ptr

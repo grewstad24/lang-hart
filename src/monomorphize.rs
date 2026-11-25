@@ -1243,11 +1243,40 @@ fn collect_returns(
                 }
             }
 
+            let unhandled_variants: Vec<Type> = if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
+                let resolved = resolve_type_alias_deep(&target_ty, scope);
+                if let Type::Union(variants) = resolved {
+                    variants
+                        .into_iter()
+                        .filter(|v| {
+                            !arms.iter().any(|a| {
+                                if let Some(vt) = &a.variant_type {
+                                    type_matches_pattern(v, vt, scope)
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
             for arm in arms {
                 let mut arm_locals = local_types.clone();
                 if !binding_name.is_empty() {
                     if let Some(vt) = &arm.variant_type {
                         arm_locals.insert(binding_name.clone(), vt.clone());
+                    } else if !unhandled_variants.is_empty() {
+                        let narrowed = if unhandled_variants.len() == 1 {
+                            unhandled_variants[0].clone()
+                        } else {
+                            unify_types_to_sum_type(&unhandled_variants, scope)
+                        };
+                        arm_locals.insert(binding_name.clone(), narrowed);
                     } else if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
                         arm_locals.insert(binding_name.clone(), target_ty);
                     }
@@ -1765,12 +1794,41 @@ fn infer_expr_type_internal(
                 }
             }
 
+            let unhandled_variants: Vec<Type> = if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
+                let resolved = resolve_type_alias_deep(&target_ty, scope);
+                if let Type::Union(variants) = resolved {
+                    variants
+                        .into_iter()
+                        .filter(|v| {
+                            !arms.iter().any(|a| {
+                                if let Some(vt) = &a.variant_type {
+                                    type_matches_pattern(v, vt, scope)
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
             let mut arm_types = Vec::new();
             for arm in arms {
                 let mut arm_locals = local_types.clone();
                 if !binding_name.is_empty() {
                     if let Some(vt) = &arm.variant_type {
                         arm_locals.insert(binding_name.clone(), vt.clone());
+                    } else if !unhandled_variants.is_empty() {
+                        let narrowed = if unhandled_variants.len() == 1 {
+                            unhandled_variants[0].clone()
+                        } else {
+                            unify_types_to_sum_type(&unhandled_variants, scope)
+                        };
+                        arm_locals.insert(binding_name.clone(), narrowed);
                     } else if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
                         arm_locals.insert(binding_name.clone(), target_ty);
                     }
@@ -2131,7 +2189,7 @@ fn scan_and_monomorphize_def(
                             arg_types.push(param.ty.clone());
                         } else {
                             let ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
-                            arg_types.push(ty);
+                            arg_types.push(ty.clone());
                         }
                     }
 
@@ -2285,10 +2343,39 @@ fn scan_and_monomorphize_def(
                 }
             }
 
+            let unhandled_variants: Vec<Type> = if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
+                let resolved = resolve_type_alias_deep(&target_ty, scope);
+                if let Type::Union(variants) = resolved {
+                    variants
+                        .into_iter()
+                        .filter(|v| {
+                            !arms.iter().any(|a| {
+                                if let Some(vt) = &a.variant_type {
+                                    type_matches_pattern(v, vt, scope)
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
             for arm in arms {
                 let orig_locals = local_types.clone();
                 if let Some(vt) = &arm.variant_type {
                     local_types.insert(binding_name.clone(), vt.clone());
+                } else if !unhandled_variants.is_empty() {
+                    let narrowed = if unhandled_variants.len() == 1 {
+                        unhandled_variants[0].clone()
+                    } else {
+                        unify_types_to_sum_type(&unhandled_variants, scope)
+                    };
+                    local_types.insert(binding_name.clone(), narrowed);
                 } else if !binding_name.is_empty() {
                     if let Some(target_ty) = infer_expr_type_with_generated(target, local_types, scope, generated) {
                         local_types.insert(binding_name.clone(), target_ty);

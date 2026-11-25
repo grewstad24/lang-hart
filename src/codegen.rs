@@ -3811,9 +3811,9 @@ impl<'ctx> Codegen<'ctx> {
                     self.builder
                         .build_store(tag_ptr, target_tag)
                         .map_err(|e| e.to_string())?;
-                    self.builder
-                        .build_store(payload_ptr, self.binding_basic_value(&converted)?)
-                        .map_err(|e| e.to_string())?;
+                    if self.llvm_type_size(&target_vars[target_index])? > 0 {
+                        self.builder.build_store(payload_ptr, self.binding_basic_value(&converted)?).map_err(|e| e.to_string())?;
+                    }
                     self.builder
                         .build_unconditional_branch(merge_block)
                         .map_err(|e| e.to_string())?;

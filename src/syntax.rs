@@ -1674,22 +1674,30 @@ impl Parser {
 
     pub fn parse_namespace_path(&mut self) -> Result<NamespacePath, String> {
         self.skip_newlines();
-        if !self.is(Token::Dot) {
-            return Err(format!(
-                "expected namespace starting with '.', found {}",
-                self.peek()
-            ));
-        }
-        self.advance(); // consume '.'
         let mut segments = Vec::new();
-        if self.is_identifier_like() {
+        if self.is(Token::Dot) {
+            self.advance(); // consume leading '.' for backward compatibility
+            if self.is_identifier_like() {
+                segments.push(self.expect_field_name()?);
+                while self.is(Token::Dot) && self.is_identifier_like_at(self.cursor + 1) {
+                    self.advance(); // consume '.'
+                    segments.push(self.expect_field_name()?);
+                }
+            }
+            Ok(NamespacePath::from_segments(segments))
+        } else if self.is_identifier_like() {
             segments.push(self.expect_field_name()?);
             while self.is(Token::Dot) && self.is_identifier_like_at(self.cursor + 1) {
                 self.advance(); // consume '.'
                 segments.push(self.expect_field_name()?);
             }
+            Ok(NamespacePath::from_segments(segments))
+        } else {
+            Err(format!(
+                "expected namespace path, found {}",
+                self.peek()
+            ))
         }
-        Ok(NamespacePath::from_segments(segments))
     }
 
     pub fn parse_export_directive(&mut self) -> Result<Vec<ExportRule>, String> {
@@ -2118,15 +2126,8 @@ impl Parser {
             ..
         }) = module_decl
         {
-            if !decl_imports.contains(&NamespacePath::root()) {
-                decl_imports.insert(0, NamespacePath::root());
-            }
             exports = decl_exports.clone();
             imports = decl_imports.clone();
-        } else {
-            if !imports.contains(&NamespacePath::root()) {
-                imports.insert(0, NamespacePath::root());
-            }
         }
 
         let source_file = SourceFile {
