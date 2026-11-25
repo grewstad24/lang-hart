@@ -203,7 +203,7 @@ def internalPprint(item, indent_level, err) {
             Atom => return pprintAtom(z, err)
             Slice<Generic> => return pprintArray(z, indent_level, err)
             Record => return pprintRecord(z, indent_level, err)
-            *Generic => return @ctx.printer(@ctx.&mut, z.*)
+            *Generic => return @ctx.printer(@ctx.&, z.*)
             Voidance => return pprintVoidance(z, indent_level)
       }
 }

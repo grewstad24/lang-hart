@@ -10,13 +10,13 @@ func stdPanic(ctx: *Context, reason: Generic) -> never {
 }
 
 def panic(reason) {
-      @ctx.panic(@ctx.&mut, reason)
+      @ctx.panic(@ctx.&, reason)
 }
 
 def assertOk(val) { return
       match val using v {
-            :error => @ctx.panic(@ctx.&mut, :none)
-            ErrorWithReason <Generic> => @ctx.panic(@ctx.&mut, v.1)
+            :error => @ctx.panic(@ctx.&, :none)
+            ErrorWithReason <Generic> => @ctx.panic(@ctx.&, v.1)
             else => v
       }
 }

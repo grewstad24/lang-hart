@@ -548,6 +548,7 @@ struct BindingInfo {
     ty: Type,
     is_mutable: bool,
     is_initialized: bool,
+    may_point_to_stack: bool,
 }
 
 pub struct Checker<'a> {
@@ -1489,6 +1490,7 @@ impl<'a> Checker<'a> {
                         ty: resolved_param_ty,
                         is_mutable: false,
                         is_initialized: true,
+                        may_point_to_stack: false,
                     },
                 );
             }
@@ -1499,6 +1501,7 @@ impl<'a> Checker<'a> {
                     ty: context_type(),
                     is_mutable: true,
                     is_initialized: is_ctx_initialized,
+                    may_point_to_stack: false,
                 },
             );
             self.validate_user_type(&sig.return_type)?;
@@ -1518,9 +1521,25 @@ impl<'a> Checker<'a> {
             self.current_function_return_type = old_return_type;
             self.is_return_inferred = old_is_return_inferred;
             self.current_definition_is_def = old_is_def;
-            self.exit_scope();
 
-            let mut body_ty = body_ty_res?;
+            let mut body_ty = match body_ty_res {
+                Ok(ty) => ty,
+                Err(e) => {
+                    self.exit_scope();
+                    return Err(e);
+                }
+            };
+            if body_ty != Type::Never
+                && self.type_contains_pointer(&body_ty)
+                && self.expr_may_point_to_stack(&def.value)
+            {
+                self.exit_scope();
+                return Err(format!(
+                    "{}: error: pointer to local stack variable cannot escape function '{}' via return",
+                    self.current_file_path, def.name
+                ));
+            }
+            self.exit_scope();
             if expected_return != Type::Inferred && body_ty != Type::Never {
                 body_ty =
                     self.coerce_expression_to_type(&mut def.value, &body_ty, &expected_return)?;
@@ -1721,6 +1740,90 @@ impl<'a> Checker<'a> {
                         .unwrap_or(false)
                 });
             }
+        }
+    }
+
+    fn type_contains_pointer(&self, ty: &Type) -> bool {
+        let resolved = self.resolve_type(ty).unwrap_or_else(|_| ty.clone());
+        match resolved {
+            Type::Pointer { .. } => true,
+            Type::Union(vars) => vars.iter().any(|v| self.type_contains_pointer(v)),
+            Type::Tuple(elems) => elems.iter().any(|e| self.type_contains_pointer(e)),
+            Type::Struct(fields) => fields.iter().any(|f| self.type_contains_pointer(&f.ty)),
+            Type::Array { element, .. } => self.type_contains_pointer(&element),
+            _ => false,
+        }
+    }
+
+    fn is_diverging_expr(expr: &Expression) -> bool {
+        matches!(
+            unspanned_expression(expr),
+            Expression::Return(_) | Expression::Break | Expression::Continue | Expression::Yield(_)
+        )
+    }
+
+    fn expr_may_point_to_stack(&self, expr: &Expression) -> bool {
+        match unspanned_expression(expr) {
+            Expression::AddressOf { expression, .. } => {
+                match unspanned_expression(expression.as_ref()) {
+                    Expression::Identifier(name) => self.lookup_binding(name).is_some(),
+                    Expression::Context => true,
+                    Expression::Dereference(inner) => {
+                        // Taking address of dereference: ptr.*. & is just ptr
+                        self.expr_may_point_to_stack(inner.as_ref())
+                    }
+                    Expression::Index { expression: base, .. } => {
+                        self.expr_may_point_to_stack(base.as_ref())
+                    }
+                    Expression::Member { expression: base, .. } => {
+                        self.expr_may_point_to_stack(base.as_ref())
+                    }
+                    _ => false,
+                }
+            }
+            Expression::Identifier(name) => {
+                if let Some(info) = self.lookup_binding(name) {
+                    info.may_point_to_stack
+                } else {
+                    false
+                }
+            }
+            Expression::Cast { expression, ty } => {
+                self.type_contains_pointer(ty) && self.expr_may_point_to_stack(expression.as_ref())
+            }
+            Expression::AsTypeOf { expression, .. } => {
+                self.expr_may_point_to_stack(expression.as_ref())
+            }
+            Expression::Block(stmts) => {
+                stmts.last().map_or(false, |s| self.expr_may_point_to_stack(s))
+            }
+            Expression::If { arms } => {
+                let non_diverging: Vec<_> = arms
+                    .iter()
+                    .filter(|arm| !Self::is_diverging_expr(&arm.body))
+                    .collect();
+                !non_diverging.is_empty()
+                    && non_diverging
+                        .iter()
+                        .all(|arm| self.expr_may_point_to_stack(&arm.body))
+            }
+            Expression::Match { arms, .. } => {
+                let non_diverging: Vec<_> = arms
+                    .iter()
+                    .filter(|arm| !Self::is_diverging_expr(&arm.body))
+                    .collect();
+                !non_diverging.is_empty()
+                    && non_diverging
+                        .iter()
+                        .all(|arm| self.expr_may_point_to_stack(&arm.body))
+            }
+            Expression::Tuple(elements) => {
+                elements.iter().any(|elem| self.expr_may_point_to_stack(elem))
+            }
+            Expression::Struct(fields) => {
+                fields.iter().any(|f| self.expr_may_point_to_stack(&f.value))
+            }
+            _ => false,
         }
     }
 
@@ -2026,6 +2129,15 @@ impl<'a> Checker<'a> {
                     )
                 })?;
                 let mut actual = self.type_of_expression(expr)?;
+                if actual != Type::Never
+                    && self.type_contains_pointer(&actual)
+                    && self.expr_may_point_to_stack(expr)
+                {
+                    return Err(format!(
+                        "{}: error: pointer to local stack variable cannot escape function via return",
+                        self.current_file_path
+                    ));
+                }
                 if self.is_return_inferred {
                     if expected == Type::Inferred {
                         self.current_function_return_type = Some(actual);
@@ -2093,12 +2205,14 @@ impl<'a> Checker<'a> {
                         self.current_file_path, name
                     ));
                 }
+                let may_point_to_stack = self.expr_may_point_to_stack(value);
                 self.local_scopes.last_mut().unwrap().insert(
                     name.clone(),
                     BindingInfo {
                         ty: resolved_ty,
                         is_mutable: false,
                         is_initialized: true,
+                        may_point_to_stack,
                     },
                 );
                 Ok(Type::Symbol("none".to_string()))
@@ -2136,12 +2250,14 @@ impl<'a> Checker<'a> {
                     } else {
                         resolved_ty
                     };
+                    let may_point_to_stack = self.expr_may_point_to_stack(val);
                     self.local_scopes.last_mut().unwrap().insert(
                         name.clone(),
                         BindingInfo {
                             ty: final_ty,
                             is_mutable: true,
                             is_initialized: true,
+                            may_point_to_stack,
                         },
                     );
                 } else if let Some(annotated_ty) = ty {
@@ -2160,6 +2276,7 @@ impl<'a> Checker<'a> {
                             ty: resolved_ty,
                             is_mutable: true,
                             is_initialized: false,
+                            may_point_to_stack: false,
                         },
                     );
                 } else {
@@ -2225,16 +2342,20 @@ impl<'a> Checker<'a> {
                             ));
                         }
 
+                        let may_point_to_stack = self.expr_may_point_to_stack(value);
                         if let Some(info_mut) = self.lookup_binding_mut(&name) {
                             info_mut.is_initialized = true;
+                            info_mut.may_point_to_stack = may_point_to_stack;
                         }
                     } else {
+                        let may_point_to_stack = self.expr_may_point_to_stack(value);
                         self.local_scopes.last_mut().unwrap().insert(
                             name.clone(),
                             BindingInfo {
                                 ty: val_ty.clone(),
                                 is_mutable: false,
                                 is_initialized: true,
+                                may_point_to_stack,
                             },
                         );
                     }
@@ -2268,6 +2389,15 @@ impl<'a> Checker<'a> {
                         return Err(format!(
                             "{}: error: type mismatch in pointer dereference assignment: expected {}, found {}",
                             self.current_file_path, target_ty, val_ty
+                        ));
+                    }
+                    if self.type_contains_pointer(&target_ty)
+                        && !self.expr_may_point_to_stack(ptr_expr.as_ref())
+                        && self.expr_may_point_to_stack(value)
+                    {
+                        return Err(format!(
+                            "{}: error: cannot store pointer to local stack variable into dereferenced pointer",
+                            self.current_file_path
                         ));
                     }
                     Ok(Type::Symbol("none".to_string()))
@@ -2364,6 +2494,7 @@ impl<'a> Checker<'a> {
                             ty: count_ty.clone(),
                             is_mutable: false,
                             is_initialized: true,
+                            may_point_to_stack: false,
                         },
                     );
                 }
@@ -2447,6 +2578,7 @@ impl<'a> Checker<'a> {
                             ty: element_ty,
                             is_mutable: false,
                             is_initialized: true,
+                            may_point_to_stack: false,
                         },
                     );
                 }
@@ -2721,12 +2853,14 @@ impl<'a> Checker<'a> {
                         arm.variant_type = Some(narrowed_ty.clone());
 
                         self.enter_scope();
+                        let may_point_to_stack = self.expr_may_point_to_stack(&arm.body);
                         self.local_scopes.last_mut().unwrap().insert(
                             binding_name.clone(),
                             BindingInfo {
                                 ty: narrowed_ty,
                                 is_mutable: false,
                                 is_initialized: true,
+                                may_point_to_stack,
                             },
                         );
 
@@ -2752,12 +2886,14 @@ impl<'a> Checker<'a> {
                         unhandled.clear();
 
                         self.enter_scope();
+                        let may_point_to_stack = self.expr_may_point_to_stack(&arm.body);
                         self.local_scopes.last_mut().unwrap().insert(
                             binding_name.clone(),
                             BindingInfo {
                                 ty: narrowed_ty,
                                 is_mutable: false,
                                 is_initialized: true,
+                                may_point_to_stack,
                             },
                         );
 
