@@ -22,5 +22,8 @@ func main(args: Slice<String>) -> :none {
       dealloc(val)
       dealloc(raw)
 
+      @ctx.printer := debugPrinter
+      log({ a: 1, b: [2, :ok, "hi", :true] })
+
       logWarn("heap validation passed")
 }

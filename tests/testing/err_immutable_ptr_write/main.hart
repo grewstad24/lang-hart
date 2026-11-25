@@ -1,0 +1,6 @@
+func mutate(p: *s32) -> :none {
+    p.* := 99
+}
+
+func main() -> :none {}
+

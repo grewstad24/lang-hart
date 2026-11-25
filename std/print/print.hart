@@ -1,0 +1,78 @@
+decl mod print {
+      export { Printable, print, println } to std
+      import { std, std.libc, std.impl }
+}
+
+type Printable :=
+      String
+      | Integer
+      | :nl
+      | :t
+      | ( :softTab, Integer )
+      | Bool
+      | Slice <Printable>
+
+func checkPrintfRet(ret: s32) -> :none | IoError {
+      return switch ret < 0 {
+            :true => errnoToError()
+            else => :none
+      }
+}
+
+func printString(s: String) -> :none | IoError {
+      return checkPrintfRet(printf("%s".ptr, s.ptr))
+}
+
+func prNl() -> :none | IoError {
+      return checkPrintfRet(printf("\n".ptr))
+}
+
+func prTab() -> :none | IoError {
+      return checkPrintfRet(printf("\t".ptr))
+}
+
+func printSint(num: SignedInteger) -> :none | IoError {
+      return checkPrintfRet(printf("%lld".ptr, num as s64))
+}
+
+func printUint(num: UnsignedInteger) -> :none | IoError {
+      return checkPrintfRet(printf("%llu".ptr, num as u64))
+}
+
+func printa(arr: Slice<Printable>) -> :none | IoError {
+      repeat arr.len using i {
+            match print(arr[i]) using err {
+                  IoError => return err
+                  else => :none
+            }
+      }
+      return :none
+}
+
+func print(x: Printable) -> :none | IoError {
+      match x using z {
+            String => return printString(z)
+            SignedInteger => return printSint(z)
+            UnsignedInteger => return printUint(z)
+            :nl => return prNl()
+            :t => return prTab()
+            ( :softTab, Integer ) => {
+                  repeat (z.1 as usize) {
+                        match print(" ") using err {
+                              IoError => return err
+                              else => :none
+                        }
+                  }
+                  return :none
+            }
+            Slice <Printable> => return printa(z)
+            Bool => match z {
+                  :true => return print("true")
+                  :false => return print("false")
+            }
+      }
+}
+
+func println(x: Printable) -> :none | IoError {
+      return print([x, :nl])
+}

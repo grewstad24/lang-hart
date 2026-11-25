@@ -1,0 +1,7 @@
+func main() -> :none {
+    x := if {
+        42 => 1
+        else => 2
+    }
+}
+

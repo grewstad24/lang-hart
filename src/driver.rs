@@ -464,7 +464,74 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
     }
 }
 
+pub fn check_project(project_dir: &Path) -> Result<(), String> {
+    let mut search_dirs = Vec::new();
+    if let Some(hart_home) = get_hart_home_dir() {
+        if hart_home.is_dir() {
+            search_dirs.push(hart_home);
+        }
+    }
+    let local_std = PathBuf::from("std");
+    if local_std.is_dir() && !search_dirs.iter().any(|d| d.join("std").is_dir() || d == &local_std) {
+        search_dirs.push(local_std);
+    }
+    search_dirs.push(project_dir.to_path_buf());
+
+    let mut modules = discover_logical_modules(&search_dirs)?;
+    if modules.is_empty() {
+        return Err("no .hart modules found to compile".to_string());
+    }
+
+    let resolver = ModuleResolver::new();
+    let mut module_scopes = resolver.resolve_modules(&modules)?;
+
+    crate::monomorphize::specialise_def_functions(&mut modules, &mut module_scopes)?;
+    crate::monomorphize::monomorphize_modules(&mut modules, &mut module_scopes)?;
+    crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
+
+    let mut global_resolved_definitions: HashMap<String, Type> = HashMap::new();
+    for _ in 0..10 {
+        let mut progress = false;
+        for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
+            let mut checker = Checker::new(scope);
+            checker.resolved_definitions.clone_from(&global_resolved_definitions);
+            for file in &mut module.source_files {
+                checker.current_file_path = file.file_path.clone();
+                for def in &file.definitions {
+                    if !def.is_def && def.signature.is_none() && !global_resolved_definitions.contains_key(&def.name) {
+                        if let Ok(ty) = checker.resolve_definition(&def.name) {
+                            global_resolved_definitions.insert(def.name.clone(), ty);
+                            progress = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    for (module, scope) in modules.iter_mut().zip(module_scopes.iter()) {
+        let mut checker = Checker::new(scope);
+        checker.resolved_definitions.clone_from(&global_resolved_definitions);
+        for file in &mut module.source_files {
+            checker.check_file(file)?;
+        }
+        for (k, v) in checker.resolved_definitions {
+            global_resolved_definitions.insert(k, v);
+        }
+    }
+
+    Ok(())
+}
+
 pub fn compile_project(project_dir: &Path) -> Result<(), String> {
+    compile_project_to(project_dir, Path::new(".")).map(|_| ())
+}
+
+pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(output_dir).map_err(|e| format!("failed to create output dir: {}", e))?;
     let total_start = Instant::now();
 
     let mut search_dirs = Vec::new();
@@ -776,13 +843,15 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let context_x86 = Context::create();
     let codegen_x86 = Codegen::new(&context_x86, "main_x86", &x86_target_machine);
     let module_x86 = codegen_x86.generate(&program)?;
+    let ir_path = output_dir.join("main.ll");
+    let _ = module_x86.print_to_file(&ir_path);
     if let Err(err) = module_x86.verify() {
         let message = format!("LLVM verification failed (x86_64): {}", err);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
-    let obj_path_x86 = Path::new("main.x86_64.o");
+    let obj_path_x86 = output_dir.join("main.x86_64.o");
     x86_target_machine
-        .write_to_file(&module_x86, FileType::Object, obj_path_x86)
+        .write_to_file(&module_x86, FileType::Object, &obj_path_x86)
         .map_err(|err| format!("failed to write x86_64 object file: {}", err))?;
 
     // Generate aarch64 module & object file
@@ -793,13 +862,13 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         let message = format!("LLVM verification failed (aarch64): {}", err);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
-    let obj_path_aarch64 = Path::new("main.aarch64.o");
+    let obj_path_aarch64 = output_dir.join("main.aarch64.o");
     aarch64_target_machine
-        .write_to_file(&module_aarch64, FileType::Object, obj_path_aarch64)
+        .write_to_file(&module_aarch64, FileType::Object, &obj_path_aarch64)
         .map_err(|err| format!("failed to write aarch64 object file: {}", err))?;
 
-    let ir_path = Path::new("main.ll");
-    let _ = module_x86.print_to_file(ir_path);
+    let ir_path = output_dir.join("main.ll");
+    let _ = module_x86.print_to_file(&ir_path);
     println!("  [5/6] Code generation            ({})", format_duration(step_start.elapsed()));
 
     let step_start = Instant::now();
@@ -813,8 +882,9 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
     let ape_aarch64 = cosmo_bin.join("ape-aarch64.elf");
     let ape_m1 = cosmo_bin.join("ape-m1.c");
 
-    let elf_path_x86 = Path::new("main.x86_64.elf");
-    let elf_path_aarch64 = Path::new("main.aarch64.elf");
+    let elf_path_x86 = output_dir.join("main.x86_64.elf");
+    let elf_path_aarch64 = output_dir.join("main.aarch64.elf");
+    let bin_path = output_dir.join("main");
     let tmp_dir = env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
 
     let status_x86 = run_tool_command(
@@ -876,7 +946,8 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
 
     let elf_x86_str = elf_path_x86.to_str().unwrap();
     let elf_aarch64_str = elf_path_aarch64.to_str().unwrap();
-    apelink_args.extend(["-o", "main", elf_x86_str, elf_aarch64_str]);
+    let bin_str = bin_path.to_str().unwrap();
+    apelink_args.extend(["-o", bin_str, elf_x86_str, elf_aarch64_str]);
 
     let status_apelink = run_tool_command(&apelink, &apelink_args, &tmp_dir)
         .map_err(|error| {
@@ -889,13 +960,13 @@ pub fn compile_project(project_dir: &Path) -> Result<(), String> {
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
     }
 
-    let _ = fs::remove_file(obj_path_x86);
-    let _ = fs::remove_file(obj_path_aarch64);
-    let _ = fs::remove_file(elf_path_x86);
-    let _ = fs::remove_file(elf_path_aarch64);
+    let _ = fs::remove_file(&obj_path_x86);
+    let _ = fs::remove_file(&obj_path_aarch64);
+    let _ = fs::remove_file(&elf_path_x86);
+    let _ = fs::remove_file(&elf_path_aarch64);
 
     println!("  [6/6] Linking                    ({})", format_duration(step_start.elapsed()));
 
     println!("Finished build in {}", format_duration(total_start.elapsed()));
-    Ok(())
+    Ok(bin_path)
 }

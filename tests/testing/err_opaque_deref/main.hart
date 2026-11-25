@@ -1,0 +1,6 @@
+func bad(p: *opaque) -> :none {
+    v := p.*
+}
+
+func main() -> :none {}
+

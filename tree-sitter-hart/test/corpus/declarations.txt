@@ -2,10 +2,10 @@
 Functions and modules
 ==================
 
-import { .print, .heap }
+import { print, heap }
 
 decl mod io {
-    export { read, write } to .io.raw
+    export { read, write } to io.raw
 }
 
 func add(a: s32, b: s32) -> s32 {
@@ -118,8 +118,8 @@ Grouped exports
 
 decl mod print {
     export {
-        { print, println } to .print,
-        { printf } to .print.raw_printf
+        { print, println } to print,
+        { printf } to print.raw_printf
     }
 }
 

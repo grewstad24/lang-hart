@@ -58,6 +58,7 @@ zed-grammar:
       -shared \
       -I tree-sitter-hart/src \
       tree-sitter-hart/src/parser.c \
+      tree-sitter-hart/src/scanner.c \
       -o editors/zed/grammars/hart.wasm
     cp tree-sitter-hart/queries/highlights.scm editors/zed/languages/hart/highlights.scm
     @echo "Zed grammar compiled successfully to editors/zed/grammars/hart.wasm"

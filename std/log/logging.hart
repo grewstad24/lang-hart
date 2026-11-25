@@ -1,4 +1,10 @@
-mod core
+decl mod log {
+      export {
+            { log, logWarn, logError, logWithLineAndFile } to std,
+            { stdLogger, isLogged } to std.impl
+      }
+      import { std, std.impl }
+}
 
 def isLogged(target, min_level) {
       return match target {
@@ -33,18 +39,10 @@ func stdLogger(ctx: *Context, level: :info | :warn | :error | :never, min_level:
       }
 }
 
-def log(item) {
-      @ctx.logger(@ctx.&, :info, @ctx.log_level, @caller_line_number, @caller_file_name, item)
-}
+def log(item) { @ctx.logger(@ctx.&, :info, @ctx.log_level, @caller_line_number, @caller_file_name, item) }
 
-def logWarn(item) {
-      @ctx.logger(@ctx.&, :warn, @ctx.log_level, @caller_line_number, @caller_file_name, item)
-}
+def logWarn(item) { @ctx.logger(@ctx.&, :warn, @ctx.log_level, @caller_line_number, @caller_file_name, item) }
 
-def logError(item) {
-      @ctx.logger(@ctx.&, :error, @ctx.log_level, @caller_line_number, @caller_file_name, item)
-}
+def logError(item) { @ctx.logger(@ctx.&, :error, @ctx.log_level, @caller_line_number, @caller_file_name, item) }
 
-def logWithLineAndFile(level, line, file, item) {
-      @ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item)
-}
+def logWithLineAndFile(level, line, file, item) { @ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item) }

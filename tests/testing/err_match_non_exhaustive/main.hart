@@ -1,0 +1,9 @@
+func check(u: s32 | :error | :none) -> s32 {
+    return match u using v {
+        :error => 0
+        s32 => v
+    }
+}
+
+func main() -> :none {}
+

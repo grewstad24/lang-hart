@@ -1,0 +1,93 @@
+decl mod types {
+      export {
+            String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Slice, Bool,
+            UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason,
+            IoError, LogLevel, OpenMode, SeekWhence, File, Context
+      } to std
+}
+
+type String := Slice <u8>
+
+type Integer := SignedInteger | UnsignedInteger
+
+type SignedInteger := s16 | s32 | s64 | ssize
+
+type UnsignedInteger := u8 | u16 | u32 | u64 | usize
+
+type Record := *{
+      len: usize
+      key: *String
+      val: *Generic
+}
+
+type ErrorWithReason <T> := (:error, T)
+
+type ErrorAndReason := (:error, String | Record)
+
+type Error := ErrorAndReason | :error
+
+type Voidance := Error | :none
+
+type Bool := :true | :false
+
+type Slice <T> := {
+      ptr: *T
+      len: usize
+}
+
+type UnvoidGeneric :=
+      Integer
+      | String
+      | Bool
+      | Record
+      | Slice <Generic>
+      | *Generic
+
+type Generic := UnvoidGeneric | Voidance
+
+type IoError :=
+      (:error, :permission_denied)
+      | (:error, :not_found)
+      | (:error, :interrupted)
+      | (:error, :io_error)
+      | (:error, :bad_fd)
+      | (:error, :would_block)
+      | (:error, :out_of_memory)
+      | (:error, :access_denied)
+      | (:error, :already_exists)
+      | (:error, :not_a_directory)
+      | (:error, :is_a_directory)
+      | (:error, :invalid_argument)
+      | (:error, :no_space)
+      | (:error, :broken_pipe)
+      | (:error, :unknown)
+
+type LogLevel := {
+      info: Bool
+      warn: Bool
+      error: Bool
+}
+
+type OpenMode := :read | :write | :append | :read_write
+
+type SeekWhence := :start | :current | :end
+
+type File := {
+      fd: s32
+}
+
+type Context := {
+      logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
+      log_level: LogLevel
+      memalloc: func(*Context, usize) -> *mut opaque | :error
+      resizeAlloc: func(*Context, *opaque, usize) -> *mut opaque | :error
+      dealloc: func(*Context, *opaque) -> :none
+      printer: func(*Context, Generic) -> :none | IoError
+      panic: func(*Context, Generic) -> never
+      open: func(*Context, String, OpenMode) -> s32 | IoError
+      close: func(*Context, s32) -> :none | IoError
+      read: func(*Context, s32, *mut u8, usize) -> usize | IoError
+      write: func(*Context, s32, *u8, usize) -> usize | IoError
+      seek: func(*Context, s32, s64, SeekWhence) -> u64 | IoError
+}
+

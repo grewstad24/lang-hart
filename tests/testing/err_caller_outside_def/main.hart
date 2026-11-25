@@ -1,0 +1,4 @@
+func main() -> :none {
+    l := @caller_line_number
+}
+

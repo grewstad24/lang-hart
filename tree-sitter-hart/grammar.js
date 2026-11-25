@@ -19,9 +19,11 @@ module.exports = grammar({
     $.comment,
   ],
 
+  externals: $ => [
+    $._arm_terminator,
+  ],
+
   conflicts: $ => [
-    [$.argument_list, $.tuple_literal],
-    [$.mut_declaration, $.assignment_expression],
     [$._non_assignment_expression, $.struct_field_init],
   ],
 
@@ -113,11 +115,8 @@ module.exports = grammar({
     ),
 
     namespace_path: $ => token(seq(
-      '.',
-      optional(seq(
-        /[a-zA-Z_][a-zA-Z0-9_]*/,
-        repeat(seq('.', /[a-zA-Z_][a-zA-Z0-9_]*/))
-      ))
+      /[a-zA-Z_][a-zA-Z0-9_]*/,
+      repeat(seq('.', /[a-zA-Z_][a-zA-Z0-9_]*/))
     )),
 
     // Type Definitions
@@ -432,7 +431,7 @@ module.exports = grammar({
       field('value', choice($._expression, 'else')),
       '=>',
       field('body', $._expression),
-      optional(choice(',', ';'))
+      optional(choice(',', ';', $._arm_terminator))
     )),
 
     match_expression: $ => seq(
@@ -451,7 +450,7 @@ module.exports = grammar({
       field('pattern', choice($._type, 'else')),
       '=>',
       field('body', $._expression),
-      optional(choice(',', ';'))
+      optional(choice(',', ';', $._arm_terminator))
     )),
 
     repeat_expression: $ => prec.right(seq(

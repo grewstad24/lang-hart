@@ -1,0 +1,50 @@
+decl mod error {
+      export {
+            { assertOk, panic } to std,
+            { stdPanic, errnoToError } to std.impl
+      }
+      import { std, std.libc }
+}
+
+func errnoToError() -> IoError {
+      err := __errno_location().*
+      return switch err {
+            1 => (:error, :permission_denied)
+            2 => (:error, :not_found)
+            4 => (:error, :interrupted)
+            5 => (:error, :io_error)
+            9 => (:error, :bad_fd)
+            11 => (:error, :would_block)
+            12 => (:error, :out_of_memory)
+            13 => (:error, :access_denied)
+            17 => (:error, :already_exists)
+            20 => (:error, :not_a_directory)
+            21 => (:error, :is_a_directory)
+            22 => (:error, :invalid_argument)
+            28 => (:error, :no_space)
+            32 => (:error, :broken_pipe)
+            else => (:error, :unknown)
+      }
+}
+
+func stdPanic(ctx: *Context, reason: Generic) -> never {
+      @ctx := ctx.*
+      match reason using r {
+            :none => logError("panic")
+            else => logError(r)
+      }
+      abort()
+}
+
+def panic(reason) { @ctx.panic(@ctx.&, reason) }
+
+def assertOk(val) { return
+      match val using v {
+            :error => @ctx.panic(@ctx.&, :none)
+            ErrorWithReason <Generic> => {
+                  err_tuple := v as ErrorWithReason <Generic>
+                  @ctx.panic(@ctx.&, err_tuple.1)
+            }
+            else => v
+      }
+}

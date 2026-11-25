@@ -1,0 +1,11 @@
+extern func malloc(size: usize) -> *mut opaque
+
+func bad() -> *mut s32 {
+    mut x := 42
+    mut p := malloc(4 as usize) as *mut s32
+    p := x.&mut
+    return p
+}
+
+func main() -> :none {}
+

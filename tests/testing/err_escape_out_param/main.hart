@@ -1,0 +1,7 @@
+func badStore(out: *mut *s32) -> :none {
+    x := 42
+    out.* := x.&
+}
+
+func main() -> :none {}
+

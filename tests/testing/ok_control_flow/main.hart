@@ -1,0 +1,68 @@
+extern func malloc(size: usize) -> *mut opaque
+extern func free(ptr: *opaque) -> :none
+
+func max(a: s32, b: s32) -> s32 {
+    return if {
+        a > b => a
+        else => b
+    }
+}
+
+func fallible() -> s32 | :error {
+    return 42
+}
+
+func unwrapOrZero() -> s32 {
+    return match fallible() using v {
+        :error => 0
+        else => v
+    }
+}
+
+func classify(n: s32) -> s32 {
+    return switch n {
+        0 => 100
+        1 => 200
+        else => 300
+    }
+}
+
+func main() -> s32 {
+    buf := malloc(16 as usize)
+    defer free(buf)
+
+    m := max(3, 7)
+    u := unwrapOrZero()
+    c := classify(1)
+
+    mut count := 0
+    repeat 10 using i {
+        if {
+            i = 2 => continue
+            i = 8 => break
+            else => count := count + 1
+        }
+    }
+
+    mut w := 0
+    repeat while w < 5 {
+        w := w + 1
+    }
+
+    mut un := 0
+    repeat until un >= 3 {
+        un := un + 1
+    }
+
+    val := {
+        x := 10
+        yield x + 5
+    }
+
+    total := m + u + c + count + w + un + val
+    return if {
+        total = 279 => 0
+        else => 1
+    }
+}
+

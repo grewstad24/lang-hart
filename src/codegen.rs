@@ -297,12 +297,11 @@ impl<'ctx> Codegen<'ctx> {
         Err(format!("expected slice type, found {}", ty))
     }
 
-    fn is_atom_type(&self, ty: &Type) -> Result<bool, String> {
+    fn is_string_type(&self, ty: &Type) -> Result<bool, String> {
         let resolved = self.resolve_alias_root(ty)?;
-        if let Type::Struct(fields) = resolved {
-            if fields.len() == 1 && fields[0].name == "str" {
-                return self.is_slice_type(&fields[0].ty);
-            }
+        if self.is_slice_type(resolved)? {
+            let elem = self.slice_element_type(resolved)?;
+            return Ok(*self.resolve_alias_root(&elem)? == Type::U8);
         }
         Ok(false)
     }
@@ -1559,6 +1558,11 @@ impl<'ctx> Codegen<'ctx> {
             }
             Expression::Return(expr) => {
                 let mut binding = self.codegen_expression(expr)?;
+                if let Some(bb) = self.builder.get_insert_block() {
+                    if bb.get_terminator().is_some() {
+                        return Ok(self.symbol_binding("none"));
+                    }
+                }
                 if let Some(target_ty) = self.current_function_return_type.clone() {
                     if target_ty != Type::Never && target_ty != Type::Inferred {
                         let actual_ty = self.binding_type(&binding)?;
@@ -3410,25 +3414,13 @@ impl<'ctx> Codegen<'ctx> {
             return self.codegen_cast_inner(slice_binding, target_type, visited);
         }
 
-        if matches!(resolved_source, Type::Symbol(_)) && self.is_atom_type(&resolved_target)? {
+        if matches!(resolved_source, Type::Symbol(_)) && self.is_string_type(&resolved_target)? {
             let sym_name = match &binding {
                 Binding::Symbol { name, .. } => name.clone(),
-                _ => return Err("expected symbol binding for symbol to atom cast".to_string()),
+                _ => return Err("expected symbol binding for symbol to string cast".to_string()),
             };
             let str_binding = self.codegen_string_literal(sym_name.as_bytes())?;
-            let str_val = self.binding_basic_value(&str_binding)?;
-            let atom_llvm_ty = self.llvm_type(&resolved_target)?.into_struct_type();
-            let mut atom_val = atom_llvm_ty.get_undef();
-            atom_val = self
-                .builder
-                .build_insert_value(atom_val, str_val, 0, "atom_str")
-                .map_err(|e| e.to_string())?
-                .into_struct_value();
-            return Ok(Binding::Struct {
-                ty: target_type,
-                value: atom_val,
-                storage: None,
-            });
+            return self.codegen_cast_inner(str_binding, target_type, visited);
         }
 
         if let Type::Struct(fields) = &resolved_source {

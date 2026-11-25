@@ -1,0 +1,59 @@
+type Slice<T> := { ptr: *T, len: usize }
+type String := { ptr: *u8, len: usize }
+type Box<T> := { val: T }
+type Pair<A, B> := (A, B)
+type PointA := { x: s32, y: s32 }
+type PointB := { x: s32, y: s32 }
+
+func sumArray(arr: [4]s32) -> s32 {
+    mut total := 0
+    repeat arr.len using i {
+        total := total + arr[i]
+    }
+    return total
+}
+
+func unbox(b: Box<s32>) -> s32 {
+    return b.val
+}
+
+func takeB(p: PointB) -> s32 {
+    return p.x + p.y
+}
+
+func main() -> s32 {
+    a := 1 as u8
+    b := 2 as u16
+    c := 3 as u32
+    d := 4 as u64
+    e := 5 as usize
+    f := (0 - 6) as s16
+    g := (0 - 7) as s32
+    h := (0 - 8) as s64
+    i := (0 - 9) as ssize
+    sum := (a as s32) + (b as s32) + (c as s32) + (d as s32) + (e as s32) + (f as s32) + g + (h as s32) + (i as s32)
+
+    arr := [10, 20, 30, 40]
+    s := { ptr: arr.ptr, len: arr.len } as Slice<s32>
+    first := s[0]
+    arr_sum := sumArray(arr)
+
+    t := (42, :ok, "hello")
+    t0 := t.0
+    t1 := t.1
+    mut rec := { x: 1, y: 2, nested: { flag: :true } }
+    rec.x := rec.y + t0
+
+    mut bx: Box<s32> := { val: 99 }
+    mut pr: Pair<s32, :ok | :err> := (10, :ok)
+    bv := unbox(bx)
+
+    mut pa: PointA := { x: 1, y: 2 }
+    pb := takeB(pa)
+
+    return if {
+        sum + first + arr_sum + bv + pb + rec.x = 241 => 0
+        else => 1
+    }
+}
+

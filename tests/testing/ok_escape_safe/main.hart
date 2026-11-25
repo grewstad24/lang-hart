@@ -1,0 +1,83 @@
+extern func malloc(size: usize) -> *mut opaque
+extern func free(ptr: *opaque) -> :none
+
+func helper(x: s32) -> s32 { return x + 1 }
+func readVal(p: *s32) -> s32 { return p.* }
+
+func okCastToUsize() -> usize {
+    x := 42
+    return x.& as usize
+}
+
+func okHeap() -> *mut s32 {
+    p := malloc(4 as usize) as *mut s32
+    p.* := 77
+    return p.*.&mut
+}
+
+func okGlobalFn() -> func(s32) -> s32 {
+    return helper.&
+}
+
+func okConditional(flag: :true | :false) -> *s32 {
+    x := 42
+    h := malloc(4 as usize) as *mut s32
+    h.* := 10
+    p := if {
+        flag => x.&
+        else => h
+    }
+    return p
+}
+
+func okLocalMut() -> s32 {
+    mut x := 42
+    mut p := malloc(4 as usize) as *mut s32
+    orig := p
+    q := p.&mut
+    q.* := x.&mut
+    res := p.*
+    free(orig)
+    return res
+}
+
+func okDownward() -> s32 {
+    x := 42
+    return readVal(x.&)
+}
+
+func okStructNonPtrField() -> s32 {
+    x := 42
+    r := { p: x.&, v: 10 }
+    return r.v
+}
+
+func main() -> s32 {
+    addr := okCastToUsize()
+    hp := okHeap()
+    hv := hp.*
+    free(hp)
+
+    fn_ptr := okGlobalFn()
+    fv := fn_ptr(9)
+
+    c_false := okConditional(:false)
+    cv := c_false.*
+    free(c_false)
+
+    lm := okLocalMut()
+    dw := okDownward()
+    sf := okStructNonPtrField()
+
+    if {
+        addr = (0 as usize) => return 1
+        hv != 77 => return 2
+        fv != 10 => return 3
+        cv != 10 => return 4
+        lm != 42 => return 5
+        dw != 42 => return 6
+        sf != 10 => return 7
+        else => return 0
+    }
+}
+

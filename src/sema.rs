@@ -56,13 +56,61 @@ impl ModuleScope {
 }
 
 pub fn context_type() -> Type {
-    let mut variants = vec![
+    fn sorted_union(mut vars: Vec<Type>) -> Type {
+        vars.sort_by_key(Checker::canonical_type_key);
+        Type::Union(vars)
+    }
+    fn err_sym(sym: &str) -> Type {
+        Type::Tuple(vec![
+            Type::Symbol("error".to_string()),
+            Type::Symbol(sym.to_string()),
+        ])
+    }
+
+    let mem_error = Type::Symbol("error".to_string());
+    let io_error_variants = vec![
+        err_sym("permission_denied"),
+        err_sym("not_found"),
+        err_sym("interrupted"),
+        err_sym("io_error"),
+        err_sym("bad_fd"),
+        err_sym("would_block"),
+        err_sym("out_of_memory"),
+        err_sym("access_denied"),
+        err_sym("already_exists"),
+        err_sym("not_a_directory"),
+        err_sym("is_a_directory"),
+        err_sym("invalid_argument"),
+        err_sym("no_space"),
+        err_sym("broken_pipe"),
+        err_sym("unknown"),
+    ];
+    let with_io_err = |ok_ty: Type| -> Type {
+        let mut vars = io_error_variants.clone();
+        vars.push(ok_ty);
+        sorted_union(vars)
+    };
+    let ctx_ptr = Type::Pointer {
+        element: Box::new(Type::Alias("Context".to_string())),
+        is_mut: false,
+    };
+    let log_level_variants = sorted_union(vec![
         Type::Symbol("info".to_string()),
         Type::Symbol("warn".to_string()),
         Type::Symbol("error".to_string()),
         Type::Symbol("never".to_string()),
-    ];
-    variants.sort_by(|a, b| Checker::canonical_type_key(a).cmp(&Checker::canonical_type_key(b)));
+    ]);
+    let open_mode_variants = sorted_union(vec![
+        Type::Symbol("read".to_string()),
+        Type::Symbol("write".to_string()),
+        Type::Symbol("append".to_string()),
+        Type::Symbol("read_write".to_string()),
+    ]);
+    let seek_whence_variants = sorted_union(vec![
+        Type::Symbol("start".to_string()),
+        Type::Symbol("current".to_string()),
+        Type::Symbol("end".to_string()),
+    ]);
     let log_level_struct = Type::Struct(vec![
         StructFieldType {
             name: "info".to_string(),
@@ -82,11 +130,8 @@ pub fn context_type() -> Type {
             name: "logger".to_string(),
             ty: Type::Function {
                 parameters: vec![
-                    Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
-                        is_mut: false,
-                    },
-                    Type::Union(variants.clone()),
+                    ctx_ptr.clone(),
+                    log_level_variants,
                     log_level_struct.clone(),
                     Type::U64,
                     Type::Alias("String".to_string()),
@@ -103,15 +148,9 @@ pub fn context_type() -> Type {
         StructFieldType {
             name: "memalloc".to_string(),
             ty: Type::Function {
-                parameters: vec![
-                    Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
-                        is_mut: false,
-                    },
-                    Type::USize,
-                ],
-                return_type: Box::new(Type::Union(vec![
-                    Type::Symbol("error".to_string()),
+                parameters: vec![ctx_ptr.clone(), Type::USize],
+                return_type: Box::new(sorted_union(vec![
+                    mem_error.clone(),
                     Type::Pointer {
                         element: Box::new(Type::Opaque),
                         is_mut: true,
@@ -124,18 +163,15 @@ pub fn context_type() -> Type {
             name: "resizeAlloc".to_string(),
             ty: Type::Function {
                 parameters: vec![
-                    Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
-                        is_mut: false,
-                    },
+                    ctx_ptr.clone(),
                     Type::Pointer {
                         element: Box::new(Type::Opaque),
                         is_mut: false,
                     },
                     Type::USize,
                 ],
-                return_type: Box::new(Type::Union(vec![
-                    Type::Symbol("error".to_string()),
+                return_type: Box::new(sorted_union(vec![
+                    mem_error,
                     Type::Pointer {
                         element: Box::new(Type::Opaque),
                         is_mut: true,
@@ -148,10 +184,7 @@ pub fn context_type() -> Type {
             name: "dealloc".to_string(),
             ty: Type::Function {
                 parameters: vec![
-                    Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
-                        is_mut: false,
-                    },
+                    ctx_ptr.clone(),
                     Type::Pointer {
                         element: Box::new(Type::Opaque),
                         is_mut: false,
@@ -164,31 +197,76 @@ pub fn context_type() -> Type {
         StructFieldType {
             name: "printer".to_string(),
             ty: Type::Function {
-                parameters: vec![
-                    Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
-                        is_mut: false,
-                    },
-                    Type::Alias("Generic".to_string()),
-                ],
-                return_type: Box::new(Type::Union(vec![
-                    Type::Symbol("error".to_string()),
-                    Type::Symbol("none".to_string()),
-                ])),
+                parameters: vec![ctx_ptr.clone(), Type::Alias("Generic".to_string())],
+                return_type: Box::new(with_io_err(Type::Symbol("none".to_string()))),
                 is_variadic: false,
             },
         },
         StructFieldType {
             name: "panic".to_string(),
             ty: Type::Function {
+                parameters: vec![ctx_ptr.clone(), Type::Alias("Generic".to_string())],
+                return_type: Box::new(Type::Never),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "open".to_string(),
+            ty: Type::Function {
                 parameters: vec![
+                    ctx_ptr.clone(),
+                    Type::Alias("String".to_string()),
+                    open_mode_variants,
+                ],
+                return_type: Box::new(with_io_err(Type::S32)),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "close".to_string(),
+            ty: Type::Function {
+                parameters: vec![ctx_ptr.clone(), Type::S32],
+                return_type: Box::new(with_io_err(Type::Symbol("none".to_string()))),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "read".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    ctx_ptr.clone(),
+                    Type::S32,
                     Type::Pointer {
-                        element: Box::new(Type::Alias("Context".to_string())),
+                        element: Box::new(Type::U8),
+                        is_mut: true,
+                    },
+                    Type::USize,
+                ],
+                return_type: Box::new(with_io_err(Type::USize)),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "write".to_string(),
+            ty: Type::Function {
+                parameters: vec![
+                    ctx_ptr.clone(),
+                    Type::S32,
+                    Type::Pointer {
+                        element: Box::new(Type::U8),
                         is_mut: false,
                     },
-                    Type::Alias("Generic".to_string()),
+                    Type::USize,
                 ],
-                return_type: Box::new(Type::Never),
+                return_type: Box::new(with_io_err(Type::USize)),
+                is_variadic: false,
+            },
+        },
+        StructFieldType {
+            name: "seek".to_string(),
+            ty: Type::Function {
+                parameters: vec![ctx_ptr, Type::S32, Type::S64, seek_whence_variants],
+                return_type: Box::new(with_io_err(Type::U64)),
                 is_variadic: false,
             },
         },
@@ -689,12 +767,11 @@ impl<'a> Checker<'a> {
         Err(format!("expected slice type, found {}", ty))
     }
 
-    pub fn is_atom_type(&self, ty: &Type) -> Result<bool, String> {
+    pub fn is_string_type(&self, ty: &Type) -> Result<bool, String> {
         let resolved = self.resolve_type(ty)?;
-        if let Type::Struct(fields) = &resolved {
-            if fields.len() == 1 && fields[0].name == "str" {
-                return self.is_slice_type(&fields[0].ty);
-            }
+        if self.is_slice_type(&resolved)? {
+            let elem = self.slice_element_type(&resolved)?;
+            return Ok(self.resolve_type(&elem)? == Type::U8);
         }
         Ok(false)
     }
@@ -2702,7 +2779,7 @@ impl<'a> Checker<'a> {
                                     false
                                 }
                             } else if matches!(target_ty, Type::Symbol(_))
-                                && self.is_atom_type(&resolved).unwrap_or(false)
+                                && self.is_string_type(&resolved).unwrap_or(false)
                             {
                                 true
                             } else {
@@ -2765,13 +2842,10 @@ impl<'a> Checker<'a> {
                                 slice_expr
                             }
                         } else if matches!(target_ty, Type::Symbol(_))
-                            && matched_arm.variant_type.as_ref().map(|vt| self.is_atom_type(vt).unwrap_or(false)).unwrap_or(false)
+                            && matched_arm.variant_type.as_ref().map(|vt| self.is_string_type(vt).unwrap_or(false)).unwrap_or(false)
                         {
                             if let Expression::Symbol(sym_name) = unspanned_expression(&target_expr) {
-                                Expression::Struct(vec![StructFieldInit {
-                                    name: Some("str".to_string()),
-                                    value: Expression::String(sym_name.clone().into_bytes()),
-                                }])
+                                Expression::String(sym_name.clone().into_bytes())
                             } else {
                                 Expression::Cast {
                                     expression: Box::new(target_expr),
@@ -2828,14 +2902,33 @@ impl<'a> Checker<'a> {
 
                         let mut matching_covered = Vec::new();
                         for v in &covered_variants {
-                            let matches_variant = |target: &Type| {
-                                Self::types_compatible_with_aliases(v, target, &aliases)
-                                    && Self::types_compatible_with_aliases(target, v, &aliases)
-                            };
-
-                            if target_variants.iter().any(matches_variant) {
-                                matching_covered.push(v.clone());
-                                if let Some(pos) = unhandled.iter().position(matches_variant) {
+                            let mut matched_targets = Vec::new();
+                            for tv in &target_variants {
+                                if Self::types_compatible_with_aliases(tv, v, &aliases)
+                                    && Self::types_compatible_with_aliases(v, tv, &aliases)
+                                {
+                                    matched_targets.push(tv.clone());
+                                }
+                            }
+                            if matched_targets.is_empty() {
+                                for tv in &unhandled {
+                                    let is_symbol_to_str = matches!(tv, Type::Symbol(_))
+                                        && Self::is_string_type_with_aliases(v, &aliases);
+                                    if !is_symbol_to_str
+                                        && Self::types_compatible_with_aliases(tv, v, &aliases)
+                                    {
+                                        matched_targets.push(tv.clone());
+                                    }
+                                }
+                            }
+                            for mt in matched_targets {
+                                if !matching_covered.contains(&mt) {
+                                    matching_covered.push(mt.clone());
+                                }
+                                if let Some(pos) = unhandled.iter().position(|u| {
+                                    Self::types_compatible_with_aliases(u, &mt, &aliases)
+                                        && Self::types_compatible_with_aliases(&mt, u, &aliases)
+                                }) {
                                     unhandled.remove(pos);
                                 }
                             }
@@ -3863,11 +3956,10 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub fn is_atom_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
-        let resolved = Self::resolve_alias_root(ty, aliases);
-        if let Type::Struct(fields) = resolved {
-            if fields.len() == 1 && fields[0].name == "str" {
-                return Self::is_slice_type_with_aliases(&fields[0].ty, aliases);
+    pub fn is_string_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
+        if Self::is_slice_type_with_aliases(ty, aliases) {
+            if let Some(elem) = Self::slice_element_type_with_aliases(ty, aliases) {
+                return *Self::resolve_alias_root(elem, aliases) == Type::U8;
             }
         }
         false
@@ -3931,7 +4023,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub fn is_symbol_to_atom_compatible<'b>(
+    pub fn is_symbol_to_string_compatible<'b>(
         provided: &'b Type,
         expected: &'b Type,
         aliases: &'b HashMap<String, Type>,
@@ -3940,7 +4032,7 @@ impl<'a> Checker<'a> {
         if !matches!(resolved_provided, Type::Symbol(_)) {
             return false;
         }
-        Self::is_atom_type_with_aliases(expected, aliases)
+        Self::is_string_type_with_aliases(expected, aliases)
     }
 
     pub fn is_record_type_with_aliases<'b>(ty: &'b Type, aliases: &'b HashMap<String, Type>) -> bool {
@@ -4100,7 +4192,7 @@ impl<'a> Checker<'a> {
                 return true;
             }
 
-            if Checker::is_symbol_to_atom_compatible(provided, expected, aliases) {
+            if Checker::is_symbol_to_string_compatible(provided, expected, aliases) {
                 return true;
             }
 
@@ -4329,7 +4421,7 @@ impl<'a> Checker<'a> {
                 return true;
             }
 
-            if Checker::is_symbol_to_atom_compatible(source, target, aliases) {
+            if Checker::is_symbol_to_string_compatible(source, target, aliases) {
                 return true;
             }
 
@@ -4414,7 +4506,7 @@ impl<'a> Checker<'a> {
             }
 
             if matches!(source, Type::Symbol(_)) || matches!(target, Type::Symbol(_)) {
-                if Checker::is_symbol_to_atom_compatible(source, target, aliases) {
+                if Checker::is_symbol_to_string_compatible(source, target, aliases) {
                     return true;
                 }
                 return false;

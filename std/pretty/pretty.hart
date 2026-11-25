@@ -1,4 +1,13 @@
-mod core
+decl mod pretty {
+      export {
+            { debugPrinter,
+              style_red, style_bright_red, style_green, style_yellow,
+              style_cyan, style_blue, style_magenta,
+              style_italic, style_bold, style_dim, style_reset } to std,
+            { stdPrinter, internalPprint, pprintlnErr } to std.impl
+      }
+      import { std }
+}
 
 const style_red := "\u{1B}[31m"
 const style_bright_red := "\u{1B}[91m"
@@ -13,96 +22,10 @@ const style_bold := "\u{1B}[1m"
 const style_dim := "\u{1B}[2m"
 const style_reset := "\u{1B}[0m"
 
-type Printable :=
-      String
-      | Integer
-      | :nl
-      | :t
-      | ( :softTab, Integer )
-      | Bool
-      | Slice <Printable>
-
-def printString(s) {
-      ret := printf("%s".ptr, s.ptr)
-      if {
-            ret < 0 => return :error
-            else => return :none
-      }
-}
-
-def prNl() {
-      ret := printf("\n".ptr)
-      if {
-            ret < 0 => return :error
-            else => return :none
-      }
-}
-
-def prTab() {
-      ret := printf("\t".ptr)
-      if {
-            ret < 0 => return :error
-            else => return :none
-      }
-}
-
-def printSint(num) {
-      ret := printf("%lld".ptr, num as s64)
-      if {
-            ret < 0 => return :error
-            else => return :none
-      }
-}
-
-def printUint(num) {
-      ret := printf("%llu".ptr, num as u64)
-      if {
-            ret < 0 => return :error
-            else => return :none
-      }
-}
-
-def printa(arr) {
-      repeat arr.len using i {
-            assertOk(print(arr[i]))
-      }
-      return :none
-}
-
-def print(x) {
-      match x using z {
-            String => return printString(z)
-            SignedInteger => return printSint(z)
-            UnsignedInteger => return printUint(z)
-            :nl => return prNl()
-            :t => return prTab()
-            ( :softTab, Integer ) => {
-                  repeat (z.1 as usize) { assertOk(print(" ")) }
-                  return :none
-            }
-            Slice <Printable> => return printa(z)
-            Bool => match z {
-                  :true => return print("true")
-                  :false => return print("false")
-            }
-      }
-}
-
-def println(x) {
-      return print([x, :nl])
-}
-
 def pprintBool(z) {
       match z {
             :true => return [ style_green, "✔ true", style_reset ].print()
             :false => return [ style_red, "✘ false", style_reset ].print()
-      }
-}
-
-def pprintAtom(z, err) {
-      match err {
-            :false => return [ style_magenta, style_italic, style_bold, z.str, style_reset ].print()
-            :true => return [ style_bright_red, style_italic, style_bold, z.str, style_reset ].print()
       }
 }
 
@@ -113,9 +36,7 @@ def pprintString(z, err) {
       }
 }
 
-def pprintInteger(z) {
-      return [ style_cyan, z, style_reset ].print()
-}
+def pprintInteger(z) { [ style_cyan, z, style_reset ].print() }
 
 def pprintVoidance(z, indent_level) {
       match z using v {
@@ -138,7 +59,7 @@ def pprintArray(z, indent_level, err) {
             switch indent_level {
                   0 => :none
                   else => {
-                        repeat indent_level { assertOk(print(( :softTab, 6 ))) }
+                        repeat indent_level { assertOk(print(:t)) }
                         match err {
                               :false => assertOk(print("• "))
                               else => assertOk(print([style_bright_red, "• ", style_reset]))
@@ -173,7 +94,7 @@ def pprintRecord(item, indent_level, err) {
       }
       rec := item
       repeat rec.*.len using i {
-            repeat indent_level { assertOk(print(( :softTab, 6 ))) }
+            repeat indent_level { assertOk(print(:t)) }
             k := rec.*.key[i]
             v := rec.*.val[i]
             match err {
@@ -200,7 +121,6 @@ def internalPprint(item, indent_level, err) {
             Bool => return pprintBool(z)
             Integer => return pprintInteger(z)
             String => return pprintString(z, err)
-            Atom => return pprintAtom(z, err)
             Slice<Generic> => return pprintArray(z, indent_level, err)
             Record => return pprintRecord(z, indent_level, err)
             *Generic => return @ctx.printer(@ctx.&, z.*)
@@ -208,11 +128,11 @@ def internalPprint(item, indent_level, err) {
       }
 }
 
-func stdPrinter(ctx: *Context, item: Generic) -> :error | :none {
+func stdPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       @ctx := ctx.*
       ret := internalPprint(item, 0, :false)
       match ret {
-            :error => return :error
+            IoError => return ret
             else => return print(:nl)
       }
 }
@@ -220,7 +140,81 @@ func stdPrinter(ctx: *Context, item: Generic) -> :error | :none {
 def pprintlnErr(item) {
       ret := internalPprint(item, 0, :true)
       match ret {
-            :error => return :error
+            IoError => return ret
+            else => return print(:nl)
+      }
+}
+
+def hartPrintIndent(indent_level) {
+      repeat indent_level {
+            assertOk(print(:t))
+      }
+      return :none
+}
+
+def hartPrintArray(z, indent_level) {
+      if {
+            z.len = (0 as usize) => return print("[]")
+            else => :none
+      }
+      assertOk(print("[\n"))
+      repeat z.len using idx {
+            hartPrintIndent(indent_level + 1)
+            assertOk(internalHartPrint(z[idx], indent_level + 1))
+            assertOk(print(:nl))
+      }
+      hartPrintIndent(indent_level)
+      return print("]")
+}
+
+def hartPrintRecord(rec, indent_level) {
+      if {
+            rec.*.len = (0 as usize) => return print("{}")
+            else => :none
+      }
+      assertOk(print("{\n"))
+      repeat rec.*.len using i {
+            hartPrintIndent(indent_level + 1)
+            assertOk(print([rec.*.key[i], ": "]))
+            assertOk(internalHartPrint(rec.*.val[i], indent_level + 1))
+            assertOk(print(:nl))
+      }
+      hartPrintIndent(indent_level)
+      return print("}")
+}
+
+def hartPrintVoidance(z, indent_level) {
+      match z using v {
+            :none => return print(":none")
+            :error => return print(":error")
+            ErrorAndReason => {
+                  assertOk(print("(:error, "))
+                  assertOk(internalHartPrint(v.1, indent_level))
+                  return print(")")
+            }
+      }
+}
+
+def internalHartPrint(item, indent_level) {
+      match item using z {
+            Bool => match z {
+                  :true => return print(":true")
+                  :false => return print(":false")
+            }
+            Integer => return print(z)
+            String => return print(["\"", z, "\""])
+            Slice<Generic> => return hartPrintArray(z, indent_level)
+            Record => return hartPrintRecord(z, indent_level)
+            *Generic => return internalHartPrint(z.*, indent_level)
+            Voidance => return hartPrintVoidance(z, indent_level)
+      }
+}
+
+func debugPrinter(ctx: *Context, item: Generic) -> IoError | :none {
+      @ctx := ctx.*
+      ret := internalHartPrint(item, 0)
+      match ret {
+            IoError => return ret
             else => return print(:nl)
       }
 }

@@ -1,0 +1,8 @@
+func bad() -> *s32 {
+    x := 42
+    p := x.&
+    return p
+}
+
+func main() -> :none {}
+

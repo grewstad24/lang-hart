@@ -1,4 +1,7 @@
-mod core
+decl mod core {
+      export { default_context } to std
+      import { std, std.impl }
+}
 
 const default_context := {
       logger: stdLogger
@@ -12,4 +15,9 @@ const default_context := {
       dealloc: stdDealloc
       printer: stdPrinter
       panic: stdPanic
+      open: stdOpen
+      close: stdClose
+      read: stdRead
+      write: stdWrite
+      seek: stdSeek
 }

@@ -1,13 +1,208 @@
 decl mod io {
       export {
-            File,
-            openFile, createFile, appendFile,
-            stdin, stdout, stderr,
-            copy, copyTo, stream, copyStream, streamFd,
-            readFile, writeFile, appendToFile,
-            isOk, isErr, closeFile, writeData, readAll,
-            open, close, read, write, lseek,
-            default_buffer_size
-      } to io
-      import { std }
+            { stdin, stdout, stderr, default_buffer_size,
+              openFile, closeFile, readBytes, writeBytes, seekFile,
+              readAll, writeAll, readFile, writeFile, appendToFile,
+              copyStream, streamFile } to std,
+            { stdOpen, stdClose, stdRead, stdWrite, stdSeek } to std.impl
+      }
+      import { std, std.libc, std.impl }
+}
+
+const stdin := { fd: 0 }
+const stdout := { fd: 1 }
+const stderr := { fd: 2 }
+const default_buffer_size := 8192 as usize
+
+func stdOpen(ctx: *Context, path: String, mode: OpenMode) -> s32 | IoError {
+      flags := match mode {
+            :read => 0
+            :write => 577
+            :append => 1089
+            :read_write => 2
+      }
+      perm := match mode {
+            :read => 0
+            else => 420
+      }
+      fd := open(path.ptr, flags, perm)
+      return switch fd < 0 {
+            :true => errnoToError()
+            else => fd
+      }
+}
+
+func stdClose(ctx: *Context, fd: s32) -> :none | IoError {
+      ret := close(fd)
+      return switch ret {
+            0 => :none
+            else => errnoToError()
+      }
+}
+
+func stdRead(ctx: *Context, fd: s32, buf: *mut u8, count: usize) -> usize | IoError {
+      n := read(fd, buf as *u8, count)
+      return switch n < (0 as s64) {
+            :true => errnoToError()
+            else => n as usize
+      }
+}
+
+func stdWrite(ctx: *Context, fd: s32, buf: *u8, count: usize) -> usize | IoError {
+      n := write(fd, buf, count)
+      return switch n < (0 as s64) {
+            :true => errnoToError()
+            else => n as usize
+      }
+}
+
+func stdSeek(ctx: *Context, fd: s32, offset: s64, whence: SeekWhence) -> u64 | IoError {
+      w := match whence {
+            :start => 0
+            :current => 1
+            :end => 2
+      }
+      pos := lseek(fd, offset, w)
+      return switch pos < (0 as s64) {
+            :true => errnoToError()
+            else => pos as u64
+      }
+}
+
+def openFile(path, mode) {
+      return match @ctx.open(@ctx.&, path, mode) using res {
+            IoError => res
+            else => { fd: res }
+      }
+}
+
+def closeFile(file) { @ctx.close(@ctx.&, file.fd) }
+
+def readBytes(file, buf, count) { @ctx.read(@ctx.&, file.fd, buf, count) }
+
+def writeBytes(file, buf, count) { @ctx.write(@ctx.&, file.fd, buf, count) }
+
+def seekFile(file, offset, whence) { @ctx.seek(@ctx.&, file.fd, offset, whence) }
+
+def writeAll(file, data) {
+      mut remaining := data.len
+      mut curr_ptr := data.ptr
+      repeat while remaining > (0 as usize) {
+            written := match writeBytes(file, curr_ptr, remaining) using res {
+                  IoError => return res
+                  else => res
+            }
+            if {
+                  written = (0 as usize) => return (:error, :io_error)
+                  else => :none
+            }
+            curr_ptr := (curr_ptr as usize + written) as *u8
+            remaining -= written
+      }
+      return :none
+}
+
+def readAll(file) {
+      size := match seekFile(file, 0 as s64, :end) using res {
+            IoError => return res
+            else => res
+      }
+      match seekFile(file, 0 as s64, :start) using res {
+            IoError => return res
+            else => :none
+      }
+      u_size := size as usize
+      buf := match memalloc(u_size + (1 as usize)) using res {
+            :error => return res
+            else => res
+      }
+      mut total_read: usize := 0 as usize
+      mut curr_ptr := buf as *mut u8
+      repeat while total_read < u_size {
+            n := match readBytes(file, curr_ptr, u_size - total_read) using res {
+                  IoError => {
+                        dealloc(buf)
+                        return res
+                  }
+                  else => res
+            }
+            if {
+                  n = (0 as usize) => break
+                  else => :none
+            }
+            curr_ptr := (curr_ptr as usize + n) as *mut u8
+            total_read += n
+      }
+      curr_ptr.* := 0 as u8
+      return { ptr: buf as *u8, len: total_read }
+}
+
+def readFile(path) {
+      file := match openFile(path, :read) using res {
+            IoError => return res
+            else => res
+      }
+      defer assertOk(closeFile(file))
+      return readAll(file)
+}
+
+def writeFile(path, data) {
+      file := match openFile(path, :write) using res {
+            IoError => return res
+            else => res
+      }
+      defer assertOk(closeFile(file))
+      return writeAll(file, data)
+}
+
+def appendToFile(path, data) {
+      file := match openFile(path, :append) using res {
+            IoError => return res
+            else => res
+      }
+      defer assertOk(closeFile(file))
+      return writeAll(file, data)
+}
+
+def copyStream(src, dst, chunk_size) {
+      buf := match memalloc(chunk_size) using res {
+            :error => return res
+            else => res
+      }
+      defer dealloc(buf)
+      repeat while :true {
+            n := match readBytes(src, buf as *mut u8, chunk_size) using res {
+                  IoError => return res
+                  else => res
+            }
+            if {
+                  n = (0 as usize) => break
+                  else => :none
+            }
+            match writeAll(dst, { ptr: buf as *u8, len: n }) using res {
+                  IoError => return res
+                  else => :none
+            }
+      }
+      return :none
+}
+
+def streamFile(file, chunk_size, callback) {
+      buf := match memalloc(chunk_size) using res {
+            :error => return res
+            else => res
+      }
+      defer dealloc(buf)
+      repeat while :true {
+            n := match readBytes(file, buf as *mut u8, chunk_size) using res {
+                  IoError => return res
+                  else => res
+            }
+            if {
+                  n = (0 as usize) => break
+                  else => :none
+            }
+            callback({ ptr: buf as *u8, len: n })
+      }
+      return :none
 }

@@ -1,0 +1,7 @@
+func bad() -> *opaque {
+    x := 42
+    return x.& as *opaque
+}
+
+func main() -> :none {}
+

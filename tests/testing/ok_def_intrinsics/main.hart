@@ -1,0 +1,91 @@
+type Bool := :true | :false
+type String := { ptr: *u8, len: usize }
+type LogLevel := { info: Bool, warn: Bool, error: Bool }
+type Generic := s32
+type OpenMode := :read | :write | :append | :read_write
+type SeekWhence := :start | :current | :end
+type IoError :=
+    (:error, :permission_denied)
+    | (:error, :not_found)
+    | (:error, :interrupted)
+    | (:error, :io_error)
+    | (:error, :bad_fd)
+    | (:error, :would_block)
+    | (:error, :out_of_memory)
+    | (:error, :access_denied)
+    | (:error, :already_exists)
+    | (:error, :not_a_directory)
+    | (:error, :is_a_directory)
+    | (:error, :invalid_argument)
+    | (:error, :no_space)
+    | (:error, :broken_pipe)
+    | (:error, :unknown)
+type Context := {
+    logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
+    log_level: LogLevel
+    memalloc: func(*Context, usize) -> *mut opaque | :error
+    resizeAlloc: func(*Context, *opaque, usize) -> *mut opaque | :error
+    dealloc: func(*Context, *opaque) -> :none
+    printer: func(*Context, Generic) -> :none | IoError
+    panic: func(*Context, Generic) -> never
+    open: func(*Context, String, OpenMode) -> s32 | IoError
+    close: func(*Context, s32) -> :none | IoError
+    read: func(*Context, s32, *mut u8, usize) -> usize | IoError
+    write: func(*Context, s32, *u8, usize) -> usize | IoError
+    seek: func(*Context, s32, s64, SeekWhence) -> u64 | IoError
+}
+
+extern func malloc(size: usize) -> *mut opaque
+extern func free(ptr: *opaque) -> :none
+extern func abort() -> never
+
+func takeMeta(ln: u64, fl: String, hln: u64, hfl: String) -> :none {}
+
+def addOne(x) {
+    takeMeta(@caller_line_number, @caller_file_name, @this_line_number, @this_file_name)
+    return x + 1
+}
+
+func noopLogger(ctx: *Context, l: :info | :warn | :error | :never, ml: LogLevel, line: u64, f: String, item: Generic) -> :none {}
+func noopMalloc(ctx: *Context, sz: usize) -> *mut opaque | :error { return :error }
+func noopRealloc(ctx: *Context, p: *opaque, sz: usize) -> *mut opaque | :error { return :error }
+func noopFree(ctx: *Context, p: *opaque) -> :none {}
+func noopPrint(ctx: *Context, item: Generic) -> :none | IoError { return :none }
+func noopPanic(ctx: *Context, item: Generic) -> never { abort() }
+func noopOpen(ctx: *Context, p: String, m: OpenMode) -> s32 | IoError { return 0 }
+func noopClose(ctx: *Context, fd: s32) -> :none | IoError { return :none }
+func noopRead(ctx: *Context, fd: s32, b: *mut u8, n: usize) -> usize | IoError { return 0 as usize }
+func noopWrite(ctx: *Context, fd: s32, b: *u8, n: usize) -> usize | IoError { return 0 as usize }
+func noopSeek(ctx: *Context, fd: s32, o: s64, w: SeekWhence) -> u64 | IoError { return 0 as u64 }
+
+func main() -> s32 {
+    @ctx := {
+        logger: noopLogger
+        log_level: { info: :false, warn: :false, error: :false }
+        memalloc: noopMalloc
+        resizeAlloc: noopRealloc
+        dealloc: noopFree
+        printer: noopPrint
+        panic: noopPanic
+        open: noopOpen
+        close: noopClose
+        read: noopRead
+        write: noopWrite
+        seek: noopSeek
+    }
+    a := addOne(41)
+    b := addOne(100 as u64)
+
+    mut x := 42
+    sz := @sizeOf(x)
+    raw := malloc(sz)
+    typed := raw.@asTypeOf(x.&mut)
+    typed.* := a + (b as s32) + (sz as s32)
+    res := typed.*
+    free(raw)
+    return if {
+        res = 147 => 0
+        else => 1
+    }
+}
+

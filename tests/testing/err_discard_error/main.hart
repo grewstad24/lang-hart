@@ -1,0 +1,8 @@
+func fallible() -> s32 | :error {
+    return :error
+}
+
+func main() -> :none {
+    fallible()
+}
+

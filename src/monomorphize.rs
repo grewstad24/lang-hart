@@ -1938,11 +1938,30 @@ fn infer_expr_type_internal(
 
 
 pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) -> bool {
+    type_matches_pattern_depth(target, pattern, scope, 0)
+}
+
+fn type_matches_pattern_depth(target: &Type, pattern: &Type, scope: &ModuleScope, depth: usize) -> bool {
+    if depth > 16 {
+        return false;
+    }
     let resolved_target = resolve_type_alias_deep(target, scope);
     let resolved_pattern = resolve_type_alias_deep(pattern, scope);
 
     if resolved_target == resolved_pattern {
         return true;
+    }
+
+    if matches!(resolved_target, Type::Symbol(_)) {
+        if let Type::Struct(p_fields) = &resolved_pattern {
+            if p_fields.len() == 2 && p_fields[0].name == "ptr" && p_fields[1].name == "len" {
+                if let Type::Pointer { element, .. } = &p_fields[0].ty {
+                    if resolve_type_alias_deep(element, scope) == Type::U8 {
+                        return true;
+                    }
+                }
+            }
+        }
     }
 
     if let (Type::Struct(t_fields), Type::Struct(p_fields)) = (&resolved_target, &resolved_pattern) {
@@ -1965,21 +1984,40 @@ pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) 
                         }
                     }
                     if let Type::Union(_) = &p_res {
-                        return type_matches_pattern(t_elem, &p_res, scope);
+                        return type_matches_pattern_depth(t_elem, &p_res, scope, depth + 1);
                     }
-                    return type_matches_pattern(t_elem, p_elem, scope);
+                    return type_matches_pattern_depth(t_elem, p_elem, scope, depth + 1);
                 }
             }
         }
     }
 
     if let Type::Union(t_vars) = &resolved_target {
-        return t_vars.iter().all(|tv| type_matches_pattern(tv, pattern, scope));
+        return t_vars.iter().all(|tv| type_matches_pattern_depth(tv, pattern, scope, depth + 1));
     }
 
     match &resolved_pattern {
         Type::Union(variants) => {
-            variants.iter().any(|v| type_matches_pattern(target, v, scope))
+            variants.iter().any(|v| type_matches_pattern_depth(target, v, scope, depth + 1))
+        }
+        Type::Tuple(p_elems) => {
+            if let Type::Tuple(t_elems) = &resolved_target {
+                if p_elems.len() == t_elems.len() {
+                    return p_elems.iter().zip(t_elems.iter()).all(|(p, t)| {
+                        let p_res = resolve_type_alias_deep(p, scope);
+                        if let Type::Alias(name) = &p_res {
+                            if name == "Generic" || name == "Printable" {
+                                return true;
+                            }
+                        }
+                        if let Type::Union(_) = &p_res {
+                            return type_matches_pattern_depth(t, &p_res, scope, depth + 1);
+                        }
+                        type_matches_pattern_depth(t, p, scope, depth + 1)
+                    });
+                }
+            }
+            false
         }
         Type::GenericInstance { name: p_name, type_arguments: p_args } => {
             if let Type::GenericInstance { name: t_name, type_arguments: t_args } = &resolved_target {
@@ -1992,10 +2030,20 @@ pub fn type_matches_pattern(target: &Type, pattern: &Type, scope: &ModuleScope) 
                             }
                         }
                         if let Type::Union(_) = &p_res {
-                            return type_matches_pattern(t, &p_res, scope);
+                            return type_matches_pattern_depth(t, &p_res, scope, depth + 1);
                         }
-                        type_matches_pattern(t, p, scope)
+                        type_matches_pattern_depth(t, p, scope, depth + 1)
                     });
+                }
+            }
+            if let Some(template) = scope.lookup_type_alias(p_name) {
+                if template.is_meta && template.type_parameters.len() == p_args.len() {
+                    let mut subs = HashMap::new();
+                    for (param, arg) in template.type_parameters.iter().zip(p_args.iter()) {
+                        subs.insert(param.clone(), arg.clone());
+                    }
+                    let substituted = substitute_type(&template.target, &subs);
+                    return type_matches_pattern_depth(target, &substituted, scope, depth + 1);
                 }
             }
             false
