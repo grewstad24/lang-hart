@@ -1,6 +1,6 @@
 use std::*
 
-func main(args: Slice<String>) -> :none {
+func main() -> :none {
       @ctx := default_context
       log("hello from main")
       log({ name: "alice" })

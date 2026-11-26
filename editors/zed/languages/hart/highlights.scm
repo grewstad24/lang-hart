@@ -1,11 +1,8 @@
 ; Keywords
 [
-  "decl"
+  "pub"
   "mod"
-  "export"
-  "import"
-  "to"
-  "from"
+  "use"
   "func"
   "def"
   "extern"
@@ -32,6 +29,7 @@
 ; Types
 (primitive_type) @type.builtin
 (type_identifier) @type
+(qualified_type_identifier) @type
 
 ; Variables & Identifiers (default fallback first)
 (identifier) @variable
@@ -123,9 +121,11 @@
 [
   ","
   ";"
+  "::"
+  "::*"
 ] @punctuation.delimiter
 
-; Namespace paths
-(namespace_path) @module
-(decl_module name: (identifier) @module)
-(mod_declaration name: (identifier) @module)
+; Module paths
+(mod_declaration name: (module_path) @module)
+(use_directive path: (module_path) @module)
+(use_directive alias: (identifier) @module)

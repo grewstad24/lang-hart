@@ -25,17 +25,14 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$._non_assignment_expression, $.struct_field_init],
-    [$.import_directive, $.namespace_path],
   ],
 
   rules: {
     source_file: $ => repeat($._item),
 
     _item: $ => choice(
-      $.decl_module,
       $.mod_declaration,
-      $.export_directive,
-      $.import_directive,
+      $.use_directive,
       $.function_definition,
       $.def_definition,
       $.extern_function_declaration,
@@ -44,81 +41,36 @@ module.exports = grammar({
     ),
 
     const_declaration: $ => prec.right(PREC.ASSIGN, seq(
+      optional('pub'),
       'const',
       field('name', $.identifier),
-      optional(seq(':', field('type', $._type))),
       ':=',
       field('value', $._expression)
     )),
 
     comment: $ => token(seq('#', /.*/)),
 
-    // Module & Imports/Exports
-    decl_module: $ => seq(
-      'decl',
-      'mod',
-      field('name', $.identifier),
-      '{',
-      optional(choice(
-        seq($.export_directive, optional($.import_directive)),
-        seq($.import_directive, optional($.export_directive)),
-      )),
-      '}'
-    ),
+    // Modules & Use
+    module_path: $ => seq($.identifier, repeat(seq('::', $.identifier))),
 
     mod_declaration: $ => seq(
       'mod',
-      field('name', $.identifier)
+      field('name', $.module_path)
     ),
 
-    export_directive: $ => choice(
-      seq(
-        'export',
-        '{',
-        repeat(seq($.export_group, optional(','))),
-        '}'
-      ),
-      seq(
-        'export',
-        '{',
-        commaSep($.identifier),
-        optional(','),
-        '}',
-        optional(seq('to', field('target', $.namespace_path)))
-      )
+    use_directive: $ => seq(
+      optional('pub'),
+      'use',
+      field('path', $.module_path),
+      optional(choice(
+        '::*',
+        seq('as', field('alias', $.identifier)),
+      )),
     ),
-
-    export_group: $ => seq(
-      '{',
-      commaSep($.identifier),
-      optional(','),
-      '}',
-      optional(seq('to', field('target', $.namespace_path)))
-    ),
-
-    import_directive: $ => choice(
-      seq(
-        'import',
-        '{',
-        commaSep($.namespace_path),
-        optional(','),
-        '}'
-      ),
-      seq(
-        'import',
-        '{',
-        commaSep($.identifier),
-        optional(','),
-        '}',
-        'from',
-        field('source', $.namespace_path)
-      )
-    ),
-
-    namespace_path: $ => $.identifier,
 
     // Type Definitions
     type_definition: $ => seq(
+      optional('pub'),
       'type',
       field('name', $.type_identifier),
       optional(field('type_parameters', $.type_parameters)),
@@ -135,6 +87,7 @@ module.exports = grammar({
 
     // Functions
     function_definition: $ => seq(
+      optional('pub'),
       'func',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.parameter_list),
@@ -143,6 +96,7 @@ module.exports = grammar({
     ),
 
     def_definition: $ => seq(
+      optional('pub'),
       'def',
       field('name', alias($.identifier, $.function_identifier)),
       field('parameters', $.def_parameter_list),
@@ -163,6 +117,7 @@ module.exports = grammar({
     ),
 
     extern_function_declaration: $ => seq(
+      optional('pub'),
       'extern',
       'func',
       field('name', alias($.identifier, $.function_identifier)),
@@ -189,6 +144,7 @@ module.exports = grammar({
     _type: $ => choice(
       $.primitive_type,
       $.generic_type,
+      $.qualified_type_identifier,
       $.type_identifier,
       $.pointer_type,
       $.array_type,
@@ -215,8 +171,13 @@ module.exports = grammar({
     ),
 
     generic_type: $ => prec(PREC.PRIMARY, seq(
-      field('name', $.type_identifier),
+      field('name', choice($.qualified_type_identifier, $.type_identifier)),
       field('type_arguments', $.type_arguments)
+    )),
+
+    qualified_type_identifier: $ => prec(PREC.PRIMARY, seq(
+      $.type_identifier,
+      repeat1(seq('::', $.type_identifier))
     )),
 
     type_arguments: $ => seq(
@@ -322,8 +283,14 @@ module.exports = grammar({
       $.array_literal,
       $.block,
       $._literal,
+      $.qualified_identifier,
       $.identifier,
     ),
+
+    qualified_identifier: $ => prec(PREC.PRIMARY, seq(
+      $.identifier,
+      repeat1(seq('::', $.identifier))
+    )),
 
     mut_declaration: $ => prec.right(PREC.ASSIGN, seq(
       'mut',
@@ -385,7 +352,11 @@ module.exports = grammar({
     )),
 
     call_expression: $ => prec(PREC.CALL, seq(
-      field('function', choice(prec(1, alias($.identifier, $.function_identifier)), $._expression)),
+      field('function', choice(
+        prec(1, alias($.identifier, $.function_identifier)),
+        prec(1, alias($.qualified_identifier, $.function_identifier)),
+        $._expression
+      )),
       field('arguments', $.argument_list)
     )),
 

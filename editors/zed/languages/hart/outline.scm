@@ -10,11 +10,8 @@
 (type_definition
   name: (type_identifier) @name) @item
 
-(decl_module
-  name: (identifier) @name) @item
-
 (mod_declaration
-  name: (identifier) @name) @item
+  name: (module_path) @name) @item
 
 (const_declaration
   name: (identifier) @name) @item

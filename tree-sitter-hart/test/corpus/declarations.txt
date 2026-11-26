@@ -2,33 +2,31 @@
 Functions and modules
 ==================
 
-import { print, heap }
+mod mylib::io
+use std::*
+pub use mylib::raw as raw
 
-decl mod io {
-    export { read, write } to io_raw
-}
-
-func add(a: s32, b: s32) -> s32 {
+pub func add(a: s32, b: s32) -> s32 {
     a + b
 }
 
-extern func write(fd: s32, buf: *u8, len: u64) -> s64
+pub extern func write(fd: s32, buf: *u8, len: u64) -> s64
 
 ---
 
 (source_file
-  (import_directive
-    (namespace_path
-      (identifier))
-    (namespace_path
+  (mod_declaration
+    name: (module_path
+      (identifier)
       (identifier)))
-  (decl_module
-    name: (identifier)
-    (export_directive
+  (use_directive
+    path: (module_path
+      (identifier)))
+  (use_directive
+    path: (module_path
       (identifier)
-      (identifier)
-      target: (namespace_path
-        (identifier))))
+      (identifier))
+    alias: (identifier))
   (function_definition
     name: (function_identifier)
     parameters: (parameter_list
@@ -62,7 +60,7 @@ extern func write(fd: s32, buf: *u8, len: u64) -> s64
 Types
 ==================
 
-type String := Slice <u8>
+pub type String := Slice <u8>
 type Integer := s32 | s64 | u32 | u64
 type Node := *{
     val: s32,
@@ -116,38 +114,11 @@ type ResizeableArray<T> := {
         type: (primitive_type)))))
 
 ==================
-Grouped exports
-==================
-
-decl mod print {
-    export {
-        { print, println } to print,
-        { printf } to print_raw_printf
-    }
-}
-
----
-
-(source_file
-  (decl_module
-    name: (identifier)
-    (export_directive
-      (export_group
-        (identifier)
-        (identifier)
-        target: (namespace_path
-          (identifier)))
-      (export_group
-        (identifier)
-        target: (namespace_path
-          (identifier))))))
-
-==================
 Const declarations, generic defs, and mutable pointers
 ==================
 
-const MAX_SIZE := 1024
-def resize(vec, len) {
+pub const MAX_SIZE := 1024
+pub def resize(vec, len) {
     realloc(vec, len)
 }
 func identity(x: *mut u8) -> *u8 {
