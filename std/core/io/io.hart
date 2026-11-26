@@ -1,13 +1,11 @@
-decl mod io {
-      export {
-            { stdin, stdout, stderr, default_buffer_size,
-              openFile, closeFile, readBytes, writeBytes, seekFile,
-              readAll, writeAll, readFile, writeFile, appendToFile,
-              copyStream, streamFile } to std,
-            { stdOpen, stdClose, stdRead, stdWrite, stdSeek } to std.impl
-      }
-      import { std, std.libc, std.impl }
+export {
+      { stdin, stdout, stderr, default_buffer_size,
+        openFile, closeFile, readBytes, writeBytes, seekFile,
+        readAll, writeAll, readFile, writeFile, appendToFile,
+        copyStream, streamFile } to std,
+      { stdOpen, stdClose, stdRead, stdWrite, stdSeek } to std_impl
 }
+import { std, std_libc, std_error }
 
 const stdin := { fd: 0 }
 const stdout := { fd: 1 }
@@ -112,7 +110,7 @@ def readAll(file) {
             else => :none
       }
       u_size := size as usize
-      buf := match memalloc(u_size + (1 as usize)) using res {
+      buf := match heapAlloc(u_size + (1 as usize)) using res {
             :error => return res
             else => res
       }
@@ -121,7 +119,7 @@ def readAll(file) {
       repeat while total_read < u_size {
             n := match readBytes(file, curr_ptr, u_size - total_read) using res {
                   IoError => {
-                        dealloc(buf)
+                        heapDealloc(buf)
                         return res
                   }
                   else => res
@@ -165,11 +163,11 @@ def appendToFile(path, data) {
 }
 
 def copyStream(src, dst, chunk_size) {
-      buf := match memalloc(chunk_size) using res {
+      buf := match heapAlloc(chunk_size) using res {
             :error => return res
             else => res
       }
-      defer dealloc(buf)
+      defer heapDealloc(buf)
       repeat while :true {
             n := match readBytes(src, buf as *mut u8, chunk_size) using res {
                   IoError => return res
@@ -188,11 +186,11 @@ def copyStream(src, dst, chunk_size) {
 }
 
 def streamFile(file, chunk_size, callback) {
-      buf := match memalloc(chunk_size) using res {
+      buf := match heapAlloc(chunk_size) using res {
             :error => return res
             else => res
       }
-      defer dealloc(buf)
+      defer heapDealloc(buf)
       repeat while :true {
             n := match readBytes(file, buf as *mut u8, chunk_size) using res {
                   IoError => return res

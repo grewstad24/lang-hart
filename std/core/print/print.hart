@@ -1,7 +1,5 @@
-decl mod print {
-      export { Printable, print, println } to std
-      import { std, std.libc, std.impl }
-}
+export { Printable, print, println } to std
+import { std, std_libc, std_error }
 
 type Printable :=
       String
@@ -20,7 +18,7 @@ func checkPrintfRet(ret: s32) -> :none | IoError {
 }
 
 func printString(s: String) -> :none | IoError {
-      return checkPrintfRet(printf("%s".ptr, s.ptr))
+      return checkPrintfRet(printf("%.*s".ptr, s.len as s32, s.ptr))
 }
 
 func prNl() -> :none | IoError {

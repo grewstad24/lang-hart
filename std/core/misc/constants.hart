@@ -1,0 +1,28 @@
+decl mod misc {
+      export {
+            String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Slice, Vec, Bool,
+            UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason,
+            IoError, LogLevel, OpenMode, SeekWhence, File, Context,
+            default_context, fill
+      } to std
+      import { std, std_impl }
+}
+
+const default_context := {
+      logger: stdLogger
+      log_level: {
+            info: :true
+            warn: :true
+            error: :true
+      }
+      heap_alloc: stdHeapAlloc
+      heap_realloc: stdHeapRealloc
+      heap_dealloc: stdHeapDealloc
+      printer: stdPrinter
+      panic: stdPanic
+      open: stdOpen
+      close: stdClose
+      read: stdRead
+      write: stdWrite
+      seek: stdSeek
+}

@@ -1,10 +1,4 @@
-decl mod types {
-      export {
-            String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Slice, Bool,
-            UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason,
-            IoError, LogLevel, OpenMode, SeekWhence, File, Context
-      } to std
-}
+mod misc
 
 type String := Slice <u8>
 
@@ -33,6 +27,11 @@ type Bool := :true | :false
 type Slice <T> := {
       ptr: *T
       len: usize
+}
+
+type Vec <T> := {
+      items: Slice <T>
+      cap: usize
 }
 
 type UnvoidGeneric :=
@@ -79,9 +78,9 @@ type File := {
 type Context := {
       logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
       log_level: LogLevel
-      memalloc: func(*Context, usize) -> *mut opaque | :error
-      resizeAlloc: func(*Context, *opaque, usize) -> *mut opaque | :error
-      dealloc: func(*Context, *opaque) -> :none
+      heap_alloc: func(*Context, usize) -> *mut opaque | :error
+      heap_realloc: func(*Context, *opaque, usize) -> *mut opaque | :error
+      heap_dealloc: func(*Context, *opaque) -> :none
       printer: func(*Context, Generic) -> :none | IoError
       panic: func(*Context, Generic) -> never
       open: func(*Context, String, OpenMode) -> s32 | IoError

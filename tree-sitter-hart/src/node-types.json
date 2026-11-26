@@ -4776,6 +4776,21 @@
     }
   },
   {
+    "type": "namespace_path",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "parameter",
     "named": true,
     "fields": {
@@ -7800,10 +7815,6 @@
   {
     "type": "mut",
     "named": false
-  },
-  {
-    "type": "namespace_path",
-    "named": true
   },
   {
     "type": "never",

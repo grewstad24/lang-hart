@@ -5,7 +5,7 @@ Functions and modules
 import { print, heap }
 
 decl mod io {
-    export { read, write } to io.raw
+    export { read, write } to io_raw
 }
 
 func add(a: s32, b: s32) -> s32 {
@@ -18,14 +18,17 @@ extern func write(fd: s32, buf: *u8, len: u64) -> s64
 
 (source_file
   (import_directive
-    (namespace_path)
-    (namespace_path))
+    (namespace_path
+      (identifier))
+    (namespace_path
+      (identifier)))
   (decl_module
     name: (identifier)
     (export_directive
       (identifier)
       (identifier)
-      target: (namespace_path)))
+      target: (namespace_path
+        (identifier))))
   (function_definition
     name: (function_identifier)
     parameters: (parameter_list
@@ -119,7 +122,7 @@ Grouped exports
 decl mod print {
     export {
         { print, println } to print,
-        { printf } to print.raw_printf
+        { printf } to print_raw_printf
     }
 }
 
@@ -132,10 +135,12 @@ decl mod print {
       (export_group
         (identifier)
         (identifier)
-        target: (namespace_path))
+        target: (namespace_path
+          (identifier)))
       (export_group
         (identifier)
-        target: (namespace_path)))))
+        target: (namespace_path
+          (identifier))))))
 
 ==================
 Const declarations, generic defs, and mutable pointers

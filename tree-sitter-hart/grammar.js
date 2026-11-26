@@ -25,6 +25,7 @@ module.exports = grammar({
 
   conflicts: $ => [
     [$._non_assignment_expression, $.struct_field_init],
+    [$.import_directive, $.namespace_path],
   ],
 
   rules: {
@@ -114,10 +115,7 @@ module.exports = grammar({
       )
     ),
 
-    namespace_path: $ => token(seq(
-      /[a-zA-Z_][a-zA-Z0-9_]*/,
-      repeat(seq('.', /[a-zA-Z_][a-zA-Z0-9_]*/))
-    )),
+    namespace_path: $ => $.identifier,
 
     // Type Definitions
     type_definition: $ => seq(

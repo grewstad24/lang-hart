@@ -146,7 +146,7 @@ pub fn context_type() -> Type {
             ty: log_level_struct,
         },
         StructFieldType {
-            name: "memalloc".to_string(),
+            name: "heap_alloc".to_string(),
             ty: Type::Function {
                 parameters: vec![ctx_ptr.clone(), Type::USize],
                 return_type: Box::new(sorted_union(vec![
@@ -160,7 +160,7 @@ pub fn context_type() -> Type {
             },
         },
         StructFieldType {
-            name: "resizeAlloc".to_string(),
+            name: "heap_realloc".to_string(),
             ty: Type::Function {
                 parameters: vec![
                     ctx_ptr.clone(),
@@ -181,7 +181,7 @@ pub fn context_type() -> Type {
             },
         },
         StructFieldType {
-            name: "dealloc".to_string(),
+            name: "heap_dealloc".to_string(),
             ty: Type::Function {
                 parameters: vec![
                     ctx_ptr.clone(),

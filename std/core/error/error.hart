@@ -1,10 +1,9 @@
-decl mod error {
-      export {
-            { assertOk, panic } to std,
-            { stdPanic, errnoToError } to std.impl
-      }
-      import { std, std.libc }
+export {
+      { assertOk, panic } to std,
+      { stdPanic } to std_impl,
+      { errnoToError } to std_error
 }
+import { std, std_libc }
 
 func errnoToError() -> IoError {
       err := __errno_location().*
@@ -40,10 +39,10 @@ def panic(reason) { @ctx.panic(@ctx.&, reason) }
 
 def assertOk(val) { return
       match val using v {
-            :error => @ctx.panic(@ctx.&, :none)
+            :error => panic(:none)
             ErrorWithReason <Generic> => {
                   err_tuple := v as ErrorWithReason <Generic>
-                  @ctx.panic(@ctx.&, err_tuple.1)
+                  panic(err_tuple.1)
             }
             else => v
       }

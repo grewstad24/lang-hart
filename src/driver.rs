@@ -197,10 +197,16 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
         }
     }
 
-    let mut result = unnamed_modules;
-
+    let mut result = Vec::new();
     let mut named_keys: Vec<String> = named_modules.keys().cloned().collect();
     named_keys.sort();
+
+    let project_dir_prefix = dirs.last().map(|d| d.display().to_string()).unwrap_or_default();
+    let (project_unnamed, std_unnamed): (Vec<_>, Vec<_>) = unnamed_modules
+        .into_iter()
+        .partition(|m| !project_dir_prefix.is_empty() && m.dir_path.starts_with(&project_dir_prefix));
+
+    result.extend(std_unnamed);
 
     for name in named_keys {
         let (decl, files) = named_modules.remove(&name).unwrap();
@@ -226,6 +232,8 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
             }
         }
     }
+
+    result.extend(project_unnamed);
 
     Ok(result)
 }
@@ -565,20 +573,20 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
     crate::monomorphize::concretize_meta_types(&mut modules, &mut module_scopes)?;
 
     for _ in 0..3 {
-        let mut shared_canonical_targets: HashMap<String, Type> = HashMap::new();
+        let mut shared_canonical_targets: HashMap<(String, String), Type> = HashMap::new();
         for (module, scope) in modules.iter().zip(module_scopes.iter()) {
             let checker = Checker::new(scope);
             for (name, prov) in &scope.type_aliases {
-                if !prov.item.is_meta {
+                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.imports.is_empty()) {
                     if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
-                        shared_canonical_targets.insert(name.clone(), target);
+                        shared_canonical_targets.entry((prov.originating_file.clone(), name.clone())).or_insert(target);
                     }
                 }
             }
             for (name, prov) in &scope.home_type_aliases {
-                if !prov.item.is_meta {
+                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.imports.is_empty()) {
                     if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
-                        shared_canonical_targets.insert(name.clone(), target);
+                        shared_canonical_targets.entry((prov.originating_file.clone(), name.clone())).or_insert(target);
                     }
                 }
             }
@@ -586,7 +594,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
                 for alias in &file.type_aliases {
                     if !alias.is_meta {
                         if let Ok(target) = canonicalize_type(&alias.target, &checker) {
-                            shared_canonical_targets.insert(alias.name.clone(), target);
+                            shared_canonical_targets.entry((file.file_path.clone(), alias.name.clone())).or_insert(target);
                         }
                     }
                 }
@@ -594,17 +602,19 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
         }
 
         for (module, scope) in modules.iter_mut().zip(module_scopes.iter_mut()) {
-            for (name, target) in &shared_canonical_targets {
-                if let Some(prov) = scope.type_aliases.get_mut(name) {
+            for (name, prov) in scope.type_aliases.iter_mut() {
+                if let Some(target) = shared_canonical_targets.get(&(prov.originating_file.clone(), name.clone())) {
                     prov.item.target = target.clone();
                 }
-                if let Some(prov) = scope.home_type_aliases.get_mut(name) {
+            }
+            for (name, prov) in scope.home_type_aliases.iter_mut() {
+                if let Some(target) = shared_canonical_targets.get(&(prov.originating_file.clone(), name.clone())) {
                     prov.item.target = target.clone();
                 }
             }
             for file in &mut module.source_files {
                 for alias in &mut file.type_aliases {
-                    if let Some(target) = shared_canonical_targets.get(&alias.name) {
+                    if let Some(target) = shared_canonical_targets.get(&(file.file_path.clone(), alias.name.clone())) {
                         alias.target = target.clone();
                     }
                 }

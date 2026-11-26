@@ -1893,7 +1893,11 @@ fn infer_expr_type_internal(
                             return Some(*sig.return_type.clone());
                         } else if !visiting.contains(&fn_name) {
                             visiting.insert(fn_name.clone());
-                            let res = infer_function_return_type(&g.specialized_def.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                            let spec_locals: HashMap<String, Type> = sig.parameters.iter()
+                                .filter(|p| p.ty != Type::Inferred)
+                                .map(|p| (p.name.clone(), p.ty.clone()))
+                                .collect();
+                            let res = infer_function_return_type(&g.specialized_def.value, &spec_locals, scope, generated, visiting, depth + 1);
                             visiting.remove(&fn_name);
                             return res;
                         }
@@ -1905,7 +1909,11 @@ fn infer_expr_type_internal(
                             return Some(*sig.return_type.clone());
                         } else if !visiting.contains(&fn_name) {
                             visiting.insert(fn_name.clone());
-                            let res = infer_function_return_type(&prov.item.value, &HashMap::new(), scope, generated, visiting, depth + 1);
+                            let spec_locals: HashMap<String, Type> = sig.parameters.iter()
+                                .filter(|p| p.ty != Type::Inferred)
+                                .map(|p| (p.name.clone(), p.ty.clone()))
+                                .collect();
+                            let res = infer_function_return_type(&prov.item.value, &spec_locals, scope, generated, visiting, depth + 1);
                             visiting.remove(&fn_name);
                             return res;
                         }
@@ -1959,6 +1967,22 @@ fn type_matches_pattern_depth(target: &Type, pattern: &Type, scope: &ModuleScope
                     if resolve_type_alias_deep(element, scope) == Type::U8 {
                         return true;
                     }
+                }
+            }
+        }
+    }
+
+    if let Type::Array { element: t_elem, .. } = &resolved_target {
+        if let Type::Struct(p_fields) = &resolved_pattern {
+            if p_fields.len() == 2 && p_fields[0].name == "ptr" && p_fields[1].name == "len" {
+                if let Type::Pointer { element: p_elem, .. } = &p_fields[0].ty {
+                    let p_res = resolve_type_alias_deep(p_elem, scope);
+                    if let Type::Alias(name) = &p_res {
+                        if name == "Generic" || name == "Printable" {
+                            return true;
+                        }
+                    }
+                    return type_matches_pattern_depth(t_elem, &p_res, scope, depth + 1);
                 }
             }
         }

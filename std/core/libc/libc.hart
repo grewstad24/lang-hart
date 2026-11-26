@@ -1,9 +1,7 @@
-decl mod libc {
-      export {
-            malloc, free, realloc, abort, printf, __errno_location,
-            open, close, read, write, lseek
-      } to std.libc
-}
+export {
+      malloc, free, realloc, abort, printf, __errno_location,
+      open, close, read, write, lseek
+} to std_libc
 
 extern func malloc(size: usize) -> *mut opaque
 extern func free(ptr: *opaque) -> :none

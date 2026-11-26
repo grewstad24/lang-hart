@@ -1,13 +1,5 @@
-decl mod pretty {
-      export {
-            { debugPrinter,
-              style_red, style_bright_red, style_green, style_yellow,
-              style_cyan, style_blue, style_magenta,
-              style_italic, style_bold, style_dim, style_reset } to std,
-            { stdPrinter, internalPprint, pprintlnErr } to std.impl
-      }
-      import { std }
-}
+export { debugPrinter, stdPrinter, pprint } to std
+import { std }
 
 const style_red := "\u{1B}[31m"
 const style_bright_red := "\u{1B}[91m"
@@ -29,12 +21,7 @@ def pprintBool(z) {
       }
 }
 
-def pprintString(z, err) {
-      match err {
-            :false => return [ style_yellow, "'", z, "'", style_reset ].print()
-            :true => return [ style_bright_red, "'", z, "'", style_reset ].print()
-      }
-}
+def pprintString(z) { [ style_yellow, "'", z, "'", style_reset ].print() }
 
 def pprintInteger(z) { [ style_cyan, z, style_reset ].print() }
 
@@ -44,12 +31,12 @@ def pprintVoidance(z, indent_level) {
             :error => return [ style_bright_red, "‼ error", style_reset ].print()
             ErrorAndReason => {
                   assertOk([ style_bright_red, "‼ error ", style_reset].print())
-                  return internalPprint(v.1, indent_level + 1, :true)
+                  return internalPprint(v.1, indent_level + 1)
             }
       }
 }
 
-def pprintArray(z, indent_level, err) {
+def pprintArray(z, indent_level) {
       switch indent_level {
             0 => :none
             else => assertOk(print(:nl))
@@ -60,23 +47,20 @@ def pprintArray(z, indent_level, err) {
                   0 => :none
                   else => {
                         repeat indent_level { assertOk(print(:t)) }
-                        match err {
-                              :false => assertOk(print("• "))
-                              else => assertOk(print([style_bright_red, "• ", style_reset]))
-                        }
+                        assertOk(print("• "))
                   }
             }
 
             match elem using inner {
                   Slice <Generic> => {
                         assertOk(print("↘"))
-                        assertOk(pprintArray(inner, indent_level + 1, err))
+                        assertOk(pprintArray(inner, indent_level + 1))
                   }
                   Record => {
-                        assertOk(pprintRecord(inner, indent_level + 1, err))
+                        assertOk(pprintRecord(inner, indent_level + 1))
                   }
                   else => {
-                        assertOk(internalPprint(inner, indent_level, err))
+                        assertOk(internalPprint(inner, indent_level))
                   }
             }
             if {
@@ -87,7 +71,7 @@ def pprintArray(z, indent_level, err) {
       return :none
 }
 
-def pprintRecord(item, indent_level, err) {
+def pprintRecord(item, indent_level) {
       switch indent_level {
             0 => :none
             else => assertOk(print(:nl))
@@ -97,15 +81,12 @@ def pprintRecord(item, indent_level, err) {
             repeat indent_level { assertOk(print(:t)) }
             k := rec.*.key[i]
             v := rec.*.val[i]
-            match err {
-                  :true => assertOk(print([style_bright_red, k, style_reset, style_blue, style_bold, ": ", style_reset]))
-                  :false => assertOk(print([k, style_blue, style_bold, ": ", style_reset]))
-            }
+            assertOk(print([k, style_blue, style_bold, ": ", style_reset]))
             match v using inner {
-                  Record => assertOk(pprintRecord(inner, indent_level + 1, err))
-                  Slice <Generic> => assertOk(pprintArray(inner, indent_level + 1, err))
+                  Record => assertOk(pprintRecord(inner, indent_level + 1))
+                  Slice <Generic> => assertOk(pprintArray(inner, indent_level + 1))
                   else => {
-                        assertOk(internalPprint(v, indent_level, err))
+                        assertOk(internalPprint(v, indent_level))
                   }
             }
             if {
@@ -116,29 +97,21 @@ def pprintRecord(item, indent_level, err) {
       return :none
 }
 
-def internalPprint(item, indent_level, err) {
+def internalPprint(item, indent_level) {
       match item using z {
             Bool => return pprintBool(z)
             Integer => return pprintInteger(z)
-            String => return pprintString(z, err)
-            Slice<Generic> => return pprintArray(z, indent_level, err)
-            Record => return pprintRecord(z, indent_level, err)
-            *Generic => return @ctx.printer(@ctx.&, z.*)
+            String => return pprintString(z)
+            Slice<Generic> => return pprintArray(z, indent_level)
+            Record => return pprintRecord(z, indent_level)
+            *Generic => return pprint(z.*)
             Voidance => return pprintVoidance(z, indent_level)
       }
 }
 
 func stdPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       @ctx := ctx.*
-      ret := internalPprint(item, 0, :false)
-      match ret {
-            IoError => return ret
-            else => return print(:nl)
-      }
-}
-
-def pprintlnErr(item) {
-      ret := internalPprint(item, 0, :true)
+      ret := internalPprint(item, 0)
       match ret {
             IoError => return ret
             else => return print(:nl)
@@ -218,3 +191,5 @@ func debugPrinter(ctx: *Context, item: Generic) -> IoError | :none {
             else => return print(:nl)
       }
 }
+
+def pprint(item) { @ctx.printer(@ctx.&, item) }

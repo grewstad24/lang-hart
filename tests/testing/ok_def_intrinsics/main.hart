@@ -23,9 +23,9 @@ type IoError :=
 type Context := {
     logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
     log_level: LogLevel
-    memalloc: func(*Context, usize) -> *mut opaque | :error
-    resizeAlloc: func(*Context, *opaque, usize) -> *mut opaque | :error
-    dealloc: func(*Context, *opaque) -> :none
+    heap_alloc: func(*Context, usize) -> *mut opaque | :error
+    heap_realloc: func(*Context, *opaque, usize) -> *mut opaque | :error
+    heap_dealloc: func(*Context, *opaque) -> :none
     printer: func(*Context, Generic) -> :none | IoError
     panic: func(*Context, Generic) -> never
     open: func(*Context, String, OpenMode) -> s32 | IoError
@@ -62,9 +62,9 @@ func main() -> s32 {
     @ctx := {
         logger: noopLogger
         log_level: { info: :false, warn: :false, error: :false }
-        memalloc: noopMalloc
-        resizeAlloc: noopRealloc
-        dealloc: noopFree
+        heap_alloc: noopMalloc
+        heap_realloc: noopRealloc
+        heap_dealloc: noopFree
         printer: noopPrint
         panic: noopPanic
         open: noopOpen

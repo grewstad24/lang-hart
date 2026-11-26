@@ -2,28 +2,27 @@ import { std }
 
 func main(args: Slice<String>) -> :none {
       @ctx := default_context
-      @ctx.log_level.info := :true
+      log("hello from main")
+      log({ name: "alice" })
+      logWarn([1, 10, 15])
+      logError("bye from main")
 
-      log("hart testing suite initialized")
-
-      mut buf := assertOk(memalloc(32))
-      buf := resizeAlloc(buf, 64).assertOk()
-      dealloc(buf)
-
-      val := heapNew(42)
-      raw := assertOk(memalloc(8))
-      typed := raw.@asTypeOf(val)
-      typed.* := 100
-
-      log(val.*)
-      log(typed.*)
-      log(@sizeOf(val))
-
-      dealloc(val)
-      dealloc(raw)
+      print(:nl).assertOk()
 
       @ctx.printer := debugPrinter
-      log({ a: 1, b: [2, :ok, "hi", :true] })
+      log("hello from main")
+      log({ name: "alice" })
+      logWarn([1, 10, 15])
+      logError("bye from main")
 
-      logWarn("heap validation passed")
+      v_empty := vecInit(:none)
+      v_nums := vecInit([1, 2, 3])
+      assertOk(pprint(v_empty.items.len))
+      assertOk(pprint(v_nums.cap))
+      fill(v_nums.items, 9)
+      s := v_nums.items
+      e0 := s.ptr[0]
+      e2 := s.ptr[2]
+      assertOk(pprint(e0))
+      assertOk(pprint(e2))
 }
