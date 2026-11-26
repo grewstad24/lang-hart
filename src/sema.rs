@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::{
     ComparisonOperator, Definition, Expression, ExternalFunction, IfCondition, LogicalModule,
-    MatchArm, NamespacePath, Parameter, Signature, SourceFile, Span, StructFieldInit,
+    MatchArm, Parameter, Signature, SourceFile, Span, StructFieldInit,
     StructFieldType, Type, TypeAlias, format_error, unspanned_expression,
     unspanned_expression_mut,
 };
@@ -274,7 +274,8 @@ pub fn context_type() -> Type {
 }
 
 pub struct ModuleResolver {
-    namespace_registry: HashMap<NamespacePath, ExportRegistry>,
+    namespace_registry: HashMap<String, ExportRegistry>,
+    submodules: HashMap<String, HashMap<String, String>>,
 }
 
 #[derive(Default)]
@@ -397,6 +398,7 @@ impl ModuleResolver {
     pub fn new() -> Self {
         Self {
             namespace_registry: HashMap::new(),
+            submodules: HashMap::new(),
         }
     }
 
@@ -405,6 +407,17 @@ impl ModuleResolver {
         modules: &[LogicalModule],
     ) -> Result<Vec<ModuleScope>, String> {
         for module in modules {
+            let Some(mod_name) = &module.name else {
+                continue;
+            };
+            let target_ns = mod_name.clone();
+            if let Some((parent, child)) = mod_name.rsplit_once("::") {
+                self.submodules
+                    .entry(parent.to_string())
+                    .or_default()
+                    .insert(child.to_string(), mod_name.clone());
+            }
+
             let mut module_aliases = HashMap::new();
             for file in &module.source_files {
                 for alias in &file.type_aliases {
@@ -412,113 +425,201 @@ impl ModuleResolver {
                 }
             }
 
-            for export_rule in &module.exports {
-                let target_ns = export_rule.target.clone();
-                let registry = self
-                    .namespace_registry
-                    .entry(target_ns.clone())
-                    .or_default();
+            let registry = self
+                .namespace_registry
+                .entry(target_ns.clone())
+                .or_default();
 
-                for file in &module.source_files {
-                    for alias in &file.type_aliases {
-                        registry.home_type_aliases.insert(
-                            alias.name.clone(),
-                            SymbolProvenance {
-                                item: alias.clone(),
-                                originating_file: file.file_path.clone(),
-                            },
-                        );
-                    }
+            for file in &module.source_files {
+                for alias in &file.type_aliases {
+                    registry.home_type_aliases.insert(
+                        alias.name.clone(),
+                        SymbolProvenance {
+                            item: alias.clone(),
+                            originating_file: file.file_path.clone(),
+                        },
+                    );
                 }
 
-                for sym in &export_rule.symbols {
-                    let mut found_def = None;
-                    let mut found_ext = None;
-                    let mut found_alias = None;
-
-                    for file in &module.source_files {
-                        if let Some(def) = file.definitions.iter().find(|d| d.name == *sym) {
-                            let mut resolved_def = def.clone();
-                            if let Some(sig) = &mut resolved_def.signature {
-                                for p in &mut sig.parameters {
-                                    p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
-                                }
-                                *sig.return_type =
-                                    expand_type_aliases_with_map(&sig.return_type, &module_aliases);
-                            }
-                            found_def = Some(SymbolProvenance {
-                                item: resolved_def,
-                                originating_file: file.file_path.clone(),
-                            });
-                            break;
-                        } else if let Some(ext) =
-                            file.extern_functions.iter().find(|e| e.name == *sym)
-                        {
-                            let mut resolved_ext = ext.clone();
-                            for p in &mut resolved_ext.signature.parameters {
-                                p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
-                            }
-                            *resolved_ext.signature.return_type = expand_type_aliases_with_map(
-                                &resolved_ext.signature.return_type,
-                                &module_aliases,
-                            );
-                            found_ext = Some(SymbolProvenance {
-                                item: resolved_ext,
-                                originating_file: file.file_path.clone(),
-                            });
-                            break;
-                        } else if let Some(alias) =
-                            file.type_aliases.iter().find(|a| a.name == *sym)
-                        {
-                            let mut resolved_alias = alias.clone();
-                            resolved_alias.target = expand_type_aliases_with_map(
-                                &resolved_alias.target,
-                                &module_aliases,
-                            );
-                            found_alias = Some(SymbolProvenance {
-                                item: resolved_alias,
-                                originating_file: file.file_path.clone(),
-                            });
-                            break;
-                        }
+                for def in &file.definitions {
+                    if !def.is_pub {
+                        continue;
                     }
-
-                    if let Some(prov) = found_def {
-                        if let Some(existing) = registry.definitions.get(sym) {
-                            let message = format!(
-                                "export collision in namespace '{}': symbol '{}' in '{}' conflicts with '{}'",
-                                target_ns, sym, prov.originating_file, existing.originating_file
-                            );
-                            return Err(expression_span(&prov.item.value)
-                                .map_or(message.clone(), |span| format_error(span, &message)));
+                    let mut resolved_def = def.clone();
+                    if let Some(sig) = &mut resolved_def.signature {
+                        for p in &mut sig.parameters {
+                            p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
                         }
-                        registry.definitions.insert(sym.clone(), prov);
-                    } else if let Some(prov) = found_ext {
-                        if let Some(existing) = registry.extern_functions.get(sym) {
-                            let message = format!(
-                                "export collision in namespace '{}': extern '{}' in '{}' conflicts with '{}'",
-                                target_ns, sym, prov.originating_file, existing.originating_file
-                            );
-                            return Err(format_error(&prov.item.span, &message));
-                        }
-                        registry.extern_functions.insert(sym.clone(), prov);
-                    } else if let Some(prov) = found_alias {
-                        if let Some(existing) = registry.type_aliases.get(sym) {
-                            let message = format!(
-                                "export collision in namespace '{}': type alias '{}' in '{}' conflicts with '{}'",
-                                target_ns, sym, prov.originating_file, existing.originating_file
-                            );
-                            return Err(format_error(&prov.item.span, &message));
-                        }
-                        registry.type_aliases.insert(sym.clone(), prov);
-                    } else {
+                        *sig.return_type =
+                            expand_type_aliases_with_map(&sig.return_type, &module_aliases);
+                    }
+                    let prov = SymbolProvenance {
+                        item: resolved_def,
+                        originating_file: file.file_path.clone(),
+                    };
+                    if let Some(existing) = registry.definitions.get(&def.name) {
                         let message = format!(
-                            "export error: symbol '{}' is not defined in any .hart file in this module",
-                            sym
+                            "export collision in module '{}': symbol '{}' in '{}' conflicts with '{}'",
+                            target_ns, def.name, prov.originating_file, existing.originating_file
                         );
-                        return Err(format_error(&export_rule.span, &message));
+                        return Err(expression_span(&prov.item.value)
+                            .map_or(message.clone(), |span| format_error(span, &message)));
+                    }
+                    registry.definitions.insert(def.name.clone(), prov);
+                }
+
+                for ext in &file.extern_functions {
+                    if !ext.is_pub {
+                        continue;
+                    }
+                    let mut resolved_ext = ext.clone();
+                    for p in &mut resolved_ext.signature.parameters {
+                        p.ty = expand_type_aliases_with_map(&p.ty, &module_aliases);
+                    }
+                    *resolved_ext.signature.return_type = expand_type_aliases_with_map(
+                        &resolved_ext.signature.return_type,
+                        &module_aliases,
+                    );
+                    let prov = SymbolProvenance {
+                        item: resolved_ext,
+                        originating_file: file.file_path.clone(),
+                    };
+                    if let Some(existing) = registry.extern_functions.get(&ext.name) {
+                        let message = format!(
+                            "export collision in module '{}': extern '{}' in '{}' conflicts with '{}'",
+                            target_ns, ext.name, prov.originating_file, existing.originating_file
+                        );
+                        return Err(format_error(&prov.item.span, &message));
+                    }
+                    registry.extern_functions.insert(ext.name.clone(), prov);
+                }
+
+                for alias in &file.type_aliases {
+                    if !alias.is_pub {
+                        continue;
+                    }
+                    let mut resolved_alias = alias.clone();
+                    resolved_alias.target = expand_type_aliases_with_map(
+                        &resolved_alias.target,
+                        &module_aliases,
+                    );
+                    let prov = SymbolProvenance {
+                        item: resolved_alias,
+                        originating_file: file.file_path.clone(),
+                    };
+                    if let Some(existing) = registry.type_aliases.get(&alias.name) {
+                        let message = format!(
+                            "export collision in module '{}': type alias '{}' in '{}' conflicts with '{}'",
+                            target_ns, alias.name, prov.originating_file, existing.originating_file
+                        );
+                        return Err(format_error(&prov.item.span, &message));
+                    }
+                    registry.type_aliases.insert(alias.name.clone(), prov);
+                }
+            }
+        }
+
+        // Propagate `pub use` re-exports to a fixed point
+        loop {
+            let mut changed = false;
+            for module in modules {
+                let Some(mod_name) = &module.name else {
+                    continue;
+                };
+                for u in &module.uses {
+                    if !u.is_pub {
+                        continue;
+                    }
+                    let path_str = u.path.join("::");
+                    if u.is_glob {
+                        if let Some(src_reg) = self.namespace_registry.get(&path_str) {
+                            let defs: Vec<_> = src_reg.definitions.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            let exts: Vec<_> = src_reg.extern_functions.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            let aliases: Vec<_> = src_reg.type_aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            let home_aliases: Vec<_> = src_reg.home_type_aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+                            let dst_reg = self.namespace_registry.entry(mod_name.clone()).or_default();
+                            for (k, v) in defs {
+                                if !dst_reg.definitions.contains_key(&k) {
+                                    dst_reg.definitions.insert(k, v);
+                                    changed = true;
+                                }
+                            }
+                            for (k, v) in exts {
+                                if !dst_reg.extern_functions.contains_key(&k) {
+                                    dst_reg.extern_functions.insert(k, v);
+                                    changed = true;
+                                }
+                            }
+                            for (k, v) in aliases {
+                                if !dst_reg.type_aliases.contains_key(&k) {
+                                    dst_reg.type_aliases.insert(k, v);
+                                    changed = true;
+                                }
+                            }
+                            for (k, v) in home_aliases {
+                                if !dst_reg.home_type_aliases.contains_key(&k) {
+                                    dst_reg.home_type_aliases.insert(k, v);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if let Some(subs) = self.submodules.get(&path_str).cloned() {
+                            let dst_subs = self.submodules.entry(mod_name.clone()).or_default();
+                            for (short_name, full_name) in subs {
+                                if !dst_subs.contains_key(&short_name) {
+                                    dst_subs.insert(short_name, full_name);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    } else if self.namespace_registry.contains_key(&path_str) || self.submodules.contains_key(&path_str) {
+                        let short = u.alias.clone().unwrap_or_else(|| u.path.last().unwrap().clone());
+                        let dst_subs = self.submodules.entry(mod_name.clone()).or_default();
+                        if !dst_subs.contains_key(&short) {
+                            dst_subs.insert(short, path_str);
+                            changed = true;
+                        }
+                    } else if u.path.len() >= 2 {
+                        let parent_mod = u.path[..u.path.len() - 1].join("::");
+                        let sym = u.path.last().unwrap();
+                        let target_name = u.alias.clone().unwrap_or_else(|| sym.clone());
+                        if let Some(src_reg) = self.namespace_registry.get(&parent_mod) {
+                            let def_opt = src_reg.definitions.get(sym).cloned();
+                            let ext_opt = src_reg.extern_functions.get(sym).cloned();
+                            let alias_opt = src_reg.type_aliases.get(sym).cloned();
+                            let home_aliases: Vec<_> = src_reg.home_type_aliases.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                            let dst_reg = self.namespace_registry.entry(mod_name.clone()).or_default();
+                            if let Some(d) = def_opt {
+                                if !dst_reg.definitions.contains_key(&target_name) {
+                                    dst_reg.definitions.insert(target_name.clone(), d);
+                                    changed = true;
+                                }
+                            }
+                            if let Some(e) = ext_opt {
+                                if !dst_reg.extern_functions.contains_key(&target_name) {
+                                    dst_reg.extern_functions.insert(target_name.clone(), e);
+                                    changed = true;
+                                }
+                            }
+                            if let Some(a) = alias_opt {
+                                if !dst_reg.type_aliases.contains_key(&target_name) {
+                                    dst_reg.type_aliases.insert(target_name.clone(), a);
+                                    changed = true;
+                                }
+                            }
+                            for (k, v) in home_aliases {
+                                if !dst_reg.home_type_aliases.contains_key(&k) {
+                                    dst_reg.home_type_aliases.insert(k, v);
+                                    changed = true;
+                                }
+                            }
+                        }
                     }
                 }
+            }
+            if !changed {
+                break;
             }
         }
 
@@ -527,9 +628,21 @@ impl ModuleResolver {
         for module in modules {
             let mut scope = ModuleScope::new(module.dir_path.clone());
 
-            for export_rule in &module.exports {
-                for sym in &export_rule.symbols {
-                    scope.exported_symbols.insert(sym.clone());
+            for file in &module.source_files {
+                for def in &file.definitions {
+                    if def.is_pub {
+                        scope.exported_symbols.insert(def.name.clone());
+                    }
+                }
+                for ext in &file.extern_functions {
+                    if ext.is_pub {
+                        scope.exported_symbols.insert(ext.name.clone());
+                    }
+                }
+                for alias in &file.type_aliases {
+                    if alias.is_pub {
+                        scope.exported_symbols.insert(alias.name.clone());
+                    }
                 }
             }
 
@@ -587,10 +700,25 @@ impl ModuleResolver {
                 }
             }
 
-            let imports = module.imports.clone();
+            let mut local_mod_aliases: HashMap<String, String> = HashMap::new();
 
-            for ns in &imports {
-                if let Some(exported) = self.namespace_registry.get(ns) {
+            if let Some(mod_name) = &module.name {
+                if let Some(subs) = self.submodules.get(mod_name) {
+                    for (short, full) in subs {
+                        local_mod_aliases.insert(short.clone(), full.clone());
+                    }
+                }
+            }
+
+            for u in &module.uses {
+                let path_str = u.path.join("::");
+                if u.is_glob {
+                    let Some(exported) = self.namespace_registry.get(&path_str) else {
+                        return Err(format_error(
+                            &u.span,
+                            &format!("unknown module '{}' in 'use {}::*'", path_str, path_str),
+                        ));
+                    };
                     for (name, prov) in &exported.definitions {
                         if !scope.definitions.contains_key(name) {
                             scope.definitions.insert(name.clone(), prov.clone());
@@ -610,6 +738,90 @@ impl ModuleResolver {
                         if !scope.home_type_aliases.contains_key(name) {
                             scope.home_type_aliases.insert(name.clone(), prov.clone());
                         }
+                    }
+                    if let Some(subs) = self.submodules.get(&path_str) {
+                        for (short_name, full_name) in subs {
+                            local_mod_aliases
+                                .entry(short_name.clone())
+                                .or_insert_with(|| full_name.clone());
+                        }
+                    }
+                } else if self.namespace_registry.contains_key(&path_str) || self.submodules.contains_key(&path_str) {
+                    let alias = u.alias.clone().unwrap_or_else(|| u.path.last().unwrap().clone());
+                    local_mod_aliases.insert(alias, path_str);
+                } else if u.path.len() >= 2 {
+                    let parent_mod = u.path[..u.path.len() - 1].join("::");
+                    let sym = u.path.last().unwrap();
+                    let target_name = u.alias.clone().unwrap_or_else(|| sym.clone());
+                    let Some(exported) = self.namespace_registry.get(&parent_mod) else {
+                        return Err(format_error(
+                            &u.span,
+                            &format!("unknown module '{}' in 'use {}'", parent_mod, path_str),
+                        ));
+                    };
+                    let mut found = false;
+                    if let Some(prov) = exported.definitions.get(sym) {
+                        scope.definitions.entry(target_name.clone()).or_insert_with(|| prov.clone());
+                        found = true;
+                    }
+                    if let Some(prov) = exported.extern_functions.get(sym) {
+                        scope.extern_functions.entry(target_name.clone()).or_insert_with(|| prov.clone());
+                        found = true;
+                    }
+                    if let Some(prov) = exported.type_aliases.get(sym) {
+                        scope.type_aliases.entry(target_name.clone()).or_insert_with(|| prov.clone());
+                        found = true;
+                    }
+                    for (name, prov) in &exported.home_type_aliases {
+                        scope.home_type_aliases.entry(name.clone()).or_insert_with(|| prov.clone());
+                    }
+                    if !found {
+                        return Err(format_error(
+                            &u.span,
+                            &format!("symbol '{}' is not exported by module '{}'", sym, parent_mod),
+                        ));
+                    }
+                } else {
+                    return Err(format_error(
+                        &u.span,
+                        &format!("unknown module '{}' in 'use {}'", path_str, path_str),
+                    ));
+                }
+            }
+
+            // Global module namespace: every module's `pub` items are accessible via `mod_path::item`
+            for (mod_path, exported) in &self.namespace_registry {
+                for (name, prov) in &exported.definitions {
+                    let qname = format!("{}::{}", mod_path, name);
+                    scope.definitions.entry(qname).or_insert_with(|| prov.clone());
+                }
+                for (name, prov) in &exported.extern_functions {
+                    let qname = format!("{}::{}", mod_path, name);
+                    scope.extern_functions.entry(qname).or_insert_with(|| prov.clone());
+                }
+                for (name, prov) in &exported.type_aliases {
+                    let qname = format!("{}::{}", mod_path, name);
+                    scope.type_aliases.entry(qname).or_insert_with(|| prov.clone());
+                }
+                for (name, prov) in &exported.home_type_aliases {
+                    scope.home_type_aliases.entry(name.clone()).or_insert_with(|| prov.clone());
+                }
+            }
+
+            // Local module aliases (from `use a::b as c`, `use a::b`, or `use a::*` submodules)
+            for (alias, target_mod) in &local_mod_aliases {
+                if let Some(exported) = self.namespace_registry.get(target_mod) {
+                    for (name, prov) in &exported.definitions {
+                        let qname = format!("{}::{}", alias, name);
+                        scope.definitions.entry(qname).or_insert_with(|| prov.clone());
+                    }
+                    for (name, prov) in &exported.extern_functions {
+                        let qname = format!("{}::{}", alias, name);
+                        scope.extern_functions.entry(qname).or_insert_with(|| prov.clone());
+                    }
+                    for (name, prov) in &exported.type_aliases {
+                        let qname = format!("{}::{}", alias, name);
+                        scope.type_aliases.entry(qname).or_insert_with(|| prov.clone());
                     }
                 }
             }

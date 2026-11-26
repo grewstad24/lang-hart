@@ -1,25 +1,27 @@
+use std::*
+
 extern func malloc(size: usize) -> *mut opaque
 extern func free(ptr: *opaque) -> :none
 
-func max(a: s32, b: s32) -> s32 {
+def max(a: s32, b: s32) -> s32 {
     return if {
         a > b => a
         else => b
     }
 }
 
-func fallible() -> s32 | :error {
+def fallible() -> s32 | :error {
     return 42
 }
 
-func unwrapOrZero() -> s32 {
+def unwrapOrZero() -> s32 {
     return match fallible() using v {
         :error => 0
         else => v
     }
 }
 
-func classify(n: s32) -> s32 {
+def classify(n: s32) -> s32 {
     return switch n {
         0 => 100
         1 => 200
@@ -28,6 +30,7 @@ func classify(n: s32) -> s32 {
 }
 
 func main() -> s32 {
+    @ctx := default_context
     buf := malloc(16 as usize)
     defer free(buf)
 

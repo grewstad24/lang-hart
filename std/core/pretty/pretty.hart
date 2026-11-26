@@ -1,5 +1,4 @@
-export { debugPrinter, stdPrinter, pprint } to std
-import { std }
+mod std
 
 const style_red := "\u{1B}[31m"
 const style_bright_red := "\u{1B}[91m"
@@ -109,7 +108,7 @@ def internalPprint(item, indent_level) {
       }
 }
 
-func stdPrinter(ctx: *Context, item: Generic) -> IoError | :none {
+pub func stdPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       @ctx := ctx.*
       ret := internalPprint(item, 0)
       match ret {
@@ -183,7 +182,7 @@ def internalHartPrint(item, indent_level) {
       }
 }
 
-func debugPrinter(ctx: *Context, item: Generic) -> IoError | :none {
+pub func debugPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       @ctx := ctx.*
       ret := internalHartPrint(item, 0)
       match ret {
@@ -192,4 +191,4 @@ func debugPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       }
 }
 
-def pprint(item) { @ctx.printer(@ctx.&, item) }
+pub def pprint(item) { @ctx.printer(@ctx.&, item) }

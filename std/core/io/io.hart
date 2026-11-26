@@ -1,18 +1,13 @@
-export {
-      { stdin, stdout, stderr, default_buffer_size,
-        openFile, closeFile, readBytes, writeBytes, seekFile,
-        readAll, writeAll, readFile, writeFile, appendToFile,
-        copyStream, streamFile } to std,
-      { stdOpen, stdClose, stdRead, stdWrite, stdSeek } to std_impl
-}
-import { std, std_libc, std_error }
+mod std
+use std::libc::*
 
-const stdin := { fd: 0 }
-const stdout := { fd: 1 }
-const stderr := { fd: 2 }
-const default_buffer_size := 8192 as usize
+pub const stdin := { fd: 0 }
+pub const stdout := { fd: 1 }
+pub const stderr := { fd: 2 }
+pub const default_buffer_size := 8192 as usize
 
 func stdOpen(ctx: *Context, path: String, mode: OpenMode) -> s32 | IoError {
+      @ctx := ctx.*
       flags := match mode {
             :read => 0
             :write => 577
@@ -31,6 +26,7 @@ func stdOpen(ctx: *Context, path: String, mode: OpenMode) -> s32 | IoError {
 }
 
 func stdClose(ctx: *Context, fd: s32) -> :none | IoError {
+      @ctx := ctx.*
       ret := close(fd)
       return switch ret {
             0 => :none
@@ -39,6 +35,7 @@ func stdClose(ctx: *Context, fd: s32) -> :none | IoError {
 }
 
 func stdRead(ctx: *Context, fd: s32, buf: *mut u8, count: usize) -> usize | IoError {
+      @ctx := ctx.*
       n := read(fd, buf as *u8, count)
       return switch n < (0 as s64) {
             :true => errnoToError()
@@ -47,6 +44,7 @@ func stdRead(ctx: *Context, fd: s32, buf: *mut u8, count: usize) -> usize | IoEr
 }
 
 func stdWrite(ctx: *Context, fd: s32, buf: *u8, count: usize) -> usize | IoError {
+      @ctx := ctx.*
       n := write(fd, buf, count)
       return switch n < (0 as s64) {
             :true => errnoToError()
@@ -55,6 +53,7 @@ func stdWrite(ctx: *Context, fd: s32, buf: *u8, count: usize) -> usize | IoError
 }
 
 func stdSeek(ctx: *Context, fd: s32, offset: s64, whence: SeekWhence) -> u64 | IoError {
+      @ctx := ctx.*
       w := match whence {
             :start => 0
             :current => 1
@@ -67,22 +66,22 @@ func stdSeek(ctx: *Context, fd: s32, offset: s64, whence: SeekWhence) -> u64 | I
       }
 }
 
-def openFile(path, mode) {
+pub def openFile(path, mode) {
       return match @ctx.open(@ctx.&, path, mode) using res {
             IoError => res
             else => { fd: res }
       }
 }
 
-def closeFile(file) { @ctx.close(@ctx.&, file.fd) }
+pub def closeFile(file) { @ctx.close(@ctx.&, file.fd) }
 
-def readBytes(file, buf, count) { @ctx.read(@ctx.&, file.fd, buf, count) }
+pub def readBytes(file, buf, count) { @ctx.read(@ctx.&, file.fd, buf, count) }
 
-def writeBytes(file, buf, count) { @ctx.write(@ctx.&, file.fd, buf, count) }
+pub def writeBytes(file, buf, count) { @ctx.write(@ctx.&, file.fd, buf, count) }
 
-def seekFile(file, offset, whence) { @ctx.seek(@ctx.&, file.fd, offset, whence) }
+pub def seekFile(file, offset, whence) { @ctx.seek(@ctx.&, file.fd, offset, whence) }
 
-def writeAll(file, data) {
+pub def writeAll(file, data) {
       mut remaining := data.len
       mut curr_ptr := data.ptr
       repeat while remaining > (0 as usize) {
@@ -100,7 +99,7 @@ def writeAll(file, data) {
       return :none
 }
 
-def readAll(file) {
+pub def readAll(file) {
       size := match seekFile(file, 0 as s64, :end) using res {
             IoError => return res
             else => res
@@ -135,7 +134,7 @@ def readAll(file) {
       return { ptr: buf as *u8, len: total_read }
 }
 
-def readFile(path) {
+pub def readFile(path) {
       file := match openFile(path, :read) using res {
             IoError => return res
             else => res
@@ -144,7 +143,7 @@ def readFile(path) {
       return readAll(file)
 }
 
-def writeFile(path, data) {
+pub def writeFile(path, data) {
       file := match openFile(path, :write) using res {
             IoError => return res
             else => res
@@ -153,7 +152,7 @@ def writeFile(path, data) {
       return writeAll(file, data)
 }
 
-def appendToFile(path, data) {
+pub def appendToFile(path, data) {
       file := match openFile(path, :append) using res {
             IoError => return res
             else => res
@@ -162,7 +161,7 @@ def appendToFile(path, data) {
       return writeAll(file, data)
 }
 
-def copyStream(src, dst, chunk_size) {
+pub def copyStream(src, dst, chunk_size) {
       buf := match heapAlloc(chunk_size) using res {
             :error => return res
             else => res
@@ -185,7 +184,7 @@ def copyStream(src, dst, chunk_size) {
       return :none
 }
 
-def streamFile(file, chunk_size, callback) {
+pub def streamFile(file, chunk_size, callback) {
       buf := match heapAlloc(chunk_size) using res {
             :error => return res
             else => res

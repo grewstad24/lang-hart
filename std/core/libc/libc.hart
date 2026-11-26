@@ -1,18 +1,14 @@
-export {
-      malloc, free, realloc, abort, printf, __errno_location,
-      open, close, read, write, lseek
-} to std_libc
+mod std::libc
 
-extern func malloc(size: usize) -> *mut opaque
-extern func free(ptr: *opaque) -> :none
-extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
-extern func abort() -> never
-extern func printf(ptr: *u8, ...) -> s32
-extern func __errno_location() -> *s32
+pub extern func malloc(size: usize) -> *mut opaque
+pub extern func free(ptr: *opaque) -> :none
+pub extern func realloc(ptr: *opaque, new_size: usize) -> *mut opaque
+pub extern func abort() -> never
+pub extern func printf(ptr: *u8, ...) -> s32
+pub extern func __errno_location() -> *s32
 
-extern func open(path: *u8, flags: s32, mode: s32) -> s32
-extern func close(fd: s32) -> s32
-extern func read(fd: s32, buf: *u8, bytes: usize) -> s64
-extern func write(fd: s32, buf: *u8, bytes: usize) -> s64
-extern func lseek(fd: s32, offset: s64, whence: s32) -> s64
-
+pub extern func open(path: *u8, flags: s32, mode: s32) -> s32
+pub extern func close(fd: s32) -> s32
+pub extern func read(fd: s32, buf: *u8, bytes: usize) -> s64
+pub extern func write(fd: s32, buf: *u8, bytes: usize) -> s64
+pub extern func lseek(fd: s32, offset: s64, whence: s32) -> s64

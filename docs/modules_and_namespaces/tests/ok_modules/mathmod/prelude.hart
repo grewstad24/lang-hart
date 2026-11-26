@@ -1,0 +1,6 @@
+mod mylib::prelude
+pub use mylib::math::*
+
+pub def cube(n: s32) -> s32 {
+    return n * square(n)
+}

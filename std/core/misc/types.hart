@@ -1,40 +1,40 @@
-mod misc
+mod std
 
-type String := Slice <u8>
+pub type String := Slice <u8>
 
-type Integer := SignedInteger | UnsignedInteger
+pub type Integer := SignedInteger | UnsignedInteger
 
-type SignedInteger := s16 | s32 | s64 | ssize
+pub type SignedInteger := s16 | s32 | s64 | ssize
 
-type UnsignedInteger := u8 | u16 | u32 | u64 | usize
+pub type UnsignedInteger := u8 | u16 | u32 | u64 | usize
 
-type Record := *{
+pub type Record := *{
       len: usize
       key: *String
       val: *Generic
 }
 
-type ErrorWithReason <T> := (:error, T)
+pub type ErrorWithReason <T> := (:error, T)
 
-type ErrorAndReason := (:error, String | Record)
+pub type ErrorAndReason := (:error, String | Record)
 
-type Error := ErrorAndReason | :error
+pub type Error := ErrorAndReason | :error
 
-type Voidance := Error | :none
+pub type Voidance := Error | :none
 
-type Bool := :true | :false
+pub type Bool := :true | :false
 
-type Slice <T> := {
+pub type Slice <T> := {
       ptr: *T
       len: usize
 }
 
-type Vec <T> := {
+pub type Vec <T> := {
       items: Slice <T>
       cap: usize
 }
 
-type UnvoidGeneric :=
+pub type UnvoidGeneric :=
       Integer
       | String
       | Bool
@@ -42,9 +42,9 @@ type UnvoidGeneric :=
       | Slice <Generic>
       | *Generic
 
-type Generic := UnvoidGeneric | Voidance
+pub type Generic := UnvoidGeneric | Voidance
 
-type IoError :=
+pub type IoError :=
       (:error, :permission_denied)
       | (:error, :not_found)
       | (:error, :interrupted)
@@ -61,21 +61,21 @@ type IoError :=
       | (:error, :broken_pipe)
       | (:error, :unknown)
 
-type LogLevel := {
+pub type LogLevel := {
       info: Bool
       warn: Bool
       error: Bool
 }
 
-type OpenMode := :read | :write | :append | :read_write
+pub type OpenMode := :read | :write | :append | :read_write
 
-type SeekWhence := :start | :current | :end
+pub type SeekWhence := :start | :current | :end
 
-type File := {
+pub type File := {
       fd: s32
 }
 
-type Context := {
+pub type Context := {
       logger: func(*Context, :info | :warn | :error | :never, LogLevel, u64, String, Generic) -> :none
       log_level: LogLevel
       heap_alloc: func(*Context, usize) -> *mut opaque | :error
@@ -89,4 +89,3 @@ type Context := {
       write: func(*Context, s32, *u8, usize) -> usize | IoError
       seek: func(*Context, s32, s64, SeekWhence) -> u64 | IoError
 }
-

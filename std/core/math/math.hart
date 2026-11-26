@@ -1,33 +1,32 @@
-export { add, sub, mul, div, min, max, abs, clamp } to std
+mod std
 
-def add(a, b) { return a + b }
+pub def add(a, b) { return a + b }
 
-def sub(a, b) { return a - b }
+pub def sub(a, b) { return a - b }
 
-def mul(a, b) { return a * b }
+pub def mul(a, b) { return a * b }
 
-def div(a, b) { return a / b }
+pub def div(a, b) { return a / b }
 
-def min(a, b) {
+pub def min(a, b) {
       return if {
             a < b => a
             else => b
       }
 }
 
-def max(a, b) {
+pub def max(a, b) {
       return if {
             a > b => a
             else => b
       }
 }
 
-def abs(x) {
+pub def abs(x) {
       return if {
             x < 0 => 0 - x
             else => x
       }
 }
 
-def clamp(x, lo, hi) { return min(max(x, lo), hi) }
-
+pub def clamp(x, lo, hi) { return min(max(x, lo), hi) }

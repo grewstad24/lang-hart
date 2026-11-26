@@ -1,8 +1,0 @@
-decl mod mathmod {
-    export { square } to mymath
-}
-
-func square(n: s32) -> s32 {
-    return n * n
-}
-

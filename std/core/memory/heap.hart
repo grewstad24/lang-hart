@@ -1,10 +1,5 @@
-decl mod memory {
-      export {
-            { heapAlloc, heapDealloc, heapRealloc, heapNew, vecInit } to std,
-            { stdHeapAlloc, stdHeapRealloc, stdHeapDealloc } to std_impl
-      }
-      import { std, std_libc }
-}
+mod std
+use std::libc::*
 
 func stdHeapAlloc(ctx: *Context, size: usize) -> *mut opaque | :error {
       raw := malloc(size)
@@ -24,15 +19,15 @@ func stdHeapRealloc(ctx: *Context, ptr: *opaque, new_size: usize) -> *mut opaque
 
 func stdHeapDealloc(ctx: *Context, ptr: *opaque) -> :none { free(ptr) }
 
-def heapAlloc(size) { @ctx.heap_alloc(@ctx.&mut, size as usize) }
+pub def heapAlloc(size) { @ctx.heap_alloc(@ctx.&mut, size as usize) }
 
-def heapDealloc(ptr) { @ctx.heap_dealloc(@ctx.&mut, ptr) }
+pub def heapDealloc(ptr) { @ctx.heap_dealloc(@ctx.&mut, ptr) }
 
-def heapRealloc(ptr, new_size) { @ctx.heap_realloc(@ctx.&mut, ptr, new_size as usize) }
+pub def heapRealloc(ptr, new_size) { @ctx.heap_realloc(@ctx.&mut, ptr, new_size as usize) }
 
-def heapNew(x) {
+pub def heapNew(x) {
       mut val := x
-      ptr := assertOk(heapAlloc(@sizeOf val))
+      ptr := assertOk(heapAlloc(@sizeOf(val)))
       typed_ptr := @asTypeOf(ptr, val.&mut)
       typed_ptr.* := val
       return typed_ptr

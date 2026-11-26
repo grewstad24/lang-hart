@@ -1,0 +1,47 @@
+use std::*
+
+def testDeferReturn(out: *mut s32) -> s32 {
+    defer out.* := out.* * 2
+    defer out.* := out.* + 10
+    # LIFO: first +10, then *2
+    return 1
+}
+
+func main() -> s32 {
+    @ctx := default_context
+
+    arr := [1, 2, 3, 4, 5]
+    mut sum := 0
+    repeat for arr using item {
+        if {
+            item = 2 => continue
+            item = 5 => break
+            else => sum += item
+        }
+    }
+    # 1 + 3 + 4 = 8
+
+    mut sl: Slice<s32> := arr
+    mut count := 0
+    repeat for sl {
+        count += 1
+    }
+    # count = 5
+
+    mut trace := 1
+    testDeferReturn(trace.&mut)
+    # (1 + 10) * 2 = 22
+
+    yielded := {
+        defer trace += 3
+        yield 100
+    }
+    # trace = 25, yielded = 100
+
+    total := sum + count + trace + yielded
+    # 8 + 5 + 25 + 100 = 138
+    return if {
+        total = 138 => 0
+        else => 1
+    }
+}

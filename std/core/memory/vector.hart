@@ -1,6 +1,6 @@
-mod memory
+mod std
 
-def vecInit(init) {
+pub def vecInit(init) {
       match init using s {
             :none => return {
                   items: {
@@ -21,10 +21,10 @@ def vecInit(init) {
                         else => :none
                   }
                   mut first := s[0]
-                  raw := assertOk(heapAlloc(s.len * @sizeOf first))
+                  raw := assertOk(heapAlloc(s.len * @sizeOf(first)))
                   typed_ptr := @asTypeOf(raw, first.&mut)
                   repeat s.len using i {
-                        elem_raw := ((raw as usize) + i * (@sizeOf first)) as *mut opaque
+                        elem_raw := ((raw as usize) + i * (@sizeOf(first))) as *mut opaque
                         elem_ptr := @asTypeOf(elem_raw, first.&mut)
                         elem_ptr.* := s[i]
                   }

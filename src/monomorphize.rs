@@ -737,6 +737,7 @@ fn concretize_type(
                 span: template.span.clone(),
                 is_meta: false,
                 type_parameters: Vec::new(),
+                is_pub: template.is_pub,
             };
 
             generated.push((originating_file, concrete_alias));

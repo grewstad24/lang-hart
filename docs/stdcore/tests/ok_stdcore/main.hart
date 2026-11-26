@@ -1,0 +1,79 @@
+use std::*
+
+func main(args: Slice<String>) -> :none {
+    @ctx := default_context
+
+    # Printing
+    print(["hello", :true, :t, 123, :nl]).assertOk()
+    println("stdcore ok").assertOk()
+
+    # Pretty printing with default stdPrinter and debugPrinter
+    pprint({ ok: :true, count: 3 }).assertOk()
+    @ctx := { ...@ctx, printer: debugPrinter }
+    pprint([1, 2, 3]).assertOk()
+
+    # Logging
+    log("info message")
+    logWarn("warn message")
+    logError("error message")
+
+    # Math
+    a1 := abs(-15)
+    lo := min(5, 10)
+    hi := max(8, 12)
+    p := mul(hi, 2)
+    q := div(sub(a1, lo), 2)
+    a := add(p, q)
+    # a = 12*2 + (15-5)/2 = 24 + 5 = 29
+    if {
+        a != 29 => panic("math mismatch")
+        else => :none
+    }
+
+    # Heap & Vec & fill
+    boxed := heapNew(42)
+    defer heapDealloc(boxed as *opaque)
+    if {
+        boxed.* != 42 => panic("heapNew mismatch")
+        else => :none
+    }
+
+    v := vecInit([1, 2, 3])
+    defer heapDealloc(v.items.ptr as *opaque)
+    fill(v.items, 9)
+    if {
+        v.items[0] != 9 => panic("fill mismatch")
+        else => :none
+    }
+
+    # Standard streams & Boolean gates/operations
+    bools_all := [:true, :true, :true]
+    bools_mix := [:false, :true, :false]
+    bools_none := [:false, :false]
+    if {
+        not(:false) != :true => panic("not(:false) mismatch")
+        not(:true) != :false => panic("not(:true) mismatch")
+        and(:true, :true) != :true => panic("and(T,T) mismatch")
+        and(:true, :false) != :false => panic("and(T,F) mismatch")
+        or(:false, :true) != :true => panic("or(F,T) mismatch")
+        or(:false, :false) != :false => panic("or(F,F) mismatch")
+        xor(:true, :false) != :true => panic("xor(T,F) mismatch")
+        xor(:true, :true) != :false => panic("xor(T,T) mismatch")
+        nand(:true, :true) != :false => panic("nand(T,T) mismatch")
+        nand(:true, :false) != :true => panic("nand(T,F) mismatch")
+        nor(:false, :false) != :true => panic("nor(F,F) mismatch")
+        nor(:false, :true) != :false => panic("nor(F,T) mismatch")
+        xnor(:true, :true) != :true => panic("xnor(T,T) mismatch")
+        xnor(:true, :false) != :false => panic("xnor(T,F) mismatch")
+        implies(:true, :false) != :false => panic("implies(T,F) mismatch")
+        implies(:false, :false) != :true => panic("implies(F,F) mismatch")
+        all(bools_all) != :true => panic("all(T) mismatch")
+        all(bools_mix) != :false => panic("all(mix) mismatch")
+        any(bools_mix) != :true => panic("any(mix) mismatch")
+        any(bools_none) != :false => panic("any(F) mismatch")
+        stdin.fd != 0 => panic("stdin fd mismatch")
+        stdout.fd != 1 => panic("stdout fd mismatch")
+        stderr.fd != 2 => panic("stderr fd mismatch")
+        else => :none
+    }
+}

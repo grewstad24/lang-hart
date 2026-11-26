@@ -1,0 +1,32 @@
+use std::*
+
+extern func malloc(size: usize) -> *mut opaque
+extern func free(ptr: *opaque) -> :none
+
+def takeMeta(ln: u64, fl: String, hln: u64, hfl: String) -> :none {}
+
+def addOne(x) {
+    takeMeta(@caller_line_number, @caller_file_name, @this_line_number, @this_file_name)
+    return x + 1
+}
+
+func main() -> s32 {
+    @ctx := {
+        ...default_context
+        log_level: { info: :false, warn: :false, error: :false }
+    }
+    a := addOne(41)
+    b := addOne(100 as u64)
+
+    mut x := 42
+    sz := @sizeOf(x)
+    raw := malloc(sz)
+    typed := raw.@asTypeOf(x.&mut)
+    typed.* := a + (b as s32) + (sz as s32)
+    res := typed.*
+    free(raw)
+    return if {
+        res = 147 => 0
+        else => 1
+    }
+}

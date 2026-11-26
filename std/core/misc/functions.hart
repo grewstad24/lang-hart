@@ -1,13 +1,68 @@
-mod misc
+mod std
 
-def fill(slice, val) {
+pub def not(b: Bool) -> Bool {
+      return match b {
+            :true => :false
+            :false => :true
+      }
+}
+
+pub def and(a: Bool, b: Bool) -> Bool {
+      return match a {
+            :true => b
+            :false => :false
+      }
+}
+
+pub def or(a: Bool, b: Bool) -> Bool {
+      return match a {
+            :true => :true
+            :false => b
+      }
+}
+
+pub def xor(a: Bool, b: Bool) -> Bool {
+      return match a {
+            :true => not(b)
+            :false => b
+      }
+}
+
+pub def nand(a: Bool, b: Bool) -> Bool { not(and(a, b)) }
+
+pub def nor(a: Bool, b: Bool) -> Bool { not(or(a, b)) }
+
+pub def xnor(a: Bool, b: Bool) -> Bool { not(xor(a, b)) }
+
+pub def implies(a: Bool, b: Bool) -> Bool { or(not(a), b) }
+
+pub def all(slice) {
+      repeat slice.len using i {
+            match slice[i] {
+                  :false => return :false
+                  :true => :none
+            }
+      }
+      return :true
+}
+
+pub def any(slice) {
+      repeat slice.len using i {
+            match slice[i] {
+                  :true => return :true
+                  :false => :none
+            }
+      }
+      return :false
+}
+
+pub def fill(slice, val) {
       mut v := val
       raw := (slice.ptr as usize) as *mut opaque
       repeat slice.len using i {
-            elem_raw := ((raw as usize) + i * (@sizeOf v)) as *mut opaque
+            elem_raw := ((raw as usize) + i * (@sizeOf(v))) as *mut opaque
             elem_ptr := @asTypeOf(elem_raw, v.&mut)
             elem_ptr.* := v
       }
       return :none
 }
-

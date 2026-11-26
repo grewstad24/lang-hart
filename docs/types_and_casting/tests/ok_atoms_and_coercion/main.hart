@@ -1,0 +1,78 @@
+use std::*
+
+def takeString(s: String) -> usize {
+    return s.len
+}
+
+def takeRecord(r: Record) -> usize {
+    return r.*.len
+}
+
+def takeGeneric(g: Generic) -> s32 {
+    return match g using v {
+        Integer => v as s32
+        Bool => match v {
+            :true => 1
+            :false => 0
+        }
+        else => 0
+    }
+}
+
+def sumThree(a: s32, b: s32, c: s32) -> s32 {
+    return a + b + c
+}
+
+def readPtr(p: *s32) -> s32 {
+    return p.*
+}
+
+func main() -> s32 {
+    @ctx := default_context
+
+    # Atom to String coercion
+    atom_len := takeString(:hello)
+
+    # Lossless integer widening
+    small_u8 := 10 as u8
+    mut wide_u64: u64 := small_u8
+    small_s16 := -5 as s16
+    mut wide_s64: s64 := small_s16
+
+    # Struct to Record coercion
+    rec_len := takeRecord({ name: "hart", version: 1 })
+
+    # Generic coercion
+    g_sum := takeGeneric(42) + takeGeneric(:true)
+
+    # Spread in array, tuple, struct, and function call
+    base := [10, 20]
+    extended := [...base, 30]
+    tup := (1, 2)
+    tup3 := (...tup, 3)
+    call_sum := sumThree(...tup3)
+    s_base := { a: 1, b: 2 }
+    s_ext := { ...s_base, b: 20, c: 3 }
+
+    # Slice indexing and covariance
+    mut sl: Slice<s32> := extended
+    sl_val := sl[1] + extended[2]
+
+    # Compound assignments
+    mut acc := 10
+    acc += 5
+    acc -= 3
+    acc *= 2
+    acc /= 4
+
+    # Mutable pointer -> immutable pointer coercion
+    mut x := 7
+    xp := readPtr(x.&mut)
+
+    total := (atom_len as s32) + (wide_u64 as s32) + (wide_s64 as s32) + (rec_len as s32) + g_sum + call_sum + sl_val + acc + xp + s_ext.a + s_ext.b + s_ext.c
+    # 5 + 10 + (-5) + 2 + 43 + 6 + 50 + 6 + 7 + 24 = 148
+    return if {
+        total = 148 => 0
+        else => 1
+    }
+}

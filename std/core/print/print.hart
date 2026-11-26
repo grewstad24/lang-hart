@@ -1,7 +1,7 @@
-export { Printable, print, println } to std
-import { std, std_libc, std_error }
+mod std
+use std::libc::*
 
-type Printable :=
+pub type Printable :=
       String
       | Integer
       | :nl
@@ -10,34 +10,34 @@ type Printable :=
       | Bool
       | Slice <Printable>
 
-func checkPrintfRet(ret: s32) -> :none | IoError {
+def checkPrintfRet(ret: s32) -> :none | IoError {
       return switch ret < 0 {
             :true => errnoToError()
             else => :none
       }
 }
 
-func printString(s: String) -> :none | IoError {
+def printString(s: String) -> :none | IoError {
       return checkPrintfRet(printf("%.*s".ptr, s.len as s32, s.ptr))
 }
 
-func prNl() -> :none | IoError {
+def prNl() -> :none | IoError {
       return checkPrintfRet(printf("\n".ptr))
 }
 
-func prTab() -> :none | IoError {
+def prTab() -> :none | IoError {
       return checkPrintfRet(printf("\t".ptr))
 }
 
-func printSint(num: SignedInteger) -> :none | IoError {
+def printSint(num: SignedInteger) -> :none | IoError {
       return checkPrintfRet(printf("%lld".ptr, num as s64))
 }
 
-func printUint(num: UnsignedInteger) -> :none | IoError {
+def printUint(num: UnsignedInteger) -> :none | IoError {
       return checkPrintfRet(printf("%llu".ptr, num as u64))
 }
 
-func printa(arr: Slice<Printable>) -> :none | IoError {
+def printa(arr: Slice<Printable>) -> :none | IoError {
       repeat arr.len using i {
             match print(arr[i]) using err {
                   IoError => return err
@@ -47,7 +47,7 @@ func printa(arr: Slice<Printable>) -> :none | IoError {
       return :none
 }
 
-func print(x: Printable) -> :none | IoError {
+pub def print(x: Printable) -> :none | IoError {
       match x using z {
             String => return printString(z)
             SignedInteger => return printSint(z)
@@ -71,6 +71,6 @@ func print(x: Printable) -> :none | IoError {
       }
 }
 
-func println(x: Printable) -> :none | IoError {
+pub def println(x: Printable) -> :none | IoError {
       return print([x, :nl])
 }

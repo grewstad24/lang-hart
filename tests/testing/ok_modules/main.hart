@@ -1,9 +1,0 @@
-import { mymath }
-
-func main() -> s32 {
-    return if {
-        square(6) = 36 => 0
-        else => 1
-    }
-}
-

@@ -12,9 +12,9 @@ use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Tar
 use crate::codegen::Codegen;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, ExportRule, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
-    ModuleDecl, NamespacePath, Parameter, Parser, Program, Signature, SourceFile, StructFieldInit,
-    Type, TypeAlias, format_error,
+    Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
+    Parameter, Parser, Program, Signature, SourceFile, StructFieldInit, Type, TypeAlias,
+    UseDirective, format_error,
 };
 
 pub const X86_64_TARGET_TRIPLE: &str = "x86_64-unknown-linux-musl";
@@ -136,11 +136,12 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
 
     hart_files.sort();
 
-    // Map named module -> (Option<Declaration (exports, imports, decl_path)>, Vec<SourceFile>)
+    // Map named module -> (Vec<UseDirective> uses, PathBuf first_dir, Vec<SourceFile>)
     let mut named_modules: HashMap<
         String,
         (
-            Option<(Vec<ExportRule>, Vec<NamespacePath>, PathBuf)>,
+            Vec<UseDirective>,
+            PathBuf,
             Vec<SourceFile>,
         ),
     > = HashMap::new();
@@ -158,40 +159,20 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
             .parse_file_declarations(&path.display().to_string())
             .map_err(|error| format_error(parser.current_span(), &error))?;
 
-        match parsed_file.module_decl {
-            Some(ModuleDecl::Declaration {
-                name,
-                exports,
-                imports,
-                span: _,
-            }) => {
+        match parsed_file.module_name {
+            Some(name) => {
                 let entry = named_modules
-                    .entry(name.clone())
-                    .or_insert_with(|| (None, Vec::new()));
-                if entry.0.is_some() {
-                    return Err(format!(
-                        "{}: error: duplicate declaration of module '{}'",
-                        path.display(),
-                        name
-                    ));
-                }
-                entry.0 = Some((exports, imports, path.clone()));
-                entry.1.push(parsed_file.source_file);
-            }
-            Some(ModuleDecl::Member { name, span: _ }) => {
-                let entry = named_modules
-                    .entry(name.clone())
-                    .or_insert_with(|| (None, Vec::new()));
-                entry.1.push(parsed_file.source_file);
+                    .entry(name)
+                    .or_insert_with(|| (Vec::new(), path.clone(), Vec::new()));
+                entry.0.extend(parsed_file.uses);
+                entry.2.push(parsed_file.source_file);
             }
             None => {
-                let imports = parsed_file.imports;
                 unnamed_modules.push(LogicalModule {
                     name: None,
                     dir_path: path.parent().unwrap_or(Path::new("")).display().to_string(),
                     source_files: vec![parsed_file.source_file],
-                    exports: parsed_file.exports,
-                    imports,
+                    uses: parsed_file.uses,
                 });
             }
         }
@@ -209,28 +190,17 @@ pub fn discover_logical_modules(dirs: &[PathBuf]) -> Result<Vec<LogicalModule>, 
     result.extend(std_unnamed);
 
     for name in named_keys {
-        let (decl, files) = named_modules.remove(&name).unwrap();
-        match decl {
-            Some((exports, imports, decl_path)) => {
-                result.push(LogicalModule {
-                    name: Some(name),
-                    dir_path: decl_path
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .display()
-                        .to_string(),
-                    source_files: files,
-                    exports,
-                    imports,
-                });
-            }
-            None => {
-                return Err(format!(
-                    "module '{}' is referenced with 'mod {}' but never declared with 'decl mod {}'",
-                    name, name, name
-                ));
-            }
-        }
+        let (uses, first_path, files) = named_modules.remove(&name).unwrap();
+        result.push(LogicalModule {
+            name: Some(name),
+            dir_path: first_path
+                .parent()
+                .unwrap_or(Path::new(""))
+                .display()
+                .to_string(),
+            source_files: files,
+            uses,
+        });
     }
 
     result.extend(project_unnamed);
@@ -271,7 +241,17 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::Integer(v) => Ok(Expression::Integer(*v)),
         Expression::String(v) => Ok(Expression::String(v.clone())),
         Expression::Symbol(v) => Ok(Expression::Symbol(v.clone())),
-        Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
+        Expression::Identifier(name) => {
+            if name.contains("::") {
+                if let Some(prov) = checker.scope.definitions.get(name) {
+                    return Ok(Expression::Identifier(prov.item.name.clone()));
+                }
+                if let Some(prov) = checker.scope.extern_functions.get(name) {
+                    return Ok(Expression::Identifier(prov.item.name.clone()));
+                }
+            }
+            Ok(Expression::Identifier(name.clone()))
+        }
         Expression::Array(elements) => {
             let mut resolved = Vec::with_capacity(elements.len());
             for el in elements {
@@ -577,14 +557,14 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
         for (module, scope) in modules.iter().zip(module_scopes.iter()) {
             let checker = Checker::new(scope);
             for (name, prov) in &scope.type_aliases {
-                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.imports.is_empty()) {
+                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.uses.is_empty()) {
                     if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
                         shared_canonical_targets.entry((prov.originating_file.clone(), name.clone())).or_insert(target);
                     }
                 }
             }
             for (name, prov) in &scope.home_type_aliases {
-                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.imports.is_empty()) {
+                if !prov.item.is_meta && (module.source_files.iter().any(|f| f.file_path == prov.originating_file) || !module.uses.is_empty()) {
                     if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
                         shared_canonical_targets.entry((prov.originating_file.clone(), name.clone())).or_insert(target);
                     }
@@ -745,6 +725,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
                         value: resolved_value,
                         is_def: false,
                         is_specialized_def: false,
+                        is_pub: def.is_pub,
                     });
                     continue;
                 }
@@ -759,6 +740,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
                     value: resolved_value,
                     is_def: false,
                     is_specialized_def: def.is_specialized_def,
+                    is_pub: def.is_pub,
                 });
             }
 
@@ -774,6 +756,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
                     name: ext.name.clone(),
                     signature: resolved_sig,
                     span: ext.span.clone(),
+                    is_pub: ext.is_pub,
                 });
             }
         }

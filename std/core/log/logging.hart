@@ -1,8 +1,4 @@
-export {
-      { log, logWarn, logError, logWithLineAndFile } to std,
-      { stdLogger } to std_impl
-}
-import { std }
+mod std
 
 const log_red := "\u{1B}[91m"
 const log_yellow := "\u{1B}[33m"
@@ -33,10 +29,10 @@ func stdLogger(ctx: *Context, level: :info | :warn | :error | :never, min_level:
       pprint(item).assertOk()
 }
 
-def log(item) { logWithLineAndFile(:info, @caller_line_number, @caller_file_name, item) }
+pub def log(item) { logWithLineAndFile(:info, @caller_line_number, @caller_file_name, item) }
 
-def logWarn(item) { logWithLineAndFile(:warn, @caller_line_number, @caller_file_name, item) }
+pub def logWarn(item) { logWithLineAndFile(:warn, @caller_line_number, @caller_file_name, item) }
 
-def logError(item) { logWithLineAndFile(:error, @caller_line_number, @caller_file_name, item) }
+pub def logError(item) { logWithLineAndFile(:error, @caller_line_number, @caller_file_name, item) }
 
-def logWithLineAndFile(level, line, file, item) { @ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item) }
+pub def logWithLineAndFile(level, line, file, item) { @ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item) }

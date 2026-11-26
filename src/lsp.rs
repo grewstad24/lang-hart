@@ -436,11 +436,9 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
         Token::Switch => Some((0, 6)),
         Token::Using => Some((0, 5)),
         Token::Mut => Some((0, 3)),
-        Token::Decl => Some((0, 4)),
+        Token::Pub => Some((0, 3)),
         Token::Mod => Some((0, 3)),
-        Token::Export => Some((0, 6)),
-        Token::Import => Some((0, 6)),
-        Token::To => Some((0, 2)),
+        Token::Use => Some((0, 3)),
         Token::Const => Some((0, 5)),
         Token::TypeKeyword => Some((0, 4)),
         Token::Extern => Some((0, 6)),
@@ -462,7 +460,6 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
         Token::Symbol(s) => Some((9, s.len() + 1)), // atom :foo -> enumMember
         Token::String(bytes) => Some((4, bytes.len() + 2)), // string
         Token::Integer(n) => Some((5, n.to_string().len())),
-        Token::Float(fl) => Some((5, fl.to_string().len())),
 
         Token::Identifier(s) => {
             if s.chars().next().map_or(false, |c| c.is_uppercase()) {

@@ -1,0 +1,7 @@
+mod mylib::math
+
+def internalOffset() -> s32 { return 0 }
+
+pub def square(n: s32) -> s32 {
+    return n * n + internalOffset()
+}

@@ -1,14 +1,6 @@
-decl mod misc {
-      export {
-            String, Integer, SignedInteger, UnsignedInteger, Record, Generic, Slice, Vec, Bool,
-            UnvoidGeneric, Voidance, Error, ErrorWithReason, ErrorAndReason,
-            IoError, LogLevel, OpenMode, SeekWhence, File, Context,
-            default_context, fill
-      } to std
-      import { std, std_impl }
-}
+mod std
 
-const default_context := {
+pub const default_context := {
       logger: stdLogger
       log_level: {
             info: :true

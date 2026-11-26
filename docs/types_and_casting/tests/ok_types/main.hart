@@ -1,11 +1,11 @@
-type Slice<T> := { ptr: *T, len: usize }
-type String := { ptr: *u8, len: usize }
+use std::*
+
 type Box<T> := { val: T }
 type Pair<A, B> := (A, B)
 type PointA := { x: s32, y: s32 }
 type PointB := { x: s32, y: s32 }
 
-func sumArray(arr: [4]s32) -> s32 {
+def sumArray(arr: [4]s32) -> s32 {
     mut total := 0
     repeat arr.len using i {
         total := total + arr[i]
@@ -13,24 +13,25 @@ func sumArray(arr: [4]s32) -> s32 {
     return total
 }
 
-func unbox(b: Box<s32>) -> s32 {
+def unbox(b: Box<s32>) -> s32 {
     return b.val
 }
 
-func takeB(p: PointB) -> s32 {
+def takeB(p: PointB) -> s32 {
     return p.x + p.y
 }
 
 func main() -> s32 {
+    @ctx := default_context
     a := 1 as u8
     b := 2 as u16
     c := 3 as u32
     d := 4 as u64
     e := 5 as usize
-    f := (0 - 6) as s16
-    g := (0 - 7) as s32
-    h := (0 - 8) as s64
-    i := (0 - 9) as ssize
+    f := -6 as s16
+    g := -7 as s32
+    h := -8 as s64
+    i := -9 as ssize
     sum := (a as s32) + (b as s32) + (c as s32) + (d as s32) + (e as s32) + (f as s32) + g + (h as s32) + (i as s32)
 
     arr := [10, 20, 30, 40]

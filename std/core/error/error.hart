@@ -1,11 +1,7 @@
-export {
-      { assertOk, panic } to std,
-      { stdPanic } to std_impl,
-      { errnoToError } to std_error
-}
-import { std, std_libc }
+mod std
+use std::libc::*
 
-func errnoToError() -> IoError {
+def errnoToError() -> IoError {
       err := __errno_location().*
       return switch err {
             1 => (:error, :permission_denied)
@@ -35,9 +31,9 @@ func stdPanic(ctx: *Context, reason: Generic) -> never {
       abort()
 }
 
-def panic(reason) { @ctx.panic(@ctx.&, reason) }
+pub def panic(reason) { @ctx.panic(@ctx.&, reason) }
 
-def assertOk(val) { return
+pub def assertOk(val) { return
       match val using v {
             :error => panic(:none)
             ErrorWithReason <Generic> => {

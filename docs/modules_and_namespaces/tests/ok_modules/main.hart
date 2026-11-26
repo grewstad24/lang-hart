@@ -1,0 +1,15 @@
+use std::*
+use mylib::math as mm
+
+func main() -> s32 {
+    @ctx := default_context
+    # Global qualified access without `use`: mylib::prelude::cube
+    # Module alias via `use`: mm::square
+    # Direct submodule brought in non-recursively by `use std::*`: libc::malloc / libc::free
+    p := libc::malloc(4 as usize)
+    libc::free(p)
+    return if {
+        mm::square(6) + mylib::prelude::cube(2) = 44 => 0
+        else => 1
+    }
+}

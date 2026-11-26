@@ -610,6 +610,7 @@ pub struct Definition {
     pub value: Expression,
     pub is_def: bool,
     pub is_specialized_def: bool,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -617,6 +618,7 @@ pub struct ExternalFunction {
     pub name: String,
     pub signature: Signature,
     pub span: Span,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -626,6 +628,7 @@ pub struct TypeAlias {
     pub span: Span,
     pub is_meta: bool,
     pub type_parameters: Vec<String>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -633,27 +636,6 @@ pub struct Variable {
     pub name: String,
     pub ty: Type,
     pub initializer: Option<Expression>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExportRule {
-    pub symbols: Vec<String>,
-    pub target: NamespacePath,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ModuleDecl {
-    Declaration {
-        name: String,
-        exports: Vec<ExportRule>,
-        imports: Vec<NamespacePath>,
-        span: Span,
-    },
-    Member {
-        name: String,
-        span: Span,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -665,19 +647,26 @@ pub struct SourceFile {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct UseDirective {
+    pub path: Vec<String>,
+    pub is_glob: bool,
+    pub alias: Option<String>,
+    pub is_pub: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct LogicalModule {
     pub name: Option<String>,
     pub dir_path: String,
     pub source_files: Vec<SourceFile>,
-    pub exports: Vec<ExportRule>,
-    pub imports: Vec<NamespacePath>,
+    pub uses: Vec<UseDirective>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedFile {
-    pub module_decl: Option<ModuleDecl>,
-    pub exports: Vec<ExportRule>,
-    pub imports: Vec<NamespacePath>,
+    pub module_name: Option<String>,
+    pub uses: Vec<UseDirective>,
     pub source_file: SourceFile,
 }
 
@@ -693,7 +682,6 @@ pub struct Program {
 pub enum Token {
     Identifier(String),
     Integer(i64),
-    Float(f64),
     String(Vec<u8>),
     Symbol(String),
     LParen,
@@ -731,7 +719,6 @@ pub enum Token {
     DotDotDot,
     FatArrow,
     Arrow,
-    Underscore,
     FnKeyword,
     Def,
     TypeKeyword,
@@ -752,11 +739,9 @@ pub enum Token {
     Until,
     For,
     Mut,
-    Decl,
+    Pub,
     Mod,
-    Export,
-    Import,
-    To,
+    Use,
     TypeOpaque,
     Never,
     TypeS16,
@@ -777,7 +762,6 @@ impl fmt::Display for Token {
         match self {
             Token::Identifier(s) => write!(f, "'{}'", s),
             Token::Integer(n) => write!(f, "{}", n),
-            Token::Float(fl) => write!(f, "{}", fl),
             Token::String(bytes) => {
                 if let Ok(s) = std::str::from_utf8(bytes) {
                     write!(f, "\"{}\"", s)
@@ -820,7 +804,6 @@ impl fmt::Display for Token {
             Token::Arrow => write!(f, "'->'"),
             Token::DotDot => write!(f, "'..'"),
             Token::DotDotDot => write!(f, "'...'"),
-            Token::Underscore => write!(f, "'_'"),
             Token::FnKeyword => write!(f, "'func'"),
             Token::Def => write!(f, "'def'"),
             Token::TypeKeyword => write!(f, "'type'"),
@@ -841,11 +824,9 @@ impl fmt::Display for Token {
             Token::Until => write!(f, "'until'"),
             Token::For => write!(f, "'for'"),
             Token::Mut => write!(f, "'mut'"),
-            Token::Decl => write!(f, "'decl'"),
+            Token::Pub => write!(f, "'pub'"),
             Token::Mod => write!(f, "'mod'"),
-            Token::Export => write!(f, "'export'"),
-            Token::Import => write!(f, "'import'"),
-            Token::To => write!(f, "'to'"),
+            Token::Use => write!(f, "'use'"),
             Token::Extern => write!(f, "'extern'"),
             Token::TypeOpaque => write!(f, "'opaque'"),
             Token::Never => write!(f, "'never'"),
@@ -966,6 +947,22 @@ impl Lexer {
                     } else if self.peek_char(1) == Some('=') {
                         self.position += 2;
                         tokens.push(Token::MinusEqual);
+                    } else if matches!(self.peek_char(1), Some('0'..='9'))
+                        && !tokens.last().map_or(false, |tok| {
+                            matches!(
+                                tok,
+                                Token::Identifier(_)
+                                    | Token::Integer(_)
+                                    | Token::String(_)
+                                    | Token::Symbol(_)
+                                    | Token::RParen
+                                    | Token::RBracket
+                                    | Token::RBrace
+                                    | Token::Star
+                            )
+                        })
+                    {
+                        tokens.push(self.lex_integer()?);
                     } else {
                         self.position += 1;
                         tokens.push(Token::Minus);
@@ -1161,6 +1158,9 @@ impl Lexer {
 
     fn lex_integer(&mut self) -> Result<Token, String> {
         let start = self.position;
+        if self.chars[self.position] == '-' {
+            self.position += 1;
+        }
 
         while self.position < self.chars.len() {
             match self.chars[self.position] {
@@ -1214,10 +1214,6 @@ impl Lexer {
 
         let text: String = self.chars[start..self.position].iter().collect();
 
-        if text == "_" {
-            return Token::Underscore;
-        }
-
         match text.as_str() {
             "const" => Token::Const,
             "type" => Token::TypeKeyword,
@@ -1249,11 +1245,9 @@ impl Lexer {
             "until" => Token::Until,
             "for" => Token::For,
             "mut" => Token::Mut,
-            "decl" => Token::Decl,
+            "pub" => Token::Pub,
             "mod" => Token::Mod,
-            "export" => Token::Export,
-            "import" => Token::Import,
-            "to" => Token::To,
+            "use" => Token::Use,
             "opaque" => Token::TypeOpaque,
             "never" => Token::Never,
             _ => Token::Identifier(text),
@@ -1581,25 +1575,17 @@ impl Parser {
                 self.advance();
                 Ok("for".to_string())
             }
-            Token::Decl => {
+            Token::Pub => {
                 self.advance();
-                Ok("decl".to_string())
+                Ok("pub".to_string())
             }
             Token::Mod => {
                 self.advance();
                 Ok("mod".to_string())
             }
-            Token::Export => {
+            Token::Use => {
                 self.advance();
-                Ok("export".to_string())
-            }
-            Token::Import => {
-                self.advance();
-                Ok("import".to_string())
-            }
-            Token::To => {
-                self.advance();
-                Ok("to".to_string())
+                Ok("use".to_string())
             }
             Token::TypeOpaque => {
                 self.advance();
@@ -1685,294 +1671,99 @@ impl Parser {
         }
     }
 
-    pub fn parse_export_directive(&mut self) -> Result<Vec<ExportRule>, String> {
+    pub fn parse_use_directive(&mut self, is_pub: bool) -> Result<UseDirective, String> {
         let span = self.current_span().clone();
-        self.expect(Token::Export)?;
+        self.expect(Token::Use)?;
         self.skip_newlines();
 
-        let mut rules = Vec::new();
+        let mut path = vec![self.expect_field_name()?];
+        let mut is_glob = false;
 
-        self.expect(Token::LBrace)?;
-        self.skip_newlines();
-
-        if self.is(Token::RBrace) {
-            // export { }
+        while self.is(Token::ColonColon) {
             self.advance();
-            self.consume_optional_newline();
-            return Ok(rules);
+            self.skip_newlines();
+            if self.is(Token::Star) {
+                self.advance();
+                is_glob = true;
+                break;
+            }
+            path.push(self.expect_field_name()?);
         }
 
-        if self.is(Token::LBrace) {
-            // Multi-group export:
-            // export {
-            //       { print, println } to .print,
-            //       { printf } to .print.raw_printf
-            // }
-            while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                self.skip_newlines();
-                if self.is(Token::RBrace) {
-                    break;
-                }
-                let item_span = self.current_span().clone();
-                self.expect(Token::LBrace)?;
-                self.skip_newlines();
-                let mut symbols = Vec::new();
-                while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                    symbols.push(self.expect_field_name()?);
-                    self.skip_newlines();
-                    while self.is(Token::Comma) {
-                        self.advance();
-                        self.skip_newlines();
-                    }
-                }
-                self.expect(Token::RBrace)?;
-                self.skip_newlines();
-                let target = if self.is(Token::To) {
-                    self.advance();
-                    self.skip_newlines();
-                    self.parse_namespace_path()?
-                } else {
-                    NamespacePath::root()
-                };
-                rules.push(ExportRule {
-                    symbols,
-                    target,
-                    span: item_span,
-                });
-                self.skip_newlines();
-                while self.is(Token::Comma) {
-                    self.advance();
-                    self.skip_newlines();
-                }
-            }
-            self.expect(Token::RBrace)?;
+        let alias = if !is_glob && self.is(Token::As) {
+            self.advance();
+            self.skip_newlines();
+            Some(self.expect_field_name()?)
         } else {
-            // Single-group export:
-            // export { add, sub, mul, div } to .math
-            // export { String, Integer, Record, Generic } to .
-            let mut symbols = Vec::new();
-            while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                symbols.push(self.expect_field_name()?);
-                self.skip_newlines();
-                while self.is(Token::Comma) {
-                    self.advance();
-                    self.skip_newlines();
-                }
-            }
-            self.expect(Token::RBrace)?;
-            self.skip_newlines();
-            let target = if self.is(Token::To) {
-                self.advance();
-                self.skip_newlines();
-                self.parse_namespace_path()?
-            } else {
-                NamespacePath::root()
-            };
-            rules.push(ExportRule {
-                symbols,
-                target,
-                span,
-            });
-        }
+            None
+        };
 
         self.consume_optional_newline();
-        Ok(rules)
-    }
-
-    pub fn parse_export_rule(&mut self) -> Result<ExportRule, String> {
-        let rules = self.parse_export_directive()?;
-        rules
-            .into_iter()
-            .next()
-            .ok_or_else(|| "empty export directive".to_string())
-    }
-
-    pub fn parse_import_directive(&mut self) -> Result<Vec<NamespacePath>, String> {
-        self.expect(Token::Import)?;
-        self.skip_newlines();
-        let mut imports = Vec::new();
-        self.expect(Token::LBrace)?;
-        self.skip_newlines();
-        while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-            imports.push(self.parse_namespace_path()?);
-            self.skip_newlines();
-            while self.is(Token::Comma) {
-                self.advance();
-                self.skip_newlines();
-            }
-        }
-        self.expect(Token::RBrace)?;
-        self.consume_optional_newline();
-        Ok(imports)
+        Ok(UseDirective {
+            path,
+            is_glob,
+            alias,
+            is_pub,
+            span,
+        })
     }
 
     pub fn parse_file_declarations(&mut self, file_path: &str) -> Result<ParsedFile, String> {
-        let mut module_decl: Option<ModuleDecl> = None;
-        let mut exports = Vec::new();
-        let mut imports = Vec::new();
+        let mut module_name: Option<String> = None;
+        let mut uses = Vec::new();
         let mut extern_functions = Vec::new();
         let mut definitions = Vec::new();
         let mut type_aliases = Vec::new();
-        let mut has_top_level_export = false;
-        let mut has_top_level_import = false;
 
         self.skip_newlines();
 
         while !self.is(Token::Eof) {
             let declaration_span = self.current_span().clone();
+            let is_pub = if self.is(Token::Pub) {
+                self.advance();
+                self.skip_newlines();
+                true
+            } else {
+                false
+            };
+
             match self.peek() {
-                Token::Decl => {
-                    if module_decl.is_some() {
-                        return Err(format!(
-                            "{}: error: file cannot declare more than one module declaration",
-                            file_path
-                        ));
-                    }
-                    if !exports.is_empty() || !imports.is_empty() {
-                        return Err(format!(
-                            "{}: error: exports and imports must be declared inside the 'decl mod' block",
-                            file_path
-                        ));
-                    }
-                    self.advance(); // consume 'decl'
-                    self.skip_newlines();
-                    self.expect(Token::Mod)?;
-                    self.skip_newlines();
-                    let name = self.expect_field_name()?;
-                    self.skip_newlines();
-                    self.expect(Token::LBrace)?;
-                    self.skip_newlines();
-                    let mut decl_exports = Vec::new();
-                    let mut decl_imports = Vec::new();
-                    let mut has_export = false;
-                    let mut has_import = false;
-                    while !self.is(Token::RBrace) && !self.is(Token::Eof) {
-                        self.skip_newlines();
-                        if self.is(Token::RBrace) {
-                            break;
-                        }
-                        match self.peek() {
-                            Token::Export => {
-                                if has_export {
-                                    return Err(format!(
-                                        "{}: error: module '{}' cannot have more than one export statement",
-                                        file_path, name
-                                    ));
-                                }
-                                has_export = true;
-                                let mut rules = self.parse_export_directive()?;
-                                decl_exports.append(&mut rules);
-                            }
-                            Token::Import => {
-                                if has_import {
-                                    return Err(format!(
-                                        "{}: error: module '{}' cannot have more than one import statement",
-                                        file_path, name
-                                    ));
-                                }
-                                has_import = true;
-                                let mut imps = self.parse_import_directive()?;
-                                decl_imports.append(&mut imps);
-                            }
-                            Token::Newline => {
-                                self.skip_newlines();
-                            }
-                            Token::Comma => {
-                                self.advance();
-                                self.skip_newlines();
-                            }
-                            token => {
-                                return Err(format!(
-                                    "{}: error: unexpected token inside 'decl mod {}': {}. Only 'export' and 'import' are allowed.",
-                                    file_path, name, token
-                                ));
-                            }
-                        }
-                        self.skip_newlines();
-                    }
-                    self.expect(Token::RBrace)?;
-                    self.consume_optional_newline();
-                    module_decl = Some(ModuleDecl::Declaration {
-                        name,
-                        exports: decl_exports,
-                        imports: decl_imports,
-                        span: declaration_span,
-                    });
-                }
                 Token::Mod => {
-                    if module_decl.is_some() {
-                        return Err(format!(
-                            "{}: error: file cannot declare more than one module declaration",
-                            file_path
+                    if is_pub {
+                        return Err(format_error(
+                            self.current_span(),
+                            &format!("{}: error: 'pub mod' is not supported; use 'mod <name>'", file_path),
                         ));
                     }
-                    if !exports.is_empty() || !imports.is_empty() {
+                    if module_name.is_some() {
                         return Err(format!(
-                            "{}: error: only the module declaration site ('decl mod') can declare imports and exports; member files cannot",
+                            "{}: error: file cannot declare more than one module declaration",
                             file_path
                         ));
                     }
                     self.advance(); // consume 'mod'
                     self.skip_newlines();
-                    let name = self.expect_field_name()?;
+                    let mut segments = vec![self.expect_field_name()?];
+                    while self.is(Token::ColonColon) {
+                        self.advance();
+                        self.skip_newlines();
+                        segments.push(self.expect_field_name()?);
+                    }
                     self.consume_optional_newline();
-                    module_decl = Some(ModuleDecl::Member {
-                        name,
-                        span: declaration_span,
-                    });
+                    module_name = Some(segments.join("::"));
                 }
-                Token::Export => {
-                    if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
-                        return Err(format!(
-                            "{}: error: member file of module '{}' cannot declare exports. Only 'decl mod {}' can declare exports.",
-                            file_path, name, name
-                        ));
-                    }
-                    if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
-                        return Err(format!(
-                            "{}: error: exports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
-                            file_path, name, name
-                        ));
-                    }
-                    if has_top_level_export {
-                        return Err(format!(
-                            "{}: error: cannot have more than one export statement per module",
-                            file_path
-                        ));
-                    }
-                    has_top_level_export = true;
-                    let mut rules = self.parse_export_directive()?;
-                    exports.append(&mut rules);
-                }
-                Token::Import => {
-                    if let Some(ModuleDecl::Member { name, .. }) = &module_decl {
-                        return Err(format!(
-                            "{}: error: member file of module '{}' cannot declare imports. Only 'decl mod {}' can declare imports.",
-                            file_path, name, name
-                        ));
-                    }
-                    if let Some(ModuleDecl::Declaration { name, .. }) = &module_decl {
-                        return Err(format!(
-                            "{}: error: imports for module '{}' must be declared inside the 'decl mod {} {{ ... }}' block",
-                            file_path, name, name
-                        ));
-                    }
-                    if has_top_level_import {
-                        return Err(format!(
-                            "{}: error: cannot have more than one import statement per module",
-                            file_path
-                        ));
-                    }
-                    has_top_level_import = true;
-                    let mut imps = self.parse_import_directive()?;
-                    imports.append(&mut imps);
+                Token::Use => {
+                    let directive = self.parse_use_directive(is_pub)?;
+                    uses.push(directive);
                 }
                 Token::FnKeyword => {
-                    let def = self.parse_fn_definition()?;
+                    let mut def = self.parse_fn_definition()?;
+                    def.is_pub = is_pub;
                     definitions.push(def);
                 }
                 Token::Def => {
-                    let def = self.parse_def_definition()?;
+                    let mut def = self.parse_def_definition()?;
+                    def.is_pub = is_pub;
                     definitions.push(def);
                 }
                 Token::TypeKeyword => {
@@ -2006,6 +1797,7 @@ impl Parser {
                         span: declaration_span,
                         is_meta,
                         type_parameters,
+                        is_pub,
                     });
                 }
                 Token::Const => {
@@ -2023,6 +1815,7 @@ impl Parser {
                         value,
                         is_def: false,
                         is_specialized_def: false,
+                        is_pub,
                     });
                 }
                 Token::Extern => {
@@ -2044,7 +1837,7 @@ impl Parser {
                         }
 
                         let param_name = self.expect_field_name()?;
-                        if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                        if self.is(Token::Colon) {
                             self.advance();
                         } else {
                             return Err(format!(
@@ -2086,16 +1879,23 @@ impl Parser {
                         name,
                         signature,
                         span: declaration_span,
+                        is_pub,
                     });
                 }
                 Token::Newline => {
+                    if is_pub {
+                        return Err(format_error(
+                            self.current_span(),
+                            &format!("{}: error: expected declaration after 'pub'", file_path),
+                        ));
+                    }
                     self.skip_newlines();
                 }
                 token => {
                     return Err(format_error(
                         self.current_span(),
                         &format!(
-                            "unexpected token at top level: {}. Declarations must start with 'func', 'def', 'type', 'const', 'extern', 'decl mod', 'mod', 'export', or 'import'",
+                            "unexpected token at top level: {}. Declarations must start with 'pub', 'func', 'def', 'type', 'const', 'extern', 'mod', or 'use'",
                             token
                         ),
                     ));
@@ -2103,16 +1903,6 @@ impl Parser {
             }
 
             self.skip_newlines();
-        }
-
-        if let Some(ModuleDecl::Declaration {
-            exports: ref decl_exports,
-            imports: ref mut decl_imports,
-            ..
-        }) = module_decl
-        {
-            exports = decl_exports.clone();
-            imports = decl_imports.clone();
         }
 
         let source_file = SourceFile {
@@ -2123,9 +1913,8 @@ impl Parser {
         };
 
         Ok(ParsedFile {
-            module_decl,
-            exports,
-            imports,
+            module_name,
+            uses,
             source_file,
         })
     }
@@ -2139,7 +1928,7 @@ impl Parser {
         let mut parameters = Vec::new();
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
             let param_name = self.expect_field_name()?;
-            if self.is(Token::Colon) || self.is(Token::ColonColon) {
+            if self.is(Token::Colon) {
                 self.advance();
             } else {
                 return Err(format!(
@@ -2184,6 +1973,7 @@ impl Parser {
             value: body,
             is_def: false,
             is_specialized_def: false,
+            is_pub: false,
         })
     }
 
@@ -2203,7 +1993,7 @@ impl Parser {
         while !self.is(Token::RParen) && !self.is(Token::Eof) {
             let param_name = self.expect_field_name()?;
             self.skip_newlines();
-            let ty = if self.is(Token::Colon) || self.is(Token::ColonColon) {
+            let ty = if self.is(Token::Colon) {
                 self.advance();
                 self.skip_newlines();
                 self.parse_type()?
@@ -2246,6 +2036,7 @@ impl Parser {
             value: body,
             is_def: true,
             is_specialized_def: false,
+            is_pub: false,
         })
     }
 
@@ -2535,11 +2326,9 @@ impl Parser {
                 | Token::While
                 | Token::Until
                 | Token::For
-                | Token::Decl
+                | Token::Pub
                 | Token::Mod
-                | Token::Export
-                | Token::Import
-                | Token::To
+                | Token::Use
                 | Token::TypeOpaque
                 | Token::TypeKeyword
                 | Token::TypeS16
@@ -2583,11 +2372,9 @@ impl Parser {
                 | Token::While
                 | Token::Until
                 | Token::For
-                | Token::Decl
+                | Token::Pub
                 | Token::Mod
-                | Token::Export
-                | Token::Import
-                | Token::To
+                | Token::Use
                 | Token::TypeOpaque
                 | Token::TypeKeyword
                 | Token::TypeS16
@@ -2633,7 +2420,17 @@ impl Parser {
             }
             Token::Identifier(name) => {
                 self.advance();
-                Ok(Expression::Identifier(name))
+                if self.is(Token::ColonColon) {
+                    let mut segments = vec![name];
+                    while self.is(Token::ColonColon) {
+                        self.advance();
+                        self.skip_newlines();
+                        segments.push(self.expect_field_name()?);
+                    }
+                    Ok(Expression::Identifier(segments.join("::")))
+                } else {
+                    Ok(Expression::Identifier(name))
+                }
             }
             Token::At => {
                 let span = self.current_span().clone();
@@ -2641,7 +2438,11 @@ impl Parser {
                 let tag = self.expect_identifier()?;
                 self.skip_newlines();
                 if tag == "sizeOf" {
-                    let operand = self.parse_unary()?;
+                    self.expect(Token::LParen)?;
+                    self.skip_newlines();
+                    let operand = self.parse_expression()?;
+                    self.skip_newlines();
+                    self.expect(Token::RParen)?;
                     return Ok(Expression::SizeOf(Box::new(operand)));
                 } else if tag == "asTypeOf" {
                     self.expect(Token::LParen)?;
@@ -2734,30 +2535,10 @@ impl Parser {
             Token::If => self.parse_if_expression(),
             Token::Switch => self.parse_switch_expression(),
             Token::Match => self.parse_match_expression(),
-            Token::Const => {
-                self.advance();
-                let name = self.expect_identifier()?;
-                if self.is(Token::Colon) || self.is(Token::ColonColon) {
-                    return Err(format_error(
-                        self.current_span(),
-                        &format!(
-                            "constants cannot be declared without an initialiser: 'const {} : ...' is prohibited, use 'const {} := <value>'",
-                            name, name
-                        ),
-                    ));
-                }
-                self.expect(Token::ColonEqual)?;
-                self.skip_newlines();
-                let value = self.parse_expression()?;
-                Ok(Expression::Let {
-                    name,
-                    value: Box::new(value),
-                })
-            }
             Token::Mut => {
                 self.advance();
                 let name = self.expect_identifier()?;
-                if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                if self.is(Token::Colon) {
                     self.advance();
                     self.skip_newlines();
                     let ty = self.parse_type()?;
@@ -3160,8 +2941,19 @@ impl Parser {
                 self.advance();
                 Ok(Type::Never)
             }
-            Token::Identifier(name) => {
+            Token::Identifier(first) => {
                 self.advance();
+                let name = if self.is(Token::ColonColon) {
+                    let mut segments = vec![first];
+                    while self.is(Token::ColonColon) {
+                        self.advance();
+                        self.skip_newlines();
+                        segments.push(self.expect_field_name()?);
+                    }
+                    segments.join("::")
+                } else {
+                    first
+                };
                 if self.is(Token::Less) {
                     self.advance();
                     self.skip_newlines();
@@ -3297,7 +3089,7 @@ impl Parser {
                 let mut fields = Vec::new();
                 while !self.is(Token::RBrace) && !self.is(Token::Eof) {
                     let field_name = self.expect_field_name()?;
-                    if self.is(Token::Colon) || self.is(Token::ColonColon) {
+                    if self.is(Token::Colon) {
                         self.advance();
                     } else {
                         return Err(format!(
@@ -3337,8 +3129,7 @@ impl Parser {
                     while lookahead < self.tokens.len() && self.tokens[lookahead] == Token::Newline {
                         lookahead += 1;
                     }
-                    let is_named = self.tokens.get(lookahead) == Some(&Token::Colon)
-                        || self.tokens.get(lookahead) == Some(&Token::ColonColon);
+                    let is_named = self.tokens.get(lookahead) == Some(&Token::Colon);
                     let ty = if is_named {
                         let _ = self.expect_field_name()?;
                         self.skip_newlines();

@@ -1,4 +1,4 @@
-import { std }
+use std::*
 
 func main(args: Slice<String>) -> :none {
       @ctx := default_context

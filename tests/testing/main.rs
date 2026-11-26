@@ -16,8 +16,9 @@ fn temp_out_dir(name: &str) -> PathBuf {
 }
 
 fn assert_dir_ok(rel_dir: &str) {
-    let path = Path::new("tests/testing").join(rel_dir);
-    let out_dir = temp_out_dir(rel_dir);
+    let path = Path::new("docs").join(rel_dir);
+    let sanitized = rel_dir.replace('/', "_");
+    let out_dir = temp_out_dir(&sanitized);
     let _ = fs::remove_dir_all(&out_dir);
 
     let bin_path = match hart::driver::compile_project_to(&path, &out_dir) {
@@ -29,6 +30,7 @@ fn assert_dir_ok(rel_dir: &str) {
     };
 
     let output = Command::new("sh")
+        .env("HOME", std::env::temp_dir())
         .arg(&bin_path)
         .output()
         .unwrap_or_else(|e| panic!("failed to execute '{}': {}", bin_path.display(), e));
@@ -45,8 +47,9 @@ fn assert_dir_ok(rel_dir: &str) {
 }
 
 fn assert_dir_err(rel_dir: &str, expected_substr: &str) {
-    let path = Path::new("tests/testing").join(rel_dir);
-    let out_dir = temp_out_dir(rel_dir);
+    let path = Path::new("docs").join(rel_dir);
+    let sanitized = rel_dir.replace('/', "_");
+    let out_dir = temp_out_dir(&sanitized);
     let _ = fs::remove_dir_all(&out_dir);
 
     let res = hart::driver::compile_project_to(&path, &out_dir);
@@ -71,63 +74,86 @@ fn assert_dir_err(rel_dir: &str, expected_substr: &str) {
 
 #[test]
 fn ok_types() {
-    assert_dir_ok("ok_types");
+    assert_dir_ok("types_and_casting/tests/ok_types");
+}
+
+#[test]
+fn ok_atoms_and_coercion() {
+    assert_dir_ok("types_and_casting/tests/ok_atoms_and_coercion");
 }
 
 #[test]
 fn ok_control_flow() {
-    assert_dir_ok("ok_control_flow");
+    assert_dir_ok("control_flow/tests/ok_control_flow");
+}
+
+#[test]
+fn ok_for_and_defer() {
+    assert_dir_ok("control_flow/tests/ok_for_and_defer");
 }
 
 #[test]
 fn ok_def_intrinsics() {
-    assert_dir_ok("ok_def_intrinsics");
+    assert_dir_ok("functions_and_intrinsics/tests/ok_def_intrinsics");
 }
 
 #[test]
 fn ok_modules() {
-    assert_dir_ok("ok_modules");
+    assert_dir_ok("modules_and_namespaces/tests/ok_modules");
 }
 
 #[test]
 fn ok_escape_safe() {
-    assert_dir_ok("ok_escape_safe");
+    assert_dir_ok("escape_analysis/tests/ok_escape_safe");
+}
+
+#[test]
+fn ok_stdcore() {
+    assert_dir_ok("stdcore/tests/ok_stdcore");
+}
+
+#[test]
+fn err_ctx_uninitialized() {
+    assert_dir_err(
+        "functions_and_intrinsics/tests/err_ctx_uninitialized",
+        "'@ctx' must be initialized before calling 'def' function",
+    );
 }
 
 #[test]
 fn err_opaque_deref() {
-    assert_dir_err("err_opaque_deref", "cannot dereference untyped pointer '*opaque'");
+    assert_dir_err("types_and_casting/tests/err_opaque_deref", "cannot dereference untyped pointer '*opaque'");
 }
 
 #[test]
 fn err_if_non_bool() {
-    assert_dir_err("err_if_non_bool", "condition must evaluate to Bool");
+    assert_dir_err("control_flow/tests/err_if_non_bool", "condition must evaluate to Bool");
 }
 
 #[test]
 fn err_match_non_exhaustive() {
-    assert_dir_err("err_match_non_exhaustive", "non-exhaustive match expression");
+    assert_dir_err("control_flow/tests/err_match_non_exhaustive", "non-exhaustive match expression");
 }
 
 #[test]
 fn err_break_outside_loop() {
-    assert_dir_err("err_break_outside_loop", "'break' outside of loop");
+    assert_dir_err("control_flow/tests/err_break_outside_loop", "'break' outside of loop");
 }
 
 #[test]
 fn err_continue_outside_loop() {
-    assert_dir_err("err_continue_outside_loop", "'continue' outside of loop");
+    assert_dir_err("control_flow/tests/err_continue_outside_loop", "'continue' outside of loop");
 }
 
 #[test]
 fn err_yield_type_mismatch() {
-    assert_dir_err("err_yield_type_mismatch", "return type mismatch");
+    assert_dir_err("control_flow/tests/err_yield_type_mismatch", "return type mismatch");
 }
 
 #[test]
 fn err_caller_outside_def() {
     assert_dir_err(
-        "err_caller_outside_def",
+        "functions_and_intrinsics/tests/err_caller_outside_def",
         "'@caller_line_number' can only be used inside a 'def' function",
     );
 }
@@ -135,30 +161,30 @@ fn err_caller_outside_def() {
 #[test]
 fn err_main_is_def() {
     assert_dir_err(
-        "err_main_is_def",
+        "functions_and_intrinsics/tests/err_main_is_def",
         "entry point 'main' must be a function ('func'), never a 'def'",
     );
 }
 
 #[test]
 fn err_discard_error() {
-    assert_dir_err("err_discard_error", "may be an error and cannot be discarded");
+    assert_dir_err("control_flow/tests/err_discard_error", "may be an error and cannot be discarded");
 }
 
 #[test]
 fn err_immutable_reassign() {
-    assert_dir_err("err_immutable_reassign", "cannot reassign to immutable constant");
+    assert_dir_err("types_and_casting/tests/err_immutable_reassign", "cannot reassign to immutable constant");
 }
 
 #[test]
 fn err_immutable_ptr_write() {
-    assert_dir_err("err_immutable_ptr_write", "cannot mutate through immutable pointer");
+    assert_dir_err("types_and_casting/tests/err_immutable_ptr_write", "cannot mutate through immutable pointer");
 }
 
 #[test]
 fn err_uninitialized_read() {
     assert_dir_err(
-        "err_uninitialized_read",
+        "types_and_casting/tests/err_uninitialized_read",
         "mutable variable 'x' may be read before it is initialized",
     );
 }
@@ -166,7 +192,7 @@ fn err_uninitialized_read() {
 #[test]
 fn err_escape_return() {
     assert_dir_err(
-        "err_escape_return",
+        "escape_analysis/tests/err_escape_return",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -174,7 +200,7 @@ fn err_escape_return() {
 #[test]
 fn err_escape_alias() {
     assert_dir_err(
-        "err_escape_alias",
+        "escape_analysis/tests/err_escape_alias",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -182,7 +208,7 @@ fn err_escape_alias() {
 #[test]
 fn err_escape_reassign() {
     assert_dir_err(
-        "err_escape_reassign",
+        "escape_analysis/tests/err_escape_reassign",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -190,7 +216,7 @@ fn err_escape_reassign() {
 #[test]
 fn err_escape_struct() {
     assert_dir_err(
-        "err_escape_struct",
+        "escape_analysis/tests/err_escape_struct",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -198,7 +224,7 @@ fn err_escape_struct() {
 #[test]
 fn err_escape_tuple() {
     assert_dir_err(
-        "err_escape_tuple",
+        "escape_analysis/tests/err_escape_tuple",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -206,7 +232,7 @@ fn err_escape_tuple() {
 #[test]
 fn err_escape_union() {
     assert_dir_err(
-        "err_escape_union",
+        "escape_analysis/tests/err_escape_union",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -214,7 +240,7 @@ fn err_escape_union() {
 #[test]
 fn err_escape_cast() {
     assert_dir_err(
-        "err_escape_cast",
+        "escape_analysis/tests/err_escape_cast",
         "pointer to local stack variable cannot escape function via return",
     );
 }
@@ -222,7 +248,7 @@ fn err_escape_cast() {
 #[test]
 fn err_escape_out_param() {
     assert_dir_err(
-        "err_escape_out_param",
+        "escape_analysis/tests/err_escape_out_param",
         "cannot store pointer to local stack variable into dereferenced pointer",
     );
 }
