@@ -374,15 +374,55 @@ pub fn compute_semantic_tokens(source: &str) -> Vec<u32> {
         }
     }
 
-    // 2. Scan comments (# ...)
+    // 2. Scan comments (# ... # or # ... EOL)
     for (line_idx, line_str) in source.lines().enumerate() {
-        if let Some(hash_pos) = line_str.find('#') {
-            raw_tokens.push(RawToken {
-                line: line_idx as u32,
-                col: hash_pos as u32,
-                len: (line_str.len() - hash_pos) as u32,
-                token_type: 7, // comment
-            });
+        let bytes = line_str.as_bytes();
+        let mut i = 0;
+        let mut in_string = false;
+        let mut in_char = false;
+        while i < bytes.len() {
+            if in_string {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+            } else if in_char {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'\'' {
+                    in_char = false;
+                }
+                i += 1;
+            } else if bytes[i] == b'"' {
+                in_string = true;
+                i += 1;
+            } else if bytes[i] == b'\'' {
+                in_char = true;
+                i += 1;
+            } else if bytes[i] == b'#' {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'#' {
+                    i += 1;
+                }
+                if i < bytes.len() && bytes[i] == b'#' {
+                    i += 1;
+                }
+                raw_tokens.push(RawToken {
+                    line: line_idx as u32,
+                    col: start as u32,
+                    len: (i - start) as u32,
+                    token_type: 7, // comment
+                });
+            } else {
+                i += 1;
+            }
         }
     }
 

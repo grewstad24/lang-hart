@@ -35,27 +35,24 @@ func main(args: Slice<String>) -> :none {
     if {
         a != 29 => panic("math mismatch")
         c != 10 => panic("clamp mismatch")
-        else => :none
     }
 
     # Heap (heapAlloc, heapRealloc, heapDealloc, heapNew)
-    raw := heapAlloc(8 as usize).must()
-    raw2 := heapRealloc(raw, 16 as usize).must()
+    raw := heapAlloc(8).must()
+    raw2 := heapRealloc(raw, 16).must()
     heapDealloc(raw2)
 
     boxed := heapNew(42).must()
     defer heapDealloc(boxed as *opaque)
     if {
         boxed.* != 42 => panic("heapNew mismatch")
-        else => :none
     }
 
-    # Vec (vecInit(:none) and vecInit(array)) & fill
-    v_empty := vecInit(:none).must()
+    # Vec (vecEmpty and vecInit(array)) & fill
+    v_empty := vecEmpty()
     if {
-        v_empty.items.len != (0 as usize) => panic("vecInit(:none) len mismatch")
-        v_empty.cap != (0 as usize) => panic("vecInit(:none) cap mismatch")
-        else => :none
+        v_empty.items.len != 0 => panic("vecEmpty len mismatch")
+        v_empty.cap != 0 => panic("vecEmpty cap mismatch")
     }
 
     v := vecInit([1, 2, 3]).must()
@@ -63,7 +60,6 @@ func main(args: Slice<String>) -> :none {
     fill(v.items, 9)
     if {
         v.items[0] != 9 => panic("fill mismatch")
-        else => :none
     }
 
     # Boolean gates & operations
@@ -94,8 +90,7 @@ func main(args: Slice<String>) -> :none {
         stdin.fd != 0 => panic("stdin fd mismatch")
         stdout.fd != 1 => panic("stdout fd mismatch")
         stderr.fd != 2 => panic("stderr fd mismatch")
-        default_buffer_size != (8192 as usize) => panic("default_buffer_size mismatch")
-        else => :none
+        default_buffer_size != 8192 => panic("default_buffer_size mismatch")
     }
 
     # File I/O (writeFile, appendToFile, readFile, openFile, seekFile, readBytes, writeBytes, closeFile)
@@ -105,25 +100,48 @@ func main(args: Slice<String>) -> :none {
     content := readFile(tmp_path).must()
     defer heapDealloc(content.ptr as *opaque)
     if {
-        content.len != (11 as usize) => panic("readFile len mismatch")
-        content[0] != (104 as u8) => panic("readFile content mismatch")
-        content[6] != (119 as u8) => panic("appendToFile content mismatch")
-        else => :none
+        content.len != 11 => panic("readFile len mismatch")
+        content[0] != 104 => panic("readFile content mismatch")
+        content[6] != 119 => panic("appendToFile content mismatch")
     }
 
     f := openFile(tmp_path, :read_write).must()
     pos := seekFile(f, 0 as s64, :end).must()
     if {
-        pos != (11 as u64) => panic("seekFile mismatch")
-        else => :none
+        pos != 11 => panic("seekFile mismatch")
     }
     seekFile(f, 0 as s64, :start).must()
     mut buf := [0 as u8, 0 as u8, 0 as u8, 0 as u8, 0 as u8]
     n_read := readBytes(f, buf[0].&mut, 5 as usize).must()
     if {
-        n_read != (5 as usize) => panic("readBytes len mismatch")
-        buf[0] != (104 as u8) => panic("readBytes content mismatch")
-        else => :none
+        n_read != 5 => panic("readBytes len mismatch")
+        buf[0] != 104 => panic("readBytes content mismatch")
     }
     closeFile(f).must()
+
+    # nulTerminate
+    c_str := nulTerminate("abc").must()
+    defer heapDealloc(c_str as *opaque)
+    if {
+        c_str[0] != 97 => panic("nulTerminate[0] mismatch")
+        c_str[1] != 98 => panic("nulTerminate[1] mismatch")
+        c_str[2] != 99 => panic("nulTerminate[2] mismatch")
+        c_str[3] != 0 => panic("nulTerminate[3] mismatch")
+    }
+
+    # Pointer arithmetic (ptrAdd, ptrSub, ptrAddBytes, ptrSubBytes, ptrDiffBytes)
+    mut arr := [10, 20, 30, 40]
+    p0 := arr[0].&mut
+    p2 := ptrAdd(p0, 2)
+    p1 := ptrSub(p2, 1)
+    p3 := ptrAddBytes(p0, @sizeOf(arr[0]) * 3)
+    p1_b := ptrSubBytes(p3, @sizeOf(arr[0]) * 2)
+    diff := ptrDiffBytes(p3, p0)
+    if {
+        p2.* != 30 => panic("ptrAdd mismatch")
+        p1.* != 20 => panic("ptrSub mismatch")
+        p3.* != 40 => panic("ptrAddBytes mismatch")
+        p1_b.* != 20 => panic("ptrSubBytes mismatch")
+        diff != @sizeOf(arr[0]) * 3 => panic("ptrDiffBytes mismatch")
+    }
 }

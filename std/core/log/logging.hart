@@ -18,7 +18,6 @@ func stdLogger(ctx: *Context, level: :info | :warn | :error | :never, min_level:
 
       if {
             isLogged(level, min_level) = :false => return :none
-            else => :none
       }
       match level {
             :error => match print([log_red, "‼ error ", file, ":", line, ": ", log_reset]) { else => :none }

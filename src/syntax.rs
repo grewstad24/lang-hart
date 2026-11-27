@@ -1161,6 +1161,10 @@ impl Lexer {
                     tokens.push(Token::Newline);
                     return;
                 }
+                '#' => {
+                    self.position += 1;
+                    return;
+                }
                 _ => {
                     self.position += 1;
                 }

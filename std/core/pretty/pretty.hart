@@ -93,7 +93,6 @@ def pprintArray(z, indent_level) -> :none | IoError {
                         IoError => return err
                         else => :none
                   }
-                  else => :none
             }
       }
       return :none
@@ -142,7 +141,6 @@ def pprintRecord(item, indent_level) -> :none | IoError {
                         IoError => return err
                         else => :none
                   }
-                  else => :none
             }
       }
       return :none
@@ -181,8 +179,7 @@ def hartPrintIndent(indent_level) -> :none | IoError {
 
 def hartPrintArray(z, indent_level) -> :none | IoError {
       if {
-            z.len = (0 as usize) => return print("[]")
-            else => :none
+            z.len = 0 => return print("[]")
       }
       match print("[\n") using err {
             IoError => return err
@@ -211,8 +208,7 @@ def hartPrintArray(z, indent_level) -> :none | IoError {
 
 def hartPrintRecord(rec, indent_level) -> :none | IoError {
       if {
-            rec.*.len = (0 as usize) => return print("{}")
-            else => :none
+            rec.*.len = 0 => return print("{}")
       }
       match print("{\n") using err {
             IoError => return err

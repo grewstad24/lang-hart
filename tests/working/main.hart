@@ -4,7 +4,7 @@ func main() -> :none {
       @ctx := default_context
       log("hello from main")
       log({ name: "alice" })
-      logWarn([1, 10, 15])
+      logWarn([-1, 10, 15])
       logError("bye from main")
 
       print(:nl).must()
@@ -15,7 +15,7 @@ func main() -> :none {
       logWarn([1, 10, 15])
       logError("bye from main")
 
-      v_empty := vecInit(:none).must()
+      v_empty := vecEmpty()
       v_nums := vecInit([1, 2, 3]).must()
       defer heapDealloc(v_nums.items.ptr as *opaque)
 

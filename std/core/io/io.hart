@@ -18,7 +18,12 @@ func stdOpen(ctx: *Context, path: String, mode: OpenMode) -> s32 | IoError {
             :read => 0
             else => 420
       }
-      fd := open(path.ptr, flags, perm)
+      c_path := match nulTerminate(path) using res {
+            :error => return (:error, :out_of_memory)
+            else => res
+      }
+      defer heapDealloc(c_path as *opaque)
+      fd := open(c_path as *u8, flags, perm)
       return switch fd < 0 {
             :true => errnoToError()
             else => fd
@@ -37,7 +42,7 @@ func stdClose(ctx: *Context, fd: s32) -> :none | IoError {
 func stdRead(ctx: *Context, fd: s32, buf: *mut u8, count: usize) -> usize | IoError {
       @ctx := ctx.*
       n := read(fd, buf as *u8, count)
-      return switch n < (0 as s64) {
+      return switch n < 0 {
             :true => errnoToError()
             else => n as usize
       }
@@ -46,7 +51,7 @@ func stdRead(ctx: *Context, fd: s32, buf: *mut u8, count: usize) -> usize | IoEr
 func stdWrite(ctx: *Context, fd: s32, buf: *u8, count: usize) -> usize | IoError {
       @ctx := ctx.*
       n := write(fd, buf, count)
-      return switch n < (0 as s64) {
+      return switch n < 0 {
             :true => errnoToError()
             else => n as usize
       }
@@ -60,7 +65,7 @@ func stdSeek(ctx: *Context, fd: s32, offset: s64, whence: SeekWhence) -> u64 | I
             :end => 2
       }
       pos := lseek(fd, offset, w)
-      return switch pos < (0 as s64) {
+      return switch pos < 0 {
             :true => errnoToError()
             else => pos as u64
       }
@@ -84,16 +89,15 @@ pub def seekFile(file, offset, whence) { @ctx.seek(@ctx.&, file.fd, offset, when
 pub def writeAll(file, data) {
       mut remaining := data.len
       mut curr_ptr := data.ptr
-      repeat while remaining > (0 as usize) {
+      repeat while remaining > 0 {
             written := match writeBytes(file, curr_ptr, remaining) using res {
                   IoError => return res
                   else => res
             }
             if {
-                  written = (0 as usize) => return (:error, :io_error)
-                  else => :none
+                  written = 0 => return (:error, :io_error)
             }
-            curr_ptr := (curr_ptr as usize + written) as *u8
+            curr_ptr := ptrAdd(curr_ptr, written)
             remaining -= written
       }
       return :none
@@ -109,11 +113,11 @@ pub def readAll(file) {
             else => :none
       }
       u_size := size as usize
-      buf := match heapAlloc(u_size + (1 as usize)) using res {
+      buf := match heapAlloc(u_size) using res {
             :error => return res
             else => res
       }
-      mut total_read: usize := 0 as usize
+      mut total_read: usize := 0
       mut curr_ptr := buf as *mut u8
       repeat while total_read < u_size {
             n := match readBytes(file, curr_ptr, u_size - total_read) using res {
@@ -124,13 +128,11 @@ pub def readAll(file) {
                   else => res
             }
             if {
-                  n = (0 as usize) => break
-                  else => :none
+                  n = 0 => break
             }
-            curr_ptr := (curr_ptr as usize + n) as *mut u8
+            curr_ptr := ptrAdd(curr_ptr, n)
             total_read += n
       }
-      curr_ptr.* := 0 as u8
       return { ptr: buf as *u8, len: total_read }
 }
 
@@ -188,8 +190,7 @@ pub def copyStream(src, dst, chunk_size) {
                   else => res
             }
             if {
-                  n = (0 as usize) => break
-                  else => :none
+                  n = 0 => break
             }
             match writeAll(dst, { ptr: buf as *u8, len: n }) using res {
                   IoError => return res
@@ -211,8 +212,7 @@ pub def streamFile(file, chunk_size, callback) {
                   else => res
             }
             if {
-                  n = (0 as usize) => break
-                  else => :none
+                  n = 0 => break
             }
             callback({ ptr: buf as *u8, len: n })
       }

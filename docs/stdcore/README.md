@@ -40,7 +40,7 @@
 
 ## Printing & Pretty-Printing (`std/core/print`, `std/core/pretty`)
 
-- `Printable`: `String | Integer | :nl | :t | (:softTab, Integer) | Bool | Slice<Printable>`
+- `Printable`: `String | Integer | :nl | :t | (:softTab, UnsignedInteger) | Bool | Slice<Printable>`
 - `print(x: Printable)` (`def` -> `:none | IoError`): Formats and prints `x` to stdout.
 - `println(x: Printable)` (`def` -> `:none | IoError`): Prints `x` followed by `:nl`.
 - `pprint(item)` (`def`): Calls `@ctx.printer(@ctx.&, item)`.
@@ -49,10 +49,10 @@
 
 ## Logging (`std/core/log`)
 
-- `log(item)` (`def`): Logs `item` at `:info` level with `@caller_line_number` and `@caller_file_name`.
-- `logWarn(item)` (`def`): Logs `item` at `:warn` level.
-- `logError(item)` (`def`): Logs `item` at `:error` level.
-- `logWithLineAndFile(level, line, file, item)` (`def`): Dispatches to `@ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item)`.
+- `log(item)` (`def` -> `:none`): Best-effort logs `item` at `:info` level with `@caller_line_number` and `@caller_file_name`.
+- `logWarn(item)` (`def` -> `:none`): Best-effort logs `item` at `:warn` level.
+- `logError(item)` (`def` -> `:none`): Best-effort logs `item` at `:error` level.
+- `logWithLineAndFile(level, line, file, item)` (`def` -> `:none`): Dispatches to `@ctx.logger(@ctx.&, level, @ctx.log_level, line, file, item)`.
 
 ## Memory & Collections (`std/core/memory`, `std/core/misc`)
 
@@ -60,7 +60,12 @@
 - `heapRealloc(ptr, new_size)` (`def`): Calls `@ctx.heap_realloc(@ctx.&mut, ptr, new_size as usize)` -> `*mut opaque | :error`.
 - `heapDealloc(ptr)` (`def`): Calls `@ctx.heap_dealloc(@ctx.&mut, ptr)` -> `:none`.
 - `heapNew(x)` (`def`): Heap-allocates `@sizeOf(x)`, copies `x` into it, and returns `*mut T | :error`.
-- `vecInit(init)` (`def`): Creates a `Vec<T>`. Pass `:none` for an empty `Vec`, or a slice/array (e.g. `[1, 2, 3]`) to heap-allocate and copy elements into `items` (`Slice<T>`) with `cap: s.len`.
+- `vecEmpty()` (`def`): Returns an empty `Vec`.
+- `vecInit(s)` (`def`): Heap-allocates and copies elements from slice/array `s` into `items` (`Slice<T>`) with `cap: s.len` (returns `Vec<T> | :error`).
+- `nulTerminate(s: String)` (`def` -> `*mut u8 | :error`): Heap-allocates `s.len + 1` bytes, copies `s`, and appends `0 as u8`.
+- `ptrAdd(ptr, count)` / `ptrSub(ptr, count)` (`def`): Element-scaled pointer arithmetic (`count * @sizeOf(ptr.*)`), preserving `ptr`'s type.
+- `ptrAddBytes(ptr, bytes)` / `ptrSubBytes(ptr, bytes)` (`def`): Byte-offset pointer arithmetic, preserving `ptr`'s type.
+- `ptrDiffBytes(a, b)` (`def` -> `usize`): Byte distance `(a as usize) - (b as usize)`.
 - `fill(slice, val)` (`def`): Overwrites every element of `slice` (`Slice<T>`) with `val`.
 ## Boolean Gates & Operations (`std/core/misc`)
 
@@ -100,5 +105,5 @@
 
 ## Tests
 
-- [ok_stdcore](tests/ok_stdcore/main.hart) — Rigorous end-to-end test of `default_context`, `print`/`println`, `pprint` (`stdPrinter` & `debugPrinter`), `log`/`logWarn`/`logError`/`logWithLineAndFile`, `math` (`abs`, `min`, `max`, `add`, `sub`, `mul`, `div`), `heapAlloc`/`heapRealloc`/`heapNew`/`heapDealloc`, `vecInit(:none)`/`vecInit([...])`, `fill`, all boolean gates (`not`, `and`, `or`, `xor`, `nand`, `nor`, `xnor`, `implies`, `all`, `any`), `must`, `stdin`/`stdout`/`stderr`, and `default_buffer_size`.
-- **Known compiler limitations in `std/core`**: `clamp` (nested `def` inference yields `never`), `openFile` / file-I/O wrappers (specialization `return type mismatch` on `IoError` narrowing), and `(:softTab, Integer)` in `Printable` (tuple-with-union promotion) currently fail compilation when called.
+- [ok_stdcore](tests/ok_stdcore/main.hart) — End-to-end test of `default_context`, `print`/`println` (`s8`..`u64`), `pprint` (`stdPrinter` & `debugPrinter` on `Record`, `Slice`, `Voidance`, `*Generic`), `log`/`logWarn`/`logError`/`logWithLineAndFile`, `math` (`abs`, `min`, `max`, `add`, `sub`, `mul`, `div`, `clamp`), `heapAlloc`/`heapRealloc`/`heapNew`/`heapDealloc`, `vecInit(:none)`/`vecInit([...])`, `fill`, all boolean gates (`not`, `and`, `or`, `xor`, `nand`, `nor`, `xnor`, `implies`, `all`, `any`), `must`, file I/O (`openFile`, `readFile`, `writeFile`, `appendToFile`, `seekFile`, `readBytes`, `closeFile`), `stdin`/`stdout`/`stderr`, and `default_buffer_size`.
+- **Known compiler limitations in `std/core`**: `(:softTab, UnsignedInteger)` in `Printable` (tuple-with-union promotion across modules) currently fails compilation when called.

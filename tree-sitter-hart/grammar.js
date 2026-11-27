@@ -48,7 +48,7 @@ module.exports = grammar({
       field('value', $._expression)
     )),
 
-    comment: $ => token(seq('#', /.*/)),
+    comment: $ => token(seq('#', /[^#\r\n]*/, optional('#'))),
 
     // Modules & Use
     module_path: $ => seq($.identifier, repeat(seq('::', $.identifier))),

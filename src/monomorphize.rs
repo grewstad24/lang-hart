@@ -1703,7 +1703,17 @@ fn infer_expr_type_internal(
                 None
             }
         }
-        Expression::Binary { left, .. } => infer_expr_type_internal(left, local_types, scope, generated, visiting, depth + 1),
+        Expression::Binary { left, right, .. } => {
+            let lt = infer_expr_type_internal(left, local_types, scope, generated, visiting, depth + 1)?;
+            let rt = infer_expr_type_internal(right, local_types, scope, generated, visiting, depth + 1)?;
+            let rlt = resolve_type_alias_deep(&lt, scope);
+            let rrt = resolve_type_alias_deep(&rt, scope);
+            if crate::sema::Checker::is_integer_type(&rlt) && crate::sema::Checker::is_integer_type(&rrt) {
+                Some(lt)
+            } else {
+                None
+            }
+        }
         Expression::Comparison { .. } => Some(Type::Alias("Bool".to_string())),
         Expression::Block(exprs) => {
             let mut block_locals = local_types.clone();
@@ -2278,6 +2288,9 @@ fn scan_and_monomorphize_def(
                             arg_types.push(param.ty.clone());
                         } else {
                             let ty = infer_expr_type_with_generated(arg, local_types, scope, generated).unwrap_or(Type::Inferred);
+                            if ty == Type::Inferred {
+                                return Err(format!("cannot infer argument type for '{}'", fn_name));
+                            }
                             arg_types.push(ty.clone());
                         }
                     }

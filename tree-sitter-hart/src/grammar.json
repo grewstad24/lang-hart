@@ -98,7 +98,19 @@
           },
           {
             "type": "PATTERN",
-            "value": ".*"
+            "value": "[^#\\r\\n]*"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "#"
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
           }
         ]
       }

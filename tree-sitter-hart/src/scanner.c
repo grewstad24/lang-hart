@@ -21,7 +21,11 @@ bool tree_sitter_hart_external_scanner_scan(void *payload, TSLexer *lexer, const
     if (c == ' ' || c == '\t' || c == '\r') {
       lexer->advance(lexer, true);
     } else if (c == '#') {
-      while (lexer->lookahead != '\n' && lexer->lookahead != 0) {
+      lexer->advance(lexer, true);
+      while (lexer->lookahead != '#' && lexer->lookahead != '\n' && lexer->lookahead != 0) {
+        lexer->advance(lexer, true);
+      }
+      if (lexer->lookahead == '#') {
         lexer->advance(lexer, true);
       }
     } else if (c == '\n' || c == '}' || c == 0) {

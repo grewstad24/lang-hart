@@ -118,7 +118,7 @@ pub struct Codegen<'ctx> {
     function_signatures: HashMap<String, Signature>,
     exported_functions: HashMap<String, HashMap<String, (FunctionValue<'ctx>, Signature, bool)>>,
     exported_globals: HashMap<String, HashMap<String, GlobalVar<'ctx>>>,
-    all_specialized_defs: HashMap<String, (FunctionValue<'ctx>, Signature)>,
+    all_specialized_defs: HashMap<(Option<String>, String), (FunctionValue<'ctx>, Signature)>,
     current_symbol_origins: HashMap<String, (Option<String>, String)>,
     type_aliases: HashMap<String, Type>,
     current_function_return_type: Option<Type>,
@@ -676,7 +676,7 @@ impl<'ctx> Codegen<'ctx> {
                     mod_funcs.insert(def.name.clone(), f);
                     if def.is_specialized_def {
                         self.all_specialized_defs
-                            .insert(def.name.clone(), (f, sig.clone()));
+                            .insert((m.name.clone(), def.name.clone()), (f, sig.clone()));
                     }
                     if def.is_pub {
                         if let Some(mod_name) = &m.name {
@@ -853,7 +853,22 @@ impl<'ctx> Codegen<'ctx> {
                 }
             }
         }
-        if let Some((f, sig)) = self.all_specialized_defs.get(name) {
+        if let Some((base_name, suffix)) = name.split_once("__") {
+            if let Some((target_mod, orig_base)) = self.current_symbol_origins.get(base_name) {
+                let mangled_orig = format!("{}__{}", orig_base, suffix);
+                if let Some((f, sig)) = self
+                    .all_specialized_defs
+                    .get(&(target_mod.clone(), mangled_orig))
+                {
+                    return Some((*f, Some(sig.clone()), true));
+                }
+            }
+        }
+        if let Some(((_, _), (f, sig))) = self
+            .all_specialized_defs
+            .iter()
+            .find(|((_, def_name), _)| def_name == name)
+        {
             return Some((*f, Some(sig.clone()), true));
         }
         if let Some(f) = self.module.get_function(name) {
@@ -4450,7 +4465,10 @@ impl<'ctx> Codegen<'ctx> {
 
         if let Expression::Identifier(name) = unspanned_expression(target) {
             if self.specialized_def_names.contains(name)
-                || self.all_specialized_defs.contains_key(name)
+                || self
+                    .all_specialized_defs
+                    .keys()
+                    .any(|(_, def_name)| def_name == name)
             {
                 let ctx_ptr = self
                     .current_context_ptr
@@ -4894,7 +4912,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn codegen_string_literal(&mut self, value: &[u8]) -> Result<Binding<'ctx>, String> {
         let element_type = self.context.i8_type();
-        let array_type = element_type.array_type((value.len() + 1) as u32);
+        let array_type = element_type.array_type(value.len() as u32);
 
         let name = format!(".str.{}", self.string_counter);
         self.string_counter += 1;
@@ -4903,12 +4921,10 @@ impl<'ctx> Codegen<'ctx> {
             .module
             .add_global(array_type, Some(AddressSpace::default()), &name);
 
-        let mut bytes: Vec<_> = value
+        let bytes: Vec<_> = value
             .iter()
             .map(|byte| element_type.const_int(*byte as u64, false))
             .collect();
-
-        bytes.push(element_type.const_zero());
 
         let initializer = element_type.const_array(&bytes);
         global.set_initializer(&initializer);

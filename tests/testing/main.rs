@@ -252,3 +252,17 @@ fn err_escape_out_param() {
         "cannot store pointer to local stack variable into dereferenced pointer",
     );
 }
+
+#[test]
+fn ok_inline_comments() {
+    let src = "func add(a: # first # i32, b: # second # i32) -> i32 # eol\n{\n    let s = \"a # b\"\n    return a + b # done #\n}";
+    let tokens = hart::syntax::Lexer::new(src.to_string())
+        .tokenize()
+        .expect("inline comments should lex cleanly");
+    assert!(tokens.contains(&hart::syntax::Token::FnKeyword));
+    assert!(tokens.contains(&hart::syntax::Token::Return));
+    assert!(tokens.contains(&hart::syntax::Token::Identifier("i32".to_string())));
+    assert!(tokens.contains(&hart::syntax::Token::String(b"a # b".to_vec())));
+    assert!(!tokens.contains(&hart::syntax::Token::Identifier("first".to_string())));
+    assert!(!tokens.contains(&hart::syntax::Token::Identifier("eol".to_string())));
+}

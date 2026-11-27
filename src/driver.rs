@@ -642,7 +642,8 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
     }
 
     for (module, scope) in modules.iter().zip(module_scopes.iter()) {
-        let checker = Checker::new(scope);
+        let mut checker = Checker::new(scope);
+        checker.resolved_definitions.clone_from(&global_resolved_definitions);
         let mut compiled_definitions: Vec<Definition> = Vec::new();
         let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
         let mut compiled_aliases: HashMap<String, TypeAlias> = HashMap::new();

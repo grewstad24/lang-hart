@@ -18,23 +18,23 @@ def checkPrintfRet(ret: s32) -> :none | IoError {
 }
 
 def printString(s: String) -> :none | IoError {
-      return checkPrintfRet(printf("%.*s".ptr, s.len as s32, s.ptr))
+      return checkPrintfRet(printf("%.*s\0".ptr, s.len as s32, s.ptr))
 }
 
 def prNl() -> :none | IoError {
-      return checkPrintfRet(printf("\n".ptr))
+      return checkPrintfRet(printf("\n\0".ptr))
 }
 
 def prTab() -> :none | IoError {
-      return checkPrintfRet(printf("\t".ptr))
+      return checkPrintfRet(printf("\t\0".ptr))
 }
 
 def printSint(num: SignedInteger) -> :none | IoError {
-      return checkPrintfRet(printf("%lld".ptr, num as s64))
+      return checkPrintfRet(printf("%lld\0".ptr, num as s64))
 }
 
 def printUint(num: UnsignedInteger) -> :none | IoError {
-      return checkPrintfRet(printf("%llu".ptr, num as u64))
+      return checkPrintfRet(printf("%llu\0".ptr, num as u64))
 }
 
 def printa(arr: Slice<Printable>) -> :none | IoError {

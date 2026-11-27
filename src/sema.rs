@@ -1451,27 +1451,54 @@ impl<'a> Checker<'a> {
 
         let aliases = self.alias_targets();
 
-        // 1. Literal integer to expected integer type
+        // 1. Literal integer to expected integer type (or unique fitting integer variant in a union)
         if let Expression::Integer(val) = unspanned_expression(expr) {
-            if Self::is_integer_type(&res_expected) {
-                let fits = match res_expected {
-                    Type::U8 => *val >= 0 && *val <= u8::MAX as i64,
-                    Type::U16 => *val >= 0 && *val <= u16::MAX as i64,
-                    Type::U32 => *val >= 0 && *val <= u32::MAX as i64,
-                    Type::U64 | Type::USize => *val >= 0,
-                    Type::S8 => *val >= i8::MIN as i64 && *val <= i8::MAX as i64,
-                    Type::S16 => *val >= i16::MIN as i64 && *val <= i16::MAX as i64,
-                    Type::S32 => *val >= i32::MIN as i64 && *val <= i32::MAX as i64,
+            let fits_integer = |val: i64, target: &Type| -> bool {
+                match target {
+                    Type::U8 => val >= 0 && val <= u8::MAX as i64,
+                    Type::U16 => val >= 0 && val <= u16::MAX as i64,
+                    Type::U32 => val >= 0 && val <= u32::MAX as i64,
+                    Type::U64 | Type::USize => val >= 0,
+                    Type::S8 => val >= i8::MIN as i64 && val <= i8::MAX as i64,
+                    Type::S16 => val >= i16::MIN as i64 && val <= i16::MAX as i64,
+                    Type::S32 => val >= i32::MIN as i64 && val <= i32::MAX as i64,
                     Type::S64 | Type::SSize => true,
                     _ => false,
-                };
-                if fits {
+                }
+            };
+
+            if Self::is_integer_type(&res_expected) {
+                if fits_integer(*val, &res_expected) {
                     let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
                     *expr = Expression::Cast {
                         expression: Box::new(orig),
                         ty: expected_ty.clone(),
                     };
                     return Ok(Some(res_expected));
+                }
+            } else if let Type::Union(target_vars) = &res_expected {
+                if Self::safe_union_variant_with_aliases(&res_actual, target_vars, &aliases).is_none() {
+                    let fitting: Vec<usize> = target_vars
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, v)| {
+                            let rv = Self::resolve_alias_root(v, &aliases);
+                            (Self::is_integer_type(rv) && fits_integer(*val, rv)).then_some(idx)
+                        })
+                        .collect();
+                    if fitting.len() == 1 {
+                        let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
+                        *expr = Expression::Cast {
+                            expression: Box::new(orig),
+                            ty: target_vars[fitting[0]].clone(),
+                        };
+                        let inner_cast = std::mem::replace(expr, Expression::Symbol("false".to_string()));
+                        *expr = Expression::Cast {
+                            expression: Box::new(inner_cast),
+                            ty: expected_ty.clone(),
+                        };
+                        return Ok(Some(res_expected));
+                    }
                 }
             }
         }
@@ -1496,9 +1523,9 @@ impl<'a> Checker<'a> {
             return Ok(Some(res_expected));
         }
 
-        // 4. Expected is a union: if exactly one variant is supported, insert cast
+        // 4. Expected is a union: if exactly one variant is safely compatible, insert cast
         if let Type::Union(target_vars) = &res_expected {
-            if let Some(_variant_idx) = Self::castable_union_variant_with_aliases(&res_actual, target_vars, &aliases) {
+            if let Some(_variant_idx) = Self::safe_union_variant_with_aliases(&res_actual, target_vars, &aliases) {
                 let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
                 *expr = Expression::Cast {
                     expression: Box::new(orig),
@@ -1507,18 +1534,6 @@ impl<'a> Checker<'a> {
                 return Ok(Some(res_expected));
             }
             return Ok(None);
-        }
-
-        // 5. Expected is a single concrete type (unambiguous target):
-        // If there is a supported cast between the mismatched type and the expected type,
-        // only this single cast makes it correct. Insert it implicitly.
-        if Self::is_supported_cast_with_aliases(&res_actual, &res_expected, &aliases) {
-            let orig = std::mem::replace(expr, Expression::Symbol("false".to_string()));
-            *expr = Expression::Cast {
-                expression: Box::new(orig),
-                ty: expected_ty.clone(),
-            };
-            return Ok(Some(res_expected));
         }
 
         Ok(None)
@@ -2972,133 +2987,14 @@ impl<'a> Checker<'a> {
                     ));
                 }
 
-                if !matches!(&target_ty, Type::Union(_)) {
-                    let mut matched_idx = None;
-                    for (idx, arm) in arms.iter().enumerate() {
-                        if let Some(raw_ty) = &arm.variant_type {
-                            let resolved = self.resolve_type(raw_ty)?;
-                            let matches = if (self.is_slice_type(&target_ty).unwrap_or(false)
-                                || matches!(target_ty, Type::Array { .. })
-                                || matches!(target_ty, Type::Tuple(_)))
-                                && self.is_slice_type(&resolved).unwrap_or(false)
-                            {
-                                if let Ok(r_elem) = self.slice_element_type(&resolved) {
-                                    if self.is_slice_type(&target_ty).unwrap_or(false) {
-                                        let t_elem = self.slice_element_type(&target_ty).unwrap();
-                                        Self::types_compatible_with_aliases(&t_elem, &r_elem, &aliases)
-                                    } else {
-                                        Self::is_array_to_slice_compatible(&target_ty, &resolved, &aliases)
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else if matches!(target_ty, Type::Symbol(_))
-                                && self.is_string_type(&resolved).unwrap_or(false)
-                            {
-                                true
-                            } else {
-                                Self::types_compatible_with_aliases(&target_ty, &resolved, &aliases)
-                                    || Self::types_compatible_with_aliases(&resolved, &target_ty, &aliases)
-                            };
-                            if matches {
-                                matched_idx = Some(idx);
-                                break;
-                            }
-                        } else {
-                            matched_idx = Some(idx);
-                            break;
-                        }
-                    }
-
-                    let matched_idx = matched_idx.ok_or_else(|| {
-                        format!(
-                            "{}: error: no match arm for type {}",
-                            self.current_file_path, target_ty
-                        )
-                    })?;
-
-                    let (target_expr, b_name, matched_arm) = match std::mem::replace(
-                        expression,
-                        Expression::Symbol("false".to_string()),
-                    ) {
-                        Expression::Match {
-                            target,
-                            binding_name,
-                            mut arms,
-                        } => {
-                            let arm = arms.remove(matched_idx);
-                            (*target, binding_name, arm)
-                        }
-                        _ => unreachable!(),
-                    };
-
-                    let is_same_ident = match unspanned_expression(&target_expr) {
-                        Expression::Identifier(id) => id == &b_name,
-                        _ => false,
-                    };
-
-                    *expression = if b_name.is_empty() || b_name == "_" {
-                        Expression::Block(vec![
-                            Expression::Discard(Box::new(target_expr)),
-                            *matched_arm.body,
-                        ])
-                    } else {
-                        let bound_expr = if (matches!(target_ty, Type::Array { .. }) || matches!(target_ty, Type::Tuple(_)))
-                            && matched_arm.variant_type.as_ref().map(|vt| self.is_slice_type(vt).unwrap_or(false)).unwrap_or(false)
-                        {
-                            let slice_expr = Expression::Slice(Box::new(target_expr));
-                            if let Some(vt) = &matched_arm.variant_type {
-                                Expression::Cast {
-                                    expression: Box::new(slice_expr),
-                                    ty: vt.clone(),
-                                }
-                            } else {
-                                slice_expr
-                            }
-                        } else if matches!(target_ty, Type::Symbol(_))
-                            && matched_arm.variant_type.as_ref().map(|vt| self.is_string_type(vt).unwrap_or(false)).unwrap_or(false)
-                        {
-                            if let Expression::Symbol(sym_name) = unspanned_expression(&target_expr) {
-                                Expression::String(sym_name.clone().into_bytes())
-                            } else {
-                                Expression::Cast {
-                                    expression: Box::new(target_expr),
-                                    ty: matched_arm.variant_type.clone().unwrap(),
-                                }
-                            }
-                        } else if let Some(vt) = &matched_arm.variant_type {
-                            let resolved_vt = self.resolve_type(vt)?;
-                            if target_ty != resolved_vt && Self::types_compatible_with_aliases(&target_ty, &resolved_vt, &aliases) {
-                                Expression::Cast {
-                                    expression: Box::new(target_expr),
-                                    ty: vt.clone(),
-                                }
-                            } else {
-                                target_expr
-                            }
-                        } else {
-                            target_expr
-                        };
-
-                        if is_same_ident && matches!(unspanned_expression(&bound_expr), Expression::Identifier(id) if id == &b_name) {
-                            *matched_arm.body
-                        } else {
-                            Expression::Block(vec![
-                                Expression::Let {
-                                    name: b_name,
-                                    value: Box::new(bound_expr),
-                                },
-                                *matched_arm.body,
-                            ])
-                        }
-                    };
-
-                    return self.type_of_expression(expression);
-                }
-
                 let target_variants = match &target_ty {
                     Type::Union(vars) => vars.clone(),
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(format!(
+                            "{}: error: 'match' requires a union type, found {}",
+                            self.current_file_path, target_ty
+                        ));
+                    }
                 };
 
                 let mut unhandled = target_variants.clone();
@@ -4362,9 +4258,11 @@ impl<'a> Checker<'a> {
                 return result;
             }
 
-            if let Type::Union(_) = provided {
+            if let Type::Union(provided_vars) = provided {
                 if !matches!(expected, Type::Union(_)) {
-                    return false;
+                    return provided_vars
+                        .iter()
+                        .all(|variant| compatible(variant, expected, aliases, visited));
                 }
             }
 
@@ -4450,7 +4348,7 @@ impl<'a> Checker<'a> {
                     if *m2 && !*m1 {
                         return false;
                     }
-                    if **e1 == Type::Opaque || **e2 == Type::Opaque {
+                    if **e2 == Type::Opaque {
                         return true;
                     }
                     Checker::types_equivalent_with_aliases(e1, e2, aliases)
@@ -4464,7 +4362,7 @@ impl<'a> Checker<'a> {
                         element: e2,
                         size: s2,
                     },
-                ) => s1 == s2 && Checker::types_equivalent_with_aliases(e1, e2, aliases),
+                ) => s1 == s2 && compatible(e1, e2, aliases, visited),
                 (
                     Type::Function {
                         parameters: p1,
@@ -4751,6 +4649,37 @@ impl<'a> Checker<'a> {
 
     pub fn castable_union_variant(source: &Type, targets: &[Type]) -> Option<usize> {
         Self::castable_union_variant_with_aliases(source, targets, &HashMap::new())
+    }
+
+    pub fn safe_union_variant_with_aliases(
+        source: &Type,
+        targets: &[Type],
+        aliases: &HashMap<String, Type>,
+    ) -> Option<usize> {
+        if let Some(index) = targets.iter().position(|target| target == source) {
+            return Some(index);
+        }
+        let equiv_matches: Vec<usize> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, target)| {
+                Self::types_equivalent_with_aliases(source, target, aliases).then_some(index)
+            })
+            .collect();
+        if equiv_matches.len() == 1 {
+            return Some(equiv_matches[0]);
+        }
+        let implicit_matches: Vec<usize> = targets
+            .iter()
+            .enumerate()
+            .filter_map(|(index, target)| {
+                Self::types_compatible_with_aliases(source, target, aliases).then_some(index)
+            })
+            .collect();
+        if implicit_matches.len() == 1 {
+            return Some(implicit_matches[0]);
+        }
+        None
     }
 
     pub fn castable_union_variant_with_aliases(

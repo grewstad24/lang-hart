@@ -28,13 +28,13 @@ pub def xor(a: Bool, b: Bool) -> Bool {
       }
 }
 
-pub def nand(a: Bool, b: Bool) -> Bool { not(and(a, b)) }
+pub def nand(a: Bool, b: Bool) -> Bool { and(a, b).not() }
 
-pub def nor(a: Bool, b: Bool) -> Bool { not(or(a, b)) }
+pub def nor(a: Bool, b: Bool) -> Bool { or(a, b).not() }
 
-pub def xnor(a: Bool, b: Bool) -> Bool { not(xor(a, b)) }
+pub def xnor(a: Bool, b: Bool) -> Bool { xor(a, b).not() }
 
-pub def implies(a: Bool, b: Bool) -> Bool { or(not(a), b) }
+pub def implies(a: Bool, b: Bool) -> Bool { not(a).or(b) }
 
 pub def all(slice) {
       repeat slice.len using i {
@@ -56,13 +56,50 @@ pub def any(slice) {
       return :false
 }
 
+pub def ptrAddBytes(ptr, bytes) {
+      return @asTypeOf(((ptr as usize) + (bytes as usize)) as *mut opaque, ptr)
+}
+
+pub def ptrSubBytes(ptr, bytes) {
+      return @asTypeOf(((ptr as usize) - (bytes as usize)) as *mut opaque, ptr)
+}
+
+pub def ptrDiffBytes(a, b) -> usize {
+      return (a as usize) - (b as usize)
+}
+
+pub def ptrAdd(ptr, count) {
+      elem := ptr.*
+      return @asTypeOf(((ptr as usize) + (count as usize) * @sizeOf(elem)) as *mut opaque, ptr)
+}
+
+pub def ptrSub(ptr, count) {
+      elem := ptr.*
+      return @asTypeOf(((ptr as usize) - (count as usize) * @sizeOf(elem)) as *mut opaque, ptr)
+}
+
 pub def fill(slice, val) {
       mut v := val
       raw := (slice.ptr as usize) as *mut opaque
+      base := @asTypeOf(raw, v.&mut)
       repeat slice.len using i {
-            elem_raw := ((raw as usize) + i * (@sizeOf(v))) as *mut opaque
-            elem_ptr := @asTypeOf(elem_raw, v.&mut)
+            elem_ptr := ptrAdd(base, i)
             elem_ptr.* := v
       }
       return :none
+}
+
+pub def nulTerminate(s: String) -> *mut u8 | :error {
+      raw := match heapAlloc(s.len + 1) using res {
+            :error => return res
+            else => res
+      }
+      buf := raw as *mut u8
+      repeat s.len using i {
+            dst := ptrAdd(buf, i)
+            dst.* := s[i]
+      }
+      end_ptr := ptrAdd(buf, s.len)
+      end_ptr.* := 0
+      return buf
 }
