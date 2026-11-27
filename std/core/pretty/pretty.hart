@@ -15,95 +15,147 @@ const style_reset := "\u{1B}[0m"
 
 def pprintBool(z) {
       match z {
-            :true => return [ style_green, "✔ true", style_reset ].print()
-            :false => return [ style_red, "✘ false", style_reset ].print()
+            :true => return print([ style_green, "✔ true", style_reset ])
+            :false => return print([ style_red, "✘ false", style_reset ])
       }
 }
 
-def pprintString(z) { [ style_yellow, "'", z, "'", style_reset ].print() }
+def pprintString(z) { print([ style_yellow, "'", z, "'", style_reset ]) }
 
-def pprintInteger(z) { [ style_cyan, z, style_reset ].print() }
+def pprintInteger(z) { print([ style_cyan, z, style_reset ]) }
 
-def pprintVoidance(z, indent_level) {
+def pprintVoidance(z, indent_level) -> :none | IoError {
       match z using v {
-            :none => return [ style_dim, "∅ none", style_reset ].print()
-            :error => return [ style_bright_red, "‼ error", style_reset ].print()
+            :none => return print([ style_dim, "∅ none", style_reset ])
+            :error => return print([ style_bright_red, "‼ error", style_reset ])
             ErrorAndReason => {
-                  assertOk([ style_bright_red, "‼ error ", style_reset].print())
+                  match print([ style_bright_red, "‼ error ", style_reset ]) using err {
+                        IoError => return err
+                        else => :none
+                  }
                   return internalPprint(v.1, indent_level + 1)
             }
       }
 }
 
-def pprintArray(z, indent_level) {
+def pprintArray(z, indent_level) -> :none | IoError {
       switch indent_level {
             0 => :none
-            else => assertOk(print(:nl))
+            else => match print(:nl) using err {
+                  IoError => return err
+                  else => :none
+            }
       }
       repeat z.len using idx {
             elem := z[idx]
             switch indent_level {
                   0 => :none
                   else => {
-                        repeat indent_level { assertOk(print(:t)) }
-                        assertOk(print("• "))
+                        repeat indent_level {
+                              match print(:t) using err {
+                                    IoError => return err
+                                    else => :none
+                              }
+                        }
+                        match print("• ") using err {
+                              IoError => return err
+                              else => :none
+                        }
                   }
             }
 
             match elem using inner {
                   Slice <Generic> => {
-                        assertOk(print("↘"))
-                        assertOk(pprintArray(inner, indent_level + 1))
+                        match print("↘") using err {
+                              IoError => return err
+                              else => :none
+                        }
+                        match pprintArray(inner, indent_level + 1) using err {
+                              IoError => return err
+                              else => :none
+                        }
                   }
                   Record => {
-                        assertOk(pprintRecord(inner, indent_level + 1))
+                        match pprintRecord(inner, indent_level + 1) using err {
+                              IoError => return err
+                              else => :none
+                        }
                   }
                   else => {
-                        assertOk(internalPprint(inner, indent_level))
+                        match internalPprint(inner, indent_level) using err {
+                              IoError => return err
+                              else => :none
+                        }
                   }
             }
             if {
-                  idx < z.len - 1 => assertOk(print(:nl))
+                  idx < z.len - 1 => match print(:nl) using err {
+                        IoError => return err
+                        else => :none
+                  }
                   else => :none
             }
       }
       return :none
 }
 
-def pprintRecord(item, indent_level) {
+def pprintRecord(item, indent_level) -> :none | IoError {
       switch indent_level {
             0 => :none
-            else => assertOk(print(:nl))
+            else => match print(:nl) using err {
+                  IoError => return err
+                  else => :none
+            }
       }
       rec := item
       repeat rec.*.len using i {
-            repeat indent_level { assertOk(print(:t)) }
+            repeat indent_level {
+                  match print(:t) using err {
+                        IoError => return err
+                        else => :none
+                  }
+            }
             k := rec.*.key[i]
             v := rec.*.val[i]
-            assertOk(print([k, style_blue, style_bold, ": ", style_reset]))
+            match print([k, style_blue, style_bold, ": ", style_reset]) using err {
+                  IoError => return err
+                  else => :none
+            }
             match v using inner {
-                  Record => assertOk(pprintRecord(inner, indent_level + 1))
-                  Slice <Generic> => assertOk(pprintArray(inner, indent_level + 1))
+                  Record => match pprintRecord(inner, indent_level + 1) using err {
+                        IoError => return err
+                        else => :none
+                  }
+                  Slice <Generic> => match pprintArray(inner, indent_level + 1) using err {
+                        IoError => return err
+                        else => :none
+                  }
                   else => {
-                        assertOk(internalPprint(v, indent_level))
+                        match internalPprint(v, indent_level) using err {
+                              IoError => return err
+                              else => :none
+                        }
                   }
             }
             if {
-                  i < rec.*.len - 1 => assertOk(print(:nl))
+                  i < rec.*.len - 1 => match print(:nl) using err {
+                        IoError => return err
+                        else => :none
+                  }
                   else => :none
             }
       }
       return :none
 }
 
-def internalPprint(item, indent_level) {
+def internalPprint(item, indent_level) -> :none | IoError {
       match item using z {
             Bool => return pprintBool(z)
             Integer => return pprintInteger(z)
             String => return pprintString(z)
             Slice<Generic> => return pprintArray(z, indent_level)
             Record => return pprintRecord(z, indent_level)
-            *Generic => return pprint(z.*)
+            *Generic => return internalPprint(z.*, indent_level)
             Voidance => return pprintVoidance(z, indent_level)
       }
 }
@@ -117,57 +169,99 @@ pub func stdPrinter(ctx: *Context, item: Generic) -> IoError | :none {
       }
 }
 
-def hartPrintIndent(indent_level) {
+def hartPrintIndent(indent_level) -> :none | IoError {
       repeat indent_level {
-            assertOk(print(:t))
+            match print(:t) using err {
+                  IoError => return err
+                  else => :none
+            }
       }
       return :none
 }
 
-def hartPrintArray(z, indent_level) {
+def hartPrintArray(z, indent_level) -> :none | IoError {
       if {
             z.len = (0 as usize) => return print("[]")
             else => :none
       }
-      assertOk(print("[\n"))
-      repeat z.len using idx {
-            hartPrintIndent(indent_level + 1)
-            assertOk(internalHartPrint(z[idx], indent_level + 1))
-            assertOk(print(:nl))
+      match print("[\n") using err {
+            IoError => return err
+            else => :none
       }
-      hartPrintIndent(indent_level)
+      repeat z.len using idx {
+            match hartPrintIndent(indent_level + 1) using err {
+                  IoError => return err
+                  else => :none
+            }
+            match internalHartPrint(z[idx], indent_level + 1) using err {
+                  IoError => return err
+                  else => :none
+            }
+            match print(:nl) using err {
+                  IoError => return err
+                  else => :none
+            }
+      }
+      match hartPrintIndent(indent_level) using err {
+            IoError => return err
+            else => :none
+      }
       return print("]")
 }
 
-def hartPrintRecord(rec, indent_level) {
+def hartPrintRecord(rec, indent_level) -> :none | IoError {
       if {
             rec.*.len = (0 as usize) => return print("{}")
             else => :none
       }
-      assertOk(print("{\n"))
-      repeat rec.*.len using i {
-            hartPrintIndent(indent_level + 1)
-            assertOk(print([rec.*.key[i], ": "]))
-            assertOk(internalHartPrint(rec.*.val[i], indent_level + 1))
-            assertOk(print(:nl))
+      match print("{\n") using err {
+            IoError => return err
+            else => :none
       }
-      hartPrintIndent(indent_level)
+      repeat rec.*.len using i {
+            match hartPrintIndent(indent_level + 1) using err {
+                  IoError => return err
+                  else => :none
+            }
+            match print([rec.*.key[i], ": "]) using err {
+                  IoError => return err
+                  else => :none
+            }
+            match internalHartPrint(rec.*.val[i], indent_level + 1) using err {
+                  IoError => return err
+                  else => :none
+            }
+            match print(:nl) using err {
+                  IoError => return err
+                  else => :none
+            }
+      }
+      match hartPrintIndent(indent_level) using err {
+            IoError => return err
+            else => :none
+      }
       return print("}")
 }
 
-def hartPrintVoidance(z, indent_level) {
+def hartPrintVoidance(z, indent_level) -> :none | IoError {
       match z using v {
             :none => return print(":none")
             :error => return print(":error")
             ErrorAndReason => {
-                  assertOk(print("(:error, "))
-                  assertOk(internalHartPrint(v.1, indent_level))
+                  match print("(:error, ") using err {
+                        IoError => return err
+                        else => :none
+                  }
+                  match internalHartPrint(v.1, indent_level) using err {
+                        IoError => return err
+                        else => :none
+                  }
                   return print(")")
             }
       }
 }
 
-def internalHartPrint(item, indent_level) {
+def internalHartPrint(item, indent_level) -> :none | IoError {
       match item using z {
             Bool => match z {
                   :true => return print(":true")

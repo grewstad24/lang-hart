@@ -27,8 +27,13 @@ pub def heapRealloc(ptr, new_size) { @ctx.heap_realloc(@ctx.&mut, ptr, new_size 
 
 pub def heapNew(x) {
       mut val := x
-      ptr := assertOk(heapAlloc(@sizeOf(val)))
-      typed_ptr := @asTypeOf(ptr, val.&mut)
-      typed_ptr.* := val
-      return typed_ptr
+      alloc_res := heapAlloc(@sizeOf(val))
+      match alloc_res using ptr {
+            :error => return ptr
+            else => {
+                  typed_ptr := @asTypeOf(ptr, val.&mut)
+                  typed_ptr.* := val
+                  return typed_ptr
+            }
+      }
 }

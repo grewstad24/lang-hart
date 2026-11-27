@@ -1,6 +1,16 @@
 mod mylib::prelude
 pub use mylib::math::*
 
+const secret := 200
+
+func helper() -> s32 {
+    return 20
+}
+
 pub def cube(n: s32) -> s32 {
     return n * square(n)
+}
+
+pub def preludeTagged() -> s32 {
+    return helper() + secret
 }

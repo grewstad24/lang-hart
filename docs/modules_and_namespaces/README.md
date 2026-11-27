@@ -32,15 +32,15 @@ From any other file or module, `mylib::math::square(6)` and `std::log("hi")` are
 
 `use` binds exported symbols or modules into the current module's local scope:
 - **`use path::*`** (non-recursive): Brings every `pub` item and every **direct** submodule exported by `path` into scope. For example, `use std::*` brings `log`, `String`, `default_context`, etc. into scope, along with direct submodule `libc` (so `libc::malloc` works, while `malloc` is not brought in unless `use std::libc::*` is used).
-- **`use path`** / **`use path as alias`**: Brings a symbol or module into scope under its last segment or `alias` (e.g., `use mylib::math as mm` allows `mm::square(6)`, and `use mylib::math::square as sq` allows `sq(6)`).
+- **`use path`**: Brings a symbol or module into scope under its last segment (e.g., `use mylib::math` allows `math::square(6)`, and `use mylib::math::square` allows `square(6)`).
 - **`pub use ...`**: Performs the same local binding and also re-exports the brought-in items/submodules as `pub` members of the current module.
 
 ## `std/core` Modules
 
 `std/core` defines:
-- `std`: Public core API (`Context`, `default_context`, `String`, `Bool`, `Slice`, `Vec`, `Generic`, `Record`, `Error`, `Voidance`, `IoError`, `print`, `println`, `pprint`, `log`, `logWarn`, `logError`, `panic`, `assertOk`, `heapAlloc`, `heapNew`, `vecInit`, `fill`, boolean gates, math helpers, and file/stream I/O).
+- `std`: Public core API (`Context`, `default_context`, `String`, `Bool`, `Slice`, `Vec`, `Generic`, `Record`, `Error`, `Voidance`, `IoError`, `print`, `println`, `pprint`, `log`, `logWarn`, `logError`, `panic`, `must`, `heapAlloc`, `heapNew`, `vecInit`, `fill`, boolean gates, math helpers, and file/stream I/O).
 - `std::libc`: Raw Cosmopolitan Libc `pub extern func` bindings (`malloc`, `free`, `realloc`, `abort`, `printf`, `__errno_location`, `open`, `close`, `read`, `write`, `lseek`).
 
 ## Tests
 
-- [ok_modules](tests/ok_modules/main.hart) — Nested modules (`mod mylib::math`, `mod mylib::prelude`), global `::` access, `use std::*` non-recursive submodule import (`libc::malloc`), `use ... as ...` aliasing, and `pub use ...::*` re-exporting.
+- [ok_modules](tests/ok_modules/main.hart) — Nested modules (`mod mylib::math`, `mod mylib::prelude`), global `::` access, `use std::*` non-recursive submodule import (`libc::malloc`), `use mylib::math` module binding, and `pub use ...::*` re-exporting.

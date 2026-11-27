@@ -68,7 +68,7 @@ Inside any loop:
 
 Hart forbids silently discarding any expression whose type may contain an error:
 - A type "may contain an error" if it is `:error`, a tuple whose first element is `:error` (such as `(:error, :not_found)` or `ErrorWithReason<T>`), or a union containing any such variant (such as `IoError`, `Error`, `Voidance`, or `s32 | :error`).
-- Calling a fallible function as a standalone statement without handling it (via `match`, `assertOk(...)`, or binding/returning it) is a compile error (`may be an error and cannot be discarded`).
+- Calling a fallible function as a standalone statement without handling it (via `match`, `must(...)`, or binding/returning it) is a compile error (`may be an error and cannot be discarded`).
 
 ## Tests
 

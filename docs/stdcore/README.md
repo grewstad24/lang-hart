@@ -36,7 +36,7 @@
 ## Error Handling (`std/core/error`)
 
 - `panic(reason)` (`def`): Calls `@ctx.panic(@ctx.&, reason)` (default `stdPanic` logs the reason unless `:none` and calls `abort()`).
-- `assertOk(val)` (`def`): Unwraps `val`; if `:error` calls `panic(:none)`, if `ErrorWithReason<Generic>` calls `panic(err_tuple.1)`, otherwise returns `val`.
+- `must(val)` (`def`): Unwraps `val`; if `:error` calls `panic(:none)`, if `ErrorWithReason<Generic>` calls `panic(err_tuple.1)`, otherwise returns `val`.
 
 ## Printing & Pretty-Printing (`std/core/print`, `std/core/pretty`)
 
@@ -59,7 +59,7 @@
 - `heapAlloc(size)` (`def`): Calls `@ctx.heap_alloc(@ctx.&mut, size as usize)` -> `*mut opaque | :error`.
 - `heapRealloc(ptr, new_size)` (`def`): Calls `@ctx.heap_realloc(@ctx.&mut, ptr, new_size as usize)` -> `*mut opaque | :error`.
 - `heapDealloc(ptr)` (`def`): Calls `@ctx.heap_dealloc(@ctx.&mut, ptr)` -> `:none`.
-- `heapNew(x)` (`def`): Heap-allocates `@sizeOf(x)`, copies `x` into it, and returns `*mut T` (panics on allocation failure via `assertOk`).
+- `heapNew(x)` (`def`): Heap-allocates `@sizeOf(x)`, copies `x` into it, and returns `*mut T | :error`.
 - `vecInit(init)` (`def`): Creates a `Vec<T>`. Pass `:none` for an empty `Vec`, or a slice/array (e.g. `[1, 2, 3]`) to heap-allocate and copy elements into `items` (`Slice<T>`) with `cap: s.len`.
 - `fill(slice, val)` (`def`): Overwrites every element of `slice` (`Slice<T>`) with `val`.
 ## Boolean Gates & Operations (`std/core/misc`)
@@ -100,4 +100,5 @@
 
 ## Tests
 
-- [ok_stdcore](tests/ok_stdcore/main.hart) — Idiomatic end-to-end test of `default_context`, `print`/`println`, `pprint` (`stdPrinter` & `debugPrinter`), `log`/`logWarn`/`logError`, `math` (`abs`, `min`, `max`, `add`, `sub`, `mul`, `div`), `heapNew`/`heapDealloc`, `vecInit`, `fill`, `assertOk`, and `stdin`/`stdout`/`stderr`.
+- [ok_stdcore](tests/ok_stdcore/main.hart) — Rigorous end-to-end test of `default_context`, `print`/`println`, `pprint` (`stdPrinter` & `debugPrinter`), `log`/`logWarn`/`logError`/`logWithLineAndFile`, `math` (`abs`, `min`, `max`, `add`, `sub`, `mul`, `div`), `heapAlloc`/`heapRealloc`/`heapNew`/`heapDealloc`, `vecInit(:none)`/`vecInit([...])`, `fill`, all boolean gates (`not`, `and`, `or`, `xor`, `nand`, `nor`, `xnor`, `implies`, `all`, `any`), `must`, `stdin`/`stdout`/`stderr`, and `default_buffer_size`.
+- **Known compiler limitations in `std/core`**: `clamp` (nested `def` inference yields `never`), `openFile` / file-I/O wrappers (specialization `return type mismatch` on `IoError` narrowing), and `(:softTab, Integer)` in `Printable` (tuple-with-union promotion) currently fail compilation when called.

@@ -447,6 +447,7 @@ fn classify_token(token: &Token, next_token: Option<&Token>) -> Option<(u32, usi
 
         Token::TypeOpaque => Some((1, 6)),
         Token::Never => Some((1, 5)),
+        Token::TypeS8 => Some((1, 2)),
         Token::TypeS16 => Some((1, 3)),
         Token::TypeS32 => Some((1, 3)),
         Token::TypeS64 => Some((1, 3)),

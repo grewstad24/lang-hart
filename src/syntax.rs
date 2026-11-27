@@ -83,6 +83,7 @@ pub struct StructFieldInit {
 pub enum Type {
     Opaque,
     Never,
+    S8,
     S16,
     S32,
     S64,
@@ -156,6 +157,7 @@ impl fmt::Display for Type {
         match self {
             Type::Opaque => write!(f, "opaque"),
             Type::Never => write!(f, "never"),
+            Type::S8 => write!(f, "s8"),
             Type::S16 => write!(f, "s16"),
             Type::S32 => write!(f, "s32"),
             Type::S64 => write!(f, "s64"),
@@ -650,7 +652,6 @@ pub struct SourceFile {
 pub struct UseDirective {
     pub path: Vec<String>,
     pub is_glob: bool,
-    pub alias: Option<String>,
     pub is_pub: bool,
     pub span: Span,
 }
@@ -676,6 +677,15 @@ pub struct Program {
     pub extern_functions: Vec<ExternalFunction>,
     pub definitions: Vec<Definition>,
     pub type_aliases: Vec<TypeAlias>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledModule {
+    pub name: Option<String>,
+    pub extern_functions: Vec<ExternalFunction>,
+    pub definitions: Vec<Definition>,
+    pub type_aliases: Vec<TypeAlias>,
+    pub symbol_origins: std::collections::HashMap<String, (Option<String>, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -744,6 +754,7 @@ pub enum Token {
     Use,
     TypeOpaque,
     Never,
+    TypeS8,
     TypeS16,
     TypeS32,
     TypeS64,
@@ -830,6 +841,7 @@ impl fmt::Display for Token {
             Token::Extern => write!(f, "'extern'"),
             Token::TypeOpaque => write!(f, "'opaque'"),
             Token::Never => write!(f, "'never'"),
+            Token::TypeS8 => write!(f, "'s8'"),
             Token::TypeS16 => write!(f, "'s16'"),
             Token::TypeS32 => write!(f, "'s32'"),
             Token::TypeS64 => write!(f, "'s64'"),
@@ -1231,6 +1243,7 @@ impl Lexer {
             "break" => Token::Break,
             "continue" => Token::Continue,
             "as" => Token::As,
+            "s8" => Token::TypeS8,
             "s16" => Token::TypeS16,
             "s32" => Token::TypeS32,
             "s64" => Token::TypeS64,
@@ -1523,6 +1536,10 @@ impl Parser {
                 self.advance();
                 Ok("as".to_string())
             }
+            Token::TypeS8 => {
+                self.advance();
+                Ok("s8".to_string())
+            }
             Token::TypeS16 => {
                 self.advance();
                 Ok("s16".to_string())
@@ -1690,19 +1707,10 @@ impl Parser {
             path.push(self.expect_field_name()?);
         }
 
-        let alias = if !is_glob && self.is(Token::As) {
-            self.advance();
-            self.skip_newlines();
-            Some(self.expect_field_name()?)
-        } else {
-            None
-        };
-
         self.consume_optional_newline();
         Ok(UseDirective {
             path,
             is_glob,
-            alias,
             is_pub,
             span,
         })
@@ -2331,6 +2339,7 @@ impl Parser {
                 | Token::Use
                 | Token::TypeOpaque
                 | Token::TypeKeyword
+                | Token::TypeS8
                 | Token::TypeS16
                 | Token::TypeS32
                 | Token::TypeS64
@@ -2377,6 +2386,7 @@ impl Parser {
                 | Token::Use
                 | Token::TypeOpaque
                 | Token::TypeKeyword
+                | Token::TypeS8
                 | Token::TypeS16
                 | Token::TypeS32
                 | Token::TypeS64
@@ -2505,6 +2515,7 @@ impl Parser {
                 Ok(Expression::Array(elements))
             }
             Token::TypeKeyword
+            | Token::TypeS8
             | Token::TypeS16
             | Token::TypeS32
             | Token::TypeS64
@@ -2978,6 +2989,10 @@ impl Parser {
             Token::Symbol(name) => {
                 self.advance();
                 Ok(Type::Symbol(name))
+            }
+            Token::TypeS8 => {
+                self.advance();
+                Ok(Type::S8)
             }
             Token::TypeS16 => {
                 self.advance();

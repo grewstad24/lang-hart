@@ -1,12 +1,12 @@
 mod std
 
-pub def add(a, b) { return a + b }
+pub def add(a, b) { a + b }
 
-pub def sub(a, b) { return a - b }
+pub def sub(a, b) { a - b }
 
-pub def mul(a, b) { return a * b }
+pub def mul(a, b) { a * b }
 
-pub def div(a, b) { return a / b }
+pub def div(a, b) { a / b }
 
 pub def min(a, b) {
       return if {
@@ -29,4 +29,4 @@ pub def abs(x) {
       }
 }
 
-pub def clamp(x, lo, hi) { return min(max(x, lo), hi) }
+pub def clamp(x, lo, hi) { min(max(x, lo), hi) }

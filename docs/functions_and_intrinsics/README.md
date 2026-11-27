@@ -36,8 +36,14 @@ def addOne(x) {
 ## Uniform Function Call Syntax (UFCS)
 
 Any function or `def` (or intrinsic) in scope can be called using method syntax `receiver.name(args...)`, which desugars to `name(receiver, args...)` when `receiver` does not have a struct field named `name`:
-- `print(:nl).assertOk()` -> `assertOk(print(:nl))`
+- `print(:nl).must()` -> `must(print(:nl))`
 - `raw.@asTypeOf(x.&mut)` -> `@asTypeOf(raw, x.&mut)`
+
+By convention, UFCS should only be used for:
+1. Ceremonial functions such as `must()` (ideally always called postfix: `expr.must()`), or
+2. Passing a function's return value directly as the first argument to another function (e.g. `vecInit([1, 2, 3]).must()`).
+
+For the first function in a pipeline, always pass arguments directly rather than chaining the initial value in (e.g. `readFile(path).must()`, not `path.readFile().must()`).
 
 ## Implicit Context (`@ctx`)
 

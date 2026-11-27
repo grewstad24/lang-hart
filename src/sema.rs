@@ -574,7 +574,7 @@ impl ModuleResolver {
                             }
                         }
                     } else if self.namespace_registry.contains_key(&path_str) || self.submodules.contains_key(&path_str) {
-                        let short = u.alias.clone().unwrap_or_else(|| u.path.last().unwrap().clone());
+                        let short = u.path.last().unwrap().clone();
                         let dst_subs = self.submodules.entry(mod_name.clone()).or_default();
                         if !dst_subs.contains_key(&short) {
                             dst_subs.insert(short, path_str);
@@ -583,7 +583,7 @@ impl ModuleResolver {
                     } else if u.path.len() >= 2 {
                         let parent_mod = u.path[..u.path.len() - 1].join("::");
                         let sym = u.path.last().unwrap();
-                        let target_name = u.alias.clone().unwrap_or_else(|| sym.clone());
+                        let target_name = sym.clone();
                         if let Some(src_reg) = self.namespace_registry.get(&parent_mod) {
                             let def_opt = src_reg.definitions.get(sym).cloned();
                             let ext_opt = src_reg.extern_functions.get(sym).cloned();
@@ -747,12 +747,12 @@ impl ModuleResolver {
                         }
                     }
                 } else if self.namespace_registry.contains_key(&path_str) || self.submodules.contains_key(&path_str) {
-                    let alias = u.alias.clone().unwrap_or_else(|| u.path.last().unwrap().clone());
-                    local_mod_aliases.insert(alias, path_str);
+                    let short = u.path.last().unwrap().clone();
+                    local_mod_aliases.insert(short, path_str);
                 } else if u.path.len() >= 2 {
                     let parent_mod = u.path[..u.path.len() - 1].join("::");
                     let sym = u.path.last().unwrap();
-                    let target_name = u.alias.clone().unwrap_or_else(|| sym.clone());
+                    let target_name = sym.clone();
                     let Some(exported) = self.namespace_registry.get(&parent_mod) else {
                         return Err(format_error(
                             &u.span,
@@ -808,7 +808,7 @@ impl ModuleResolver {
                 }
             }
 
-            // Local module aliases (from `use a::b as c`, `use a::b`, or `use a::*` submodules)
+            // Local module bindings (from `use a::b` or `use a::*` submodules)
             for (alias, target_mod) in &local_mod_aliases {
                 if let Some(exported) = self.namespace_registry.get(target_mod) {
                     for (name, prov) in &exported.definitions {
@@ -1074,6 +1074,7 @@ impl<'a> Checker<'a> {
             Type::U32 => "04_u32".to_string(),
             Type::U64 => "05_u64".to_string(),
             Type::USize => "05a_usize".to_string(),
+            Type::S8 => "05b_s8".to_string(),
             Type::S16 => "06_s16".to_string(),
             Type::S32 => "07_s32".to_string(),
             Type::S64 => "08_s64".to_string(),
@@ -1458,6 +1459,7 @@ impl<'a> Checker<'a> {
                     Type::U16 => *val >= 0 && *val <= u16::MAX as i64,
                     Type::U32 => *val >= 0 && *val <= u32::MAX as i64,
                     Type::U64 | Type::USize => *val >= 0,
+                    Type::S8 => *val >= i8::MIN as i64 && *val <= i8::MAX as i64,
                     Type::S16 => *val >= i16::MIN as i64 && *val <= i16::MAX as i64,
                     Type::S32 => *val >= i32::MIN as i64 && *val <= i32::MAX as i64,
                     Type::S64 | Type::SSize => true,
@@ -4498,7 +4500,8 @@ impl<'a> Checker<'a> {
     pub fn is_integer_type(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::S16
+            Type::S8
+                | Type::S16
                 | Type::S32
                 | Type::S64
                 | Type::SSize
@@ -4511,7 +4514,7 @@ impl<'a> Checker<'a> {
     }
 
     pub fn is_signed_integer_type(ty: &Type) -> bool {
-        matches!(ty, Type::S16 | Type::S32 | Type::S64 | Type::SSize)
+        matches!(ty, Type::S8 | Type::S16 | Type::S32 | Type::S64 | Type::SSize)
     }
 
     pub fn is_unsigned_integer_type(ty: &Type) -> bool {
@@ -4520,7 +4523,7 @@ impl<'a> Checker<'a> {
 
     pub fn integer_bit_width(ty: &Type) -> Option<u32> {
         match ty {
-            Type::U8 => Some(8),
+            Type::S8 | Type::U8 => Some(8),
             Type::S16 | Type::U16 => Some(16),
             Type::S32 | Type::U32 => Some(32),
             Type::S64 | Type::U64 | Type::USize | Type::SSize => Some(64),

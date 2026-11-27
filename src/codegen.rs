@@ -14,9 +14,9 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use crate::sema::Checker;
 use crate::syntax::{
-    BinaryOperator, ComparisonOperator, Definition, Expression, ExternalFunction, IfArm,
-    IfCondition, MatchArm, Program, Signature, Span, StructFieldInit, StructFieldType, Type,
-    format_error, unspanned_expression,
+    BinaryOperator, ComparisonOperator, CompiledModule, Definition, Expression, ExternalFunction,
+    IfArm, IfCondition, MatchArm, Program, Signature, Span, StructFieldInit, StructFieldType,
+    Type, format_error, unspanned_expression,
 };
 
 #[derive(Debug, Clone)]
@@ -112,8 +112,14 @@ pub struct Codegen<'ctx> {
     scope_stack_ptrs: Vec<PointerValue<'ctx>>,
     global_vars: HashMap<String, GlobalVar<'ctx>>,
     pending_global_records: Vec<(String, Expression)>,
+    pending_global_record_ptrs: Vec<(PointerValue<'ctx>, Expression)>,
     extern_functions: HashMap<String, Signature>,
+    functions: HashMap<String, FunctionValue<'ctx>>,
     function_signatures: HashMap<String, Signature>,
+    exported_functions: HashMap<String, HashMap<String, (FunctionValue<'ctx>, Signature, bool)>>,
+    exported_globals: HashMap<String, HashMap<String, GlobalVar<'ctx>>>,
+    all_specialized_defs: HashMap<String, (FunctionValue<'ctx>, Signature)>,
+    current_symbol_origins: HashMap<String, (Option<String>, String)>,
     type_aliases: HashMap<String, Type>,
     current_function_return_type: Option<Type>,
     loop_stack: Vec<LoopContext<'ctx>>,
@@ -147,8 +153,14 @@ impl<'ctx> Codegen<'ctx> {
             scope_stack_ptrs: Vec::new(),
             global_vars: HashMap::new(),
             pending_global_records: Vec::new(),
+            pending_global_record_ptrs: Vec::new(),
             extern_functions: HashMap::new(),
+            functions: HashMap::new(),
             function_signatures: HashMap::new(),
+            exported_functions: HashMap::new(),
+            exported_globals: HashMap::new(),
+            all_specialized_defs: HashMap::new(),
+            current_symbol_origins: HashMap::new(),
             type_aliases: HashMap::new(),
             current_function_return_type: None,
             loop_stack: Vec::new(),
@@ -578,6 +590,300 @@ impl<'ctx> Codegen<'ctx> {
         Ok(self.module)
     }
 
+    pub fn generate_modules(
+        mut self,
+        compiled_modules: &[CompiledModule],
+    ) -> Result<Module<'ctx>, String> {
+        struct ModuleState<'ctx> {
+            functions: HashMap<String, FunctionValue<'ctx>>,
+            function_signatures: HashMap<String, Signature>,
+            specialized_def_names: HashSet<String>,
+            global_vars: HashMap<String, GlobalVar<'ctx>>,
+            extern_functions: HashMap<String, Signature>,
+            type_aliases: HashMap<String, Type>,
+        }
+
+        let mut mod_states: Vec<ModuleState<'ctx>> = Vec::with_capacity(compiled_modules.len());
+
+        // Pass 1: Declare all externs and functions per module in isolation
+        for m in compiled_modules {
+            let type_aliases: HashMap<String, Type> = m
+                .type_aliases
+                .iter()
+                .map(|a| (a.name.clone(), a.target.clone()))
+                .collect();
+            self.type_aliases = type_aliases.clone();
+
+            let mut extern_sigs = HashMap::new();
+            for external in &m.extern_functions {
+                extern_sigs.insert(external.name.clone(), external.signature.clone());
+                let func = if let Some(existing) = self.module.get_function(&external.name) {
+                    existing
+                } else {
+                    let fn_type = self.signature_to_function_type(Some(&external.signature))?;
+                    let func = self.module.add_function(&external.name, fn_type, None);
+                    if *external.signature.return_type == Type::Never {
+                        let attr_id =
+                            inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
+                        let attr = self.context.create_enum_attribute(attr_id, 0);
+                        func.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+                    }
+                    func
+                };
+                if external.is_pub {
+                    if let Some(mod_name) = &m.name {
+                        self.exported_functions
+                            .entry(mod_name.clone())
+                            .or_default()
+                            .insert(
+                                external.name.clone(),
+                                (func, external.signature.clone(), false),
+                            );
+                    }
+                }
+            }
+
+            let mut mod_funcs = HashMap::new();
+            let mut mod_sigs = HashMap::new();
+            let mut mod_specs = HashSet::new();
+
+            for def in &m.definitions {
+                if def.name == "main" {
+                    continue;
+                }
+                if let Some(sig) = &def.signature {
+                    mod_sigs.insert(def.name.clone(), sig.clone());
+                    if def.is_specialized_def {
+                        mod_specs.insert(def.name.clone());
+                    }
+                    let fn_type = match self
+                        .signature_to_function_type_with_def(Some(sig), def.is_specialized_def)
+                    {
+                        Ok(ty) => ty,
+                        Err(e) => return Err(format!("in definition '{}': {}", def.name, e)),
+                    };
+                    let f = self.module.add_function(
+                        &def.name,
+                        fn_type,
+                        Some(inkwell::module::Linkage::Internal),
+                    );
+                    if *sig.return_type == Type::Never {
+                        let attr_id =
+                            inkwell::attributes::Attribute::get_named_enum_kind_id("noreturn");
+                        let attr = self.context.create_enum_attribute(attr_id, 0);
+                        f.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+                    }
+                    mod_funcs.insert(def.name.clone(), f);
+                    if def.is_specialized_def {
+                        self.all_specialized_defs
+                            .insert(def.name.clone(), (f, sig.clone()));
+                    }
+                    if def.is_pub {
+                        if let Some(mod_name) = &m.name {
+                            self.exported_functions
+                                .entry(mod_name.clone())
+                                .or_default()
+                                .insert(
+                                    def.name.clone(),
+                                    (f, sig.clone(), def.is_specialized_def),
+                                );
+                        }
+                    }
+                }
+            }
+
+            mod_states.push(ModuleState {
+                functions: mod_funcs,
+                function_signatures: mod_sigs,
+                specialized_def_names: mod_specs,
+                global_vars: HashMap::new(),
+                extern_functions: extern_sigs,
+                type_aliases,
+            });
+        }
+
+        // Pass 2: Materialize module constants (isolated per module, exporting `pub` constants)
+        for (idx, m) in compiled_modules.iter().enumerate() {
+            let state = &mut mod_states[idx];
+            self.type_aliases = state.type_aliases.clone();
+            self.functions = state.functions.clone();
+            self.function_signatures = state.function_signatures.clone();
+            self.specialized_def_names = state.specialized_def_names.clone();
+            self.extern_functions = state.extern_functions.clone();
+            self.current_symbol_origins = m.symbol_origins.clone();
+            self.global_vars.clear();
+
+            let mut mod_pending_records = HashSet::new();
+            for def in &m.definitions {
+                if def.name == "main" || def.signature.is_some() {
+                    continue;
+                }
+                let is_record = match unspanned_expression(&def.value) {
+                    Expression::Cast { ty, .. } => self.is_record_type(ty).unwrap_or(false),
+                    _ => false,
+                };
+                if is_record {
+                    let ty = self.resolve_alias_root(&Checker::record_type())?.clone();
+                    let llvm_type = self.llvm_type(&ty)?;
+                    let global_name = format!("hart.record.{}", def.name);
+                    let global =
+                        self.module
+                            .add_global(llvm_type, Some(AddressSpace::default()), &global_name);
+                    global.set_linkage(inkwell::module::Linkage::Internal);
+                    global.set_initializer(&self.zero_value(&ty)?);
+                    let gv = GlobalVar {
+                        ty,
+                        pointer: global.as_pointer_value(),
+                    };
+                    self.global_vars.insert(def.name.clone(), gv.clone());
+                    if def.is_pub {
+                        if let Some(mod_name) = &m.name {
+                            self.exported_globals
+                                .entry(mod_name.clone())
+                                .or_default()
+                                .insert(def.name.clone(), gv);
+                        }
+                    }
+                    self.pending_global_record_ptrs
+                        .push((global.as_pointer_value(), def.value.clone()));
+                    mod_pending_records.insert(def.name.clone());
+                }
+            }
+
+            for def in &m.definitions {
+                if def.name == "main"
+                    || def.signature.is_some()
+                    || mod_pending_records.contains(&def.name)
+                {
+                    continue;
+                }
+                let binding = self.codegen_expression(&def.value)?;
+                let ty = self.binding_type(&binding)?;
+                let llvm_ty = self.llvm_type(&ty)?;
+                let global_name = format!("hart.const.{}", def.name);
+                let global =
+                    self.module
+                        .add_global(llvm_ty, Some(AddressSpace::default()), &global_name);
+                global.set_linkage(inkwell::module::Linkage::Internal);
+                global.set_constant(true);
+
+                let init_val = match self.binding_basic_value(&binding) {
+                    Ok(val) => val,
+                    Err(_) => self.zero_value(&ty)?,
+                };
+                global.set_initializer(&init_val);
+
+                let gv = GlobalVar {
+                    ty,
+                    pointer: global.as_pointer_value(),
+                };
+                self.global_vars.insert(def.name.clone(), gv.clone());
+                if def.is_pub {
+                    if let Some(mod_name) = &m.name {
+                        self.exported_globals
+                            .entry(mod_name.clone())
+                            .or_default()
+                            .insert(def.name.clone(), gv);
+                    }
+                }
+            }
+
+            state.global_vars = self.global_vars.clone();
+        }
+
+        // Pass 3: Codegen function bodies per module in isolation
+        let mut main_idx_and_def: Option<(usize, &Definition)> = None;
+        for (idx, m) in compiled_modules.iter().enumerate() {
+            let state = &mod_states[idx];
+            self.type_aliases = state.type_aliases.clone();
+            self.functions = state.functions.clone();
+            self.function_signatures = state.function_signatures.clone();
+            self.specialized_def_names = state.specialized_def_names.clone();
+            self.extern_functions = state.extern_functions.clone();
+            self.global_vars = state.global_vars.clone();
+            self.current_symbol_origins = m.symbol_origins.clone();
+
+            for def in &m.definitions {
+                if def.name == "main" {
+                    main_idx_and_def = Some((idx, def));
+                    continue;
+                }
+                if let Some(sig) = &def.signature {
+                    self.codegen_named_function(&def.name, Some(sig), &def.value)?;
+                }
+            }
+        }
+
+        // Pass 4: Codegen main in its module's scope
+        if let Some((idx, main_def)) = main_idx_and_def {
+            let state = &mod_states[idx];
+            self.type_aliases = state.type_aliases.clone();
+            self.functions = state.functions.clone();
+            self.function_signatures = state.function_signatures.clone();
+            self.specialized_def_names = state.specialized_def_names.clone();
+            self.extern_functions = state.extern_functions.clone();
+            self.global_vars = state.global_vars.clone();
+            self.current_symbol_origins = compiled_modules[idx].symbol_origins.clone();
+            self.codegen_main(main_def)?;
+        }
+
+        Ok(self.module)
+    }
+
+    fn resolve_function(
+        &self,
+        name: &str,
+    ) -> Option<(FunctionValue<'ctx>, Option<Signature>, bool)> {
+        if let Some(&f) = self.functions.get(name) {
+            let sig = self.function_signatures.get(name).cloned();
+            let is_spec = self.specialized_def_names.contains(name);
+            return Some((f, sig, is_spec));
+        }
+        if let Some((target_mod, orig_name)) = self.current_symbol_origins.get(name) {
+            if let Some(mod_name) = target_mod {
+                if let Some(exports) = self.exported_functions.get(mod_name) {
+                    if let Some((f, sig, is_spec)) = exports.get(orig_name) {
+                        return Some((*f, Some(sig.clone()), *is_spec));
+                    }
+                }
+            }
+            if let Some(sig) = self.extern_functions.get(orig_name) {
+                if let Some(f) = self.module.get_function(orig_name) {
+                    return Some((f, Some(sig.clone()), false));
+                }
+            }
+        }
+        if let Some((f, sig)) = self.all_specialized_defs.get(name) {
+            return Some((*f, Some(sig.clone()), true));
+        }
+        if let Some(f) = self.module.get_function(name) {
+            let sig = self
+                .extern_functions
+                .get(name)
+                .or_else(|| self.function_signatures.get(name))
+                .cloned();
+            let is_spec = self.specialized_def_names.contains(name);
+            return Some((f, sig, is_spec));
+        }
+        None
+    }
+
+    fn resolve_global(&self, name: &str) -> Option<&GlobalVar<'ctx>> {
+        if let Some(gv) = self.global_vars.get(name) {
+            return Some(gv);
+        }
+        if let Some((target_mod, orig_name)) = self.current_symbol_origins.get(name) {
+            if let Some(mod_name) = target_mod {
+                if let Some(exports) = self.exported_globals.get(mod_name) {
+                    if let Some(gv) = exports.get(orig_name) {
+                        return Some(gv);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn collect_declarations(&mut self, program: &Program) -> Result<(), String> {
         for external in &program.extern_functions {
             self.extern_functions
@@ -873,8 +1179,10 @@ impl<'ctx> Codegen<'ctx> {
         body: &Expression,
     ) -> Result<(), String> {
         let llvm_function = self
-            .module
-            .get_function(name)
+            .functions
+            .get(name)
+            .copied()
+            .or_else(|| self.module.get_function(name))
             .ok_or_else(|| format!("missing declared function '{}'", name))?;
 
         let entry = self.context.append_basic_block(llvm_function, "entry");
@@ -1031,6 +1339,14 @@ impl<'ctx> Codegen<'ctx> {
             self.current_function_return_type = Some(Type::S32);
         }
         let stack_ptr = self.enter_scope()?;
+
+        for (ptr, expr) in std::mem::take(&mut self.pending_global_record_ptrs) {
+            let record = self.codegen_expression(&expr)?;
+            let value = self.binding_basic_value(&record)?;
+            self.builder
+                .build_store(ptr, value)
+                .map_err(|error| error.to_string())?;
+        }
 
         for (name, expr) in std::mem::take(&mut self.pending_global_records) {
             let record = self.codegen_expression(&expr)?;
@@ -1379,7 +1695,7 @@ impl<'ctx> Codegen<'ctx> {
                     return self.binding_from_basic_value(&local.ty, loaded);
                 }
 
-                if let Some(global_var) = self.global_vars.get(name) {
+                if let Some(global_var) = self.resolve_global(name).cloned() {
                     let resolved_global_ty = self.resolve_alias_root(&global_var.ty)?;
                     if matches!(resolved_global_ty, Type::Struct(_) | Type::Tuple(_)) {
                         let loaded = self
@@ -1430,18 +1746,12 @@ impl<'ctx> Codegen<'ctx> {
                     return self.binding_from_basic_value(&global_var.ty, loaded);
                 }
 
-                if let Some(function) = self.module.get_function(name) {
-                    let sig = if let Some(sig) = self.extern_functions.get(name) {
-                        sig.clone()
-                    } else if let Some(sig) = self.function_signatures.get(name) {
-                        sig.clone()
-                    } else {
-                        Signature {
-                            parameters: vec![],
-                            return_type: Box::new(Type::Symbol("none".to_string())),
-                            is_variadic: false,
-                        }
-                    };
+                if let Some((function, sig_opt, _)) = self.resolve_function(name) {
+                    let sig = sig_opt.unwrap_or(Signature {
+                        parameters: vec![],
+                        return_type: Box::new(Type::Symbol("none".to_string())),
+                        is_variadic: false,
+                    });
                     return Ok(Binding::Function {
                         signature: sig,
                         value: function,
@@ -4049,24 +4359,18 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Result<Binding<'ctx>, String> {
         let (function_ptr, ret_ty, fn_type, expected_param_types) = match target {
             Expression::Identifier(name) => {
-                if let Some(func) = self.module.get_function(name) {
-                    let (return_type, fn_type, param_types) =
-                        if let Some(sig) = self.extern_functions.get(name) {
-                            let fn_ty = self.signature_to_function_type(Some(sig))?;
-                            let pts = sig.parameters.iter().map(|p| p.ty.clone()).collect();
-                            ((*sig.return_type).clone(), fn_ty, pts)
-                        } else if let Some(sig) = self.function_signatures.get(name) {
-                            let is_def = self.specialized_def_names.contains(name);
-                            let fn_ty = self.signature_to_function_type_with_def(Some(sig), is_def)?;
-                            let pts = sig.parameters.iter().map(|p| p.ty.clone()).collect();
-                            ((*sig.return_type).clone(), fn_ty, pts)
-                        } else {
-                            let ret = match func.get_type().get_return_type() {
-                                Some(_) => Type::S32,
-                                None => Type::Never,
-                            };
-                            (ret, func.get_type(), Vec::new())
+                if let Some((func, sig_opt, is_def)) = self.resolve_function(name) {
+                    let (return_type, fn_type, param_types) = if let Some(sig) = sig_opt {
+                        let fn_ty = self.signature_to_function_type_with_def(Some(&sig), is_def)?;
+                        let pts = sig.parameters.iter().map(|p| p.ty.clone()).collect();
+                        ((*sig.return_type).clone(), fn_ty, pts)
+                    } else {
+                        let ret = match func.get_type().get_return_type() {
+                            Some(_) => Type::S32,
+                            None => Type::Never,
                         };
+                        (ret, func.get_type(), Vec::new())
+                    };
                     Ok((
                         func.as_global_value().as_pointer_value(),
                         return_type,
@@ -4086,7 +4390,7 @@ impl<'ctx> Codegen<'ctx> {
                         _ => Vec::new(),
                     };
                     Ok((loaded, ret_ty, fn_type, pts))
-                } else if let Some(global_var) = self.global_vars.get(name) {
+                } else if let Some(global_var) = self.resolve_global(name).cloned() {
                     let loaded = self
                         .builder
                         .build_load(
@@ -4145,7 +4449,9 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         if let Expression::Identifier(name) = unspanned_expression(target) {
-            if self.specialized_def_names.contains(name) {
+            if self.specialized_def_names.contains(name)
+                || self.all_specialized_defs.contains_key(name)
+            {
                 let ctx_ptr = self
                     .current_context_ptr
                     .ok_or_else(|| format!("missing @ctx when calling '{}'", name))?;
@@ -4372,7 +4678,7 @@ impl<'ctx> Codegen<'ctx> {
                     });
                 }
 
-                if let Some(global_var) = self.global_vars.get(name) {
+                if let Some(global_var) = self.resolve_global(name).cloned() {
                     return Ok(Binding::Pointer {
                         ty: Type::Pointer {
                             element: Box::new(global_var.ty.clone()),
@@ -4382,14 +4688,7 @@ impl<'ctx> Codegen<'ctx> {
                     });
                 }
 
-                if let Some(func) = self.module.get_function(name) {
-                    let sig = if let Some(sig) = self.extern_functions.get(name) {
-                        Some(sig.clone())
-                    } else if let Some(sig) = self.function_signatures.get(name) {
-                        Some(sig.clone())
-                    } else {
-                        None
-                    };
+                if let Some((func, sig, _)) = self.resolve_function(name) {
                     let fn_ty = if let Some(sig) = &sig {
                         Type::Function {
                             parameters: sig.parameters.iter().map(|p| p.ty.clone()).collect(),
@@ -4645,7 +4944,8 @@ impl<'ctx> Codegen<'ctx> {
                 name: name.clone(),
                 value: value.into_struct_value(),
             }),
-            Type::S16
+            Type::S8
+            | Type::S16
             | Type::S32
             | Type::S64
             | Type::SSize
@@ -4831,7 +5131,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::S32 | Type::U32 => Ok(self.context.i32_type().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().into()),
             Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().into()),
-            Type::U8 => Ok(self.context.i8_type().into()),
+            Type::S8 | Type::U8 => Ok(self.context.i8_type().into()),
             Type::Struct(fields) => {
                 let field_llvm_types: Vec<BasicTypeEnum<'ctx>> = fields
                     .iter()
@@ -4878,7 +5178,7 @@ impl<'ctx> Codegen<'ctx> {
             Type::S32 | Type::U32 => Ok(self.context.i32_type().const_zero().into()),
             Type::S64 | Type::U64 => Ok(self.context.i64_type().const_zero().into()),
             Type::USize | Type::SSize => Ok(self.ptr_sized_int_type().const_zero().into()),
-            Type::U8 => Ok(self.context.i8_type().const_zero().into()),
+            Type::S8 | Type::U8 => Ok(self.context.i8_type().const_zero().into()),
             Type::Struct(fields) => {
                 let struct_llvm_type = self.llvm_type(ty)?.into_struct_type();
                 let field_zeroes = fields
@@ -4921,6 +5221,6 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn is_signed(&self, ty: &Type) -> bool {
-        matches!(ty, Type::S16 | Type::S32 | Type::S64 | Type::SSize)
+        matches!(ty, Type::S8 | Type::S16 | Type::S32 | Type::S64 | Type::SSize)
     }
 }

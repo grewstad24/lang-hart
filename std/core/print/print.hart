@@ -6,7 +6,7 @@ pub type Printable :=
       | Integer
       | :nl
       | :t
-      | ( :softTab, Integer )
+      | ( :softTab, UnsignedInteger )
       | Bool
       | Slice <Printable>
 
@@ -54,7 +54,7 @@ pub def print(x: Printable) -> :none | IoError {
             UnsignedInteger => return printUint(z)
             :nl => return prNl()
             :t => return prTab()
-            ( :softTab, Integer ) => {
+            ( :softTab, UnsignedInteger ) => {
                   repeat (z.1 as usize) {
                         match print(" ") using err {
                               IoError => return err

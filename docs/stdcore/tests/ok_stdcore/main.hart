@@ -3,42 +3,62 @@ use std::*
 func main(args: Slice<String>) -> :none {
     @ctx := default_context
 
-    # Printing
-    print(["hello", :true, :t, 123, :nl]).assertOk()
-    println("stdcore ok").assertOk()
+    # Printing (print, println, Printable variants: Bool, Integer including s8, String, :t, :nl, Slice<Printable>)
+    tiny := -42 as s8
+    print(["hello", :true, :t, 123, tiny, :nl]).must()
+    println("stdcore ok").must()
 
-    # Pretty printing with default stdPrinter and debugPrinter
-    pprint({ ok: :true, count: 3 }).assertOk()
+    # Pretty printing with default stdPrinter and debugPrinter (Record, Slice, Voidance, pointer)
+    mut ptr_val: Generic := 77
+    pprint({ ok: :true, count: 3, nested: [1, 2], err: (:error, "sample") as ErrorAndReason }).must()
+    pprint(ptr_val.&).must()
     @ctx := { ...@ctx, printer: debugPrinter }
-    pprint([1, 2, 3]).assertOk()
+    pprint([1, 2, 3]).must()
+    pprint((:error, "debug err") as ErrorAndReason).must()
+    pprint(:none).must()
 
-    # Logging
+    # Logging (log, logWarn, logError, logWithLineAndFile)
     log("info message")
     logWarn("warn message")
     logError("error message")
+    logWithLineAndFile(:info, @this_line_number, @this_file_name, "direct log")
 
-    # Math
+    # Math (abs, min, max, add, sub, mul, div)
     a1 := abs(-15)
     lo := min(5, 10)
     hi := max(8, 12)
     p := mul(hi, 2)
     q := div(sub(a1, lo), 2)
     a := add(p, q)
-    # a = 12*2 + (15-5)/2 = 24 + 5 = 29
+    c := clamp(50, 0, 10)
+    # a = 12*2 + (15-5)/2 = 29, c = 10
     if {
         a != 29 => panic("math mismatch")
+        c != 10 => panic("clamp mismatch")
         else => :none
     }
 
-    # Heap & Vec & fill
-    boxed := heapNew(42)
+    # Heap (heapAlloc, heapRealloc, heapDealloc, heapNew)
+    raw := heapAlloc(8 as usize).must()
+    raw2 := heapRealloc(raw, 16 as usize).must()
+    heapDealloc(raw2)
+
+    boxed := heapNew(42).must()
     defer heapDealloc(boxed as *opaque)
     if {
         boxed.* != 42 => panic("heapNew mismatch")
         else => :none
     }
 
-    v := vecInit([1, 2, 3])
+    # Vec (vecInit(:none) and vecInit(array)) & fill
+    v_empty := vecInit(:none).must()
+    if {
+        v_empty.items.len != (0 as usize) => panic("vecInit(:none) len mismatch")
+        v_empty.cap != (0 as usize) => panic("vecInit(:none) cap mismatch")
+        else => :none
+    }
+
+    v := vecInit([1, 2, 3]).must()
     defer heapDealloc(v.items.ptr as *opaque)
     fill(v.items, 9)
     if {
@@ -46,7 +66,7 @@ func main(args: Slice<String>) -> :none {
         else => :none
     }
 
-    # Standard streams & Boolean gates/operations
+    # Boolean gates & operations
     bools_all := [:true, :true, :true]
     bools_mix := [:false, :true, :false]
     bools_none := [:false, :false]
@@ -74,6 +94,36 @@ func main(args: Slice<String>) -> :none {
         stdin.fd != 0 => panic("stdin fd mismatch")
         stdout.fd != 1 => panic("stdout fd mismatch")
         stderr.fd != 2 => panic("stderr fd mismatch")
+        default_buffer_size != (8192 as usize) => panic("default_buffer_size mismatch")
         else => :none
     }
+
+    # File I/O (writeFile, appendToFile, readFile, openFile, seekFile, readBytes, writeBytes, closeFile)
+    tmp_path := "/tmp/hart_ok_stdcore_test.txt"
+    writeFile(tmp_path, "hello").must()
+    appendToFile(tmp_path, " world").must()
+    content := readFile(tmp_path).must()
+    defer heapDealloc(content.ptr as *opaque)
+    if {
+        content.len != (11 as usize) => panic("readFile len mismatch")
+        content[0] != (104 as u8) => panic("readFile content mismatch")
+        content[6] != (119 as u8) => panic("appendToFile content mismatch")
+        else => :none
+    }
+
+    f := openFile(tmp_path, :read_write).must()
+    pos := seekFile(f, 0 as s64, :end).must()
+    if {
+        pos != (11 as u64) => panic("seekFile mismatch")
+        else => :none
+    }
+    seekFile(f, 0 as s64, :start).must()
+    mut buf := [0 as u8, 0 as u8, 0 as u8, 0 as u8, 0 as u8]
+    n_read := readBytes(f, buf[0].&mut, 5 as usize).must()
+    if {
+        n_read != (5 as usize) => panic("readBytes len mismatch")
+        buf[0] != (104 as u8) => panic("readBytes content mismatch")
+        else => :none
+    }
+    closeFile(f).must()
 }

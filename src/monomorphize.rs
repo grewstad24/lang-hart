@@ -15,6 +15,7 @@ pub fn mangle_type(ty: &Type) -> String {
         Type::U32 => "u32".to_string(),
         Type::U64 => "u64".to_string(),
         Type::USize => "usize".to_string(),
+        Type::S8 => "s8".to_string(),
         Type::S16 => "s16".to_string(),
         Type::S32 => "s32".to_string(),
         Type::S64 => "s64".to_string(),
@@ -1323,6 +1324,12 @@ fn collect_returns(
         Expression::Discard(inner) => {
             collect_returns(inner, local_types, scope, generated, returns, visiting, depth + 1);
         }
+        Expression::Let { value, .. } | Expression::Assign { value, .. } => {
+            collect_returns(value, local_types, scope, generated, returns, visiting, depth + 1);
+        }
+        Expression::Var { value: Some(v), .. } => {
+            collect_returns(v, local_types, scope, generated, returns, visiting, depth + 1);
+        }
         _ => {}
     }
 }
@@ -1444,6 +1451,7 @@ fn infer_expr_type_internal(
                 return Some(local_types.values().next().unwrap().clone());
             }
             match name.as_str() {
+                "s8" => return Some(Type::S8),
                 "s16" => return Some(Type::S16),
                 "s32" => return Some(Type::S32),
                 "s64" => return Some(Type::S64),
@@ -1874,6 +1882,14 @@ fn infer_expr_type_internal(
             }
         }
         Expression::Call { target, arguments } => {
+            if matches!(crate::syntax::unspanned_expression(target), Expression::Member { .. }) {
+                if let Some(target_ty) = infer_expr_type_internal(target, local_types, scope, generated, visiting, depth + 1) {
+                    let resolved = resolve_type_alias_deep(&target_ty, scope);
+                    if let Type::Function { return_type, .. } = resolved {
+                        return Some(*return_type);
+                    }
+                }
+            }
             let fn_name_opt = unwrap_identifier_name(target).or_else(|| {
                 if let Expression::Member { field, .. } = crate::syntax::unspanned_expression(target) {
                     Some(field.clone())

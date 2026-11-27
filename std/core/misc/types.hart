@@ -4,7 +4,7 @@ pub type String := Slice <u8>
 
 pub type Integer := SignedInteger | UnsignedInteger
 
-pub type SignedInteger := s16 | s32 | s64 | ssize
+pub type SignedInteger := s8 | s16 | s32 | s64 | ssize
 
 pub type UnsignedInteger := u8 | u16 | u32 | u64 | usize
 

@@ -1,6 +1,6 @@
 use std::*
 
 func main() -> :none {
-    println("hi").assertOk()
+    println("hi").must()
 }
 

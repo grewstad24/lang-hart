@@ -31,9 +31,9 @@ func stdPanic(ctx: *Context, reason: Generic) -> never {
       abort()
 }
 
-pub def panic(reason) { @ctx.panic(@ctx.&, reason) }
+pub def panic(reason: Generic) { @ctx.panic(@ctx.&, reason) }
 
-pub def assertOk(val) { return
+pub def must(val) { return
       match val using v {
             :error => panic(:none)
             ErrorWithReason <Generic> => {

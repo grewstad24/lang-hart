@@ -21,8 +21,12 @@ pub def vecInit(init) {
                         else => :none
                   }
                   mut first := s[0]
-                  raw := assertOk(heapAlloc(s.len * @sizeOf(first)))
-                  typed_ptr := @asTypeOf(raw, first.&mut)
+                  mut raw := (0 as usize) as *mut opaque
+                  alloc_res := heapAlloc(s.len * @sizeOf(first))
+                  match alloc_res using res {
+                        :error => return res
+                        else => raw := res
+                  }
                   repeat s.len using i {
                         elem_raw := ((raw as usize) + i * (@sizeOf(first))) as *mut opaque
                         elem_ptr := @asTypeOf(elem_raw, first.&mut)
@@ -30,7 +34,7 @@ pub def vecInit(init) {
                   }
                   return {
                         items: {
-                              ptr: @asTypeOf(typed_ptr, first.&)
+                              ptr: @asTypeOf(raw, first.&)
                               len: s.len
                         }
                         cap: s.len

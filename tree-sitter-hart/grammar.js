@@ -526,9 +526,12 @@ module.exports = grammar({
       $.symbol_literal,
     ),
 
-    integer_literal: $ => token(choice(
-      /0x[0-9a-fA-F]+/,
-      /[0-9]+/
+    integer_literal: $ => token(seq(
+      optional('-'),
+      choice(
+        /0x[0-9a-fA-F]+/,
+        /[0-9]+/
+      )
     )),
 
     string_literal: $ => seq(

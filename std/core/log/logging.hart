@@ -21,12 +21,13 @@ func stdLogger(ctx: *Context, level: :info | :warn | :error | :never, min_level:
             else => :none
       }
       match level {
-            :error => assertOk(print([log_red, "‼ error ", file, ":", line, ": ", log_reset]))
-            :warn => assertOk(print([log_yellow, "⚠ warn ", file, ":", line, ": ", log_reset]))
-            :info => assertOk(print([file, ":", line, ": "]))
+            :error => match print([log_red, "‼ error ", file, ":", line, ": ", log_reset]) { else => :none }
+            :warn => match print([log_yellow, "⚠ warn ", file, ":", line, ": ", log_reset]) { else => :none }
+            :info => match print([file, ":", line, ": "]) { else => :none }
             :never => return :none
       }
-      pprint(item).assertOk()
+      match pprint(item) { else => :none }
+      return :none
 }
 
 pub def log(item) { logWithLineAndFile(:info, @caller_line_number, @caller_file_name, item) }

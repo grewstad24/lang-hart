@@ -20,7 +20,7 @@ This guide defines the default conventions for writing idiomatic Hart code where
 | Construct | Convention | Examples |
 | :--- | :--- | :--- |
 | Types & Type Aliases | `PascalCase` | `Context`, `Slice<T>`, `IoError`, `LogLevel` |
-| `func` & `def` | `camelCase` | `assertOk`, `heapAlloc`, `stdPrinter`, `errnoToError` |
+| `func` & `def` | `camelCase` | `must`, `heapAlloc`, `stdPrinter`, `errnoToError` |
 | Constants, Locals, Params, Fields | `snake_case` | `default_context`, `log_level`, `curr_ptr` |
 | Atoms (Symbols) | `:snake_case` | `:none`, `:true`, `:false`, `:permission_denied` |
 | Modules & Namespaces | `snake_case` | `std`, `std_impl`, `std_libc`, `memory` |
@@ -52,15 +52,22 @@ This guide defines the default conventions for writing idiomatic Hart code where
 
 ## 6. Calls & UFCS
 
-- **Use UFCS** (`receiver.fn(args)`) for fluent post-processing and conversions:
+- **Use UFCS** (`receiver.fn(args)`) **only** for:
+  1. **Ceremonial / post-processing functions** like `must()`:
+     ```hart
+     print("hello").must()
+     ```
+  2. **Chaining a function's return value** as the first argument to another function:
+     ```hart
+     v := vecInit([1, 2, 3]).must()
+     readFile(path).must().println().must()
+     ```
+- **Pass arguments directly to the first function in a pipeline** rather than chaining the initial input in with UFCS (e.g., `vecInit([1, 2, 3]).must()` and `readFile(path).must()`, not `[1, 2, 3].vecInit().must()` or `path.readFile().must()`).
+- **Use direct calls** (`fn(args)`) everywhere else—do not use UFCS on plain variables, literals, or standalone actions:
   ```hart
-  print("hello").assertOk()
-  raw.@asTypeOf(x.&mut)
-  ```
-- **Use direct calls** (`fn(args)`) for standalone actions and constructors:
-  ```hart
-  log("started")
-  v := vecInit([1, 2, 3])
+  log("started").must()
+  pprint(user).must()
+  v := vecInit([1, 2, 3]).must()
   ```
 
 ## 7. Control Flow
@@ -82,12 +89,20 @@ This guide defines the default conventions for writing idiomatic Hart code where
         else => res
   }
   ```
-- **Panic on unrecoverable failure** with `.assertOk()` (or `assertOk(...)`).
+- **Panic on unrecoverable failure** by calling `must()` in postfix UFCS form (`expr.must()`).
 
 ## 9. Modules & `use`
 
 - Place `mod <path>` at the top of each file belonging to a named module (e.g. `mod mylib::math`), followed by `pub use` and `use` statements.
 - Use `use std::*` at the top of application files to bring the standard library into scope.
-- Prefer qualified `mod::item` (or `use mod as alias`) when calling into external modules rather than glob-importing everything, except for `use std::*` and `pub use ...::*` preludes.
+- Prefer qualified `mod::item` (or `use mod::sub` to bind `sub::item`) when calling into external modules rather than glob-importing everything, except for `use std::*` and `pub use ...::*` preludes.
 - Keep module-internal helpers private (no `pub`), and mark only the intended public API with `pub`.
+
+## 10. Standard Library (`stdcore`)
+
+- **Context setup**: Initialize `@ctx := default_context` at the start of `main`, and restore `@ctx := ctx.*` at the top of any `func` callback that calls `def`s.
+- **Imports**: Use `use std::*` in application files; keep `use std::libc::*` confined to low-level FFI modules.
+- **Error propagation**: Reusable `stdcore` and library functions must propagate errors (`:error` / `IoError`) upwards to their callers rather than calling `must()` internally.
+- **`must()` convention**: Ideally call `must()` with postfix UFCS (`print("ok").must()`, `heapAlloc(n).must()`) rather than prefix `must(print("ok"))`.
+- **Memory cleanup**: Pair `heapAlloc`, `heapNew`, and `vecInit` allocations with `defer heapDealloc(...)` (or explicit `heapDealloc`) when ownership does not outlive the scope.
 

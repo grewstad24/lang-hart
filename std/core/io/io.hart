@@ -139,8 +139,15 @@ pub def readFile(path) {
             IoError => return res
             else => res
       }
-      defer assertOk(closeFile(file))
-      return readAll(file)
+      read_res := readAll(file)
+      close_res := closeFile(file)
+      match read_res {
+            IoError => return read_res
+            else => match close_res {
+                  IoError => return close_res
+                  else => return read_res
+            }
+      }
 }
 
 pub def writeFile(path, data) {
@@ -148,8 +155,12 @@ pub def writeFile(path, data) {
             IoError => return res
             else => res
       }
-      defer assertOk(closeFile(file))
-      return writeAll(file, data)
+      write_res := writeAll(file, data)
+      close_res := closeFile(file)
+      match write_res {
+            IoError => return write_res
+            else => return close_res
+      }
 }
 
 pub def appendToFile(path, data) {
@@ -157,8 +168,12 @@ pub def appendToFile(path, data) {
             IoError => return res
             else => res
       }
-      defer assertOk(closeFile(file))
-      return writeAll(file, data)
+      write_res := writeAll(file, data)
+      close_res := closeFile(file)
+      match write_res {
+            IoError => return write_res
+            else => return close_res
+      }
 }
 
 pub def copyStream(src, dst, chunk_size) {

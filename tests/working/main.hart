@@ -7,22 +7,25 @@ func main() -> :none {
       logWarn([1, 10, 15])
       logError("bye from main")
 
-      print(:nl).assertOk()
+      print(:nl).must()
 
-      @ctx.printer := debugPrinter
+      @ctx := { ...@ctx, printer: debugPrinter }
       log("hello from main")
       log({ name: "alice" })
       logWarn([1, 10, 15])
       logError("bye from main")
 
-      v_empty := vecInit(:none)
-      v_nums := vecInit([1, 2, 3])
-      assertOk(pprint(v_empty.items.len))
-      assertOk(pprint(v_nums.cap))
+      v_empty := vecInit(:none).must()
+      v_nums := vecInit([1, 2, 3]).must()
+      defer heapDealloc(v_nums.items.ptr as *opaque)
+
+      pprint(v_empty.items.len).must()
+      pprint(v_nums.cap).must()
       fill(v_nums.items, 9)
       s := v_nums.items
       e0 := s.ptr[0]
       e2 := s.ptr[2]
-      assertOk(pprint(e0))
-      assertOk(pprint(e2))
+
+      pprint(e0).must()
+      pprint(e2).must()
 }

@@ -12,8 +12,8 @@ use inkwell::targets::{CodeModel, FileType, InitializationConfig, RelocMode, Tar
 use crate::codegen::Codegen;
 use crate::sema::{Checker, ModuleResolver};
 use crate::syntax::{
-    Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule, MatchArm,
-    Parameter, Parser, Program, Signature, SourceFile, StructFieldInit, Type, TypeAlias,
+    CompiledModule, Definition, Expression, ExternalFunction, IfArm, Lexer, LogicalModule,
+    MatchArm, Parameter, Parser, Signature, SourceFile, StructFieldInit, Type, TypeAlias,
     UseDirective, format_error,
 };
 
@@ -241,17 +241,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         Expression::Integer(v) => Ok(Expression::Integer(*v)),
         Expression::String(v) => Ok(Expression::String(v.clone())),
         Expression::Symbol(v) => Ok(Expression::Symbol(v.clone())),
-        Expression::Identifier(name) => {
-            if name.contains("::") {
-                if let Some(prov) = checker.scope.definitions.get(name) {
-                    return Ok(Expression::Identifier(prov.item.name.clone()));
-                }
-                if let Some(prov) = checker.scope.extern_functions.get(name) {
-                    return Ok(Expression::Identifier(prov.item.name.clone()));
-                }
-            }
-            Ok(Expression::Identifier(name.clone()))
-        }
+        Expression::Identifier(name) => Ok(Expression::Identifier(name.clone())),
         Expression::Array(elements) => {
             let mut resolved = Vec::with_capacity(elements.len());
             for el in elements {
@@ -299,7 +289,7 @@ fn canonicalize_expression(expr: &Expression, checker: &Checker) -> Result<Expre
         }),
         Expression::Cast { expression, ty } => Ok(Expression::Cast {
             expression: Box::new(canonicalize_expression(expression, checker)?),
-            ty: ty.clone(),
+            ty: canonicalize_type(ty, checker)?,
         }),
         Expression::Call { target, arguments } => {
             let mut resolved_args = Vec::with_capacity(arguments.len());
@@ -641,15 +631,42 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
     println!("  [4/6] Type check                 ({})", format_duration(step_start.elapsed()));
 
     let step_start = Instant::now();
-    let mut compiled_definitions: Vec<Definition> = Vec::new();
-    let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
-    let mut compiled_aliases: HashMap<String, TypeAlias> = HashMap::new();
-    let mut seen_extern_names: HashSet<String> = HashSet::new();
-    let mut seen_def_names: HashSet<String> = HashSet::new();
+    let mut compiled_modules: Vec<CompiledModule> = Vec::new();
     let mut has_main = false;
+
+    let mut file_to_mod_name: HashMap<String, Option<String>> = HashMap::new();
+    for module in &modules {
+        for file in &module.source_files {
+            file_to_mod_name.insert(file.file_path.clone(), module.name.clone());
+        }
+    }
 
     for (module, scope) in modules.iter().zip(module_scopes.iter()) {
         let checker = Checker::new(scope);
+        let mut compiled_definitions: Vec<Definition> = Vec::new();
+        let mut compiled_externs: Vec<ExternalFunction> = Vec::new();
+        let mut compiled_aliases: HashMap<String, TypeAlias> = HashMap::new();
+        let mut seen_extern_names: HashSet<String> = HashSet::new();
+        let mut seen_def_names: HashSet<String> = HashSet::new();
+
+        for (alias_name, prov) in &scope.type_aliases {
+            let mut resolved_alias = prov.item.clone();
+            if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
+                resolved_alias.target = target;
+            }
+            compiled_aliases
+                .entry(alias_name.clone())
+                .or_insert(resolved_alias);
+        }
+        for (alias_name, prov) in &scope.home_type_aliases {
+            let mut resolved_alias = prov.item.clone();
+            if let Ok(target) = canonicalize_type(&prov.item.target, &checker) {
+                resolved_alias.target = target;
+            }
+            compiled_aliases
+                .entry(alias_name.clone())
+                .or_insert(resolved_alias);
+        }
 
         for file in &module.source_files {
             for alias in &file.type_aliases {
@@ -760,18 +777,35 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
                 });
             }
         }
+
+        let mut symbol_origins: HashMap<String, (Option<String>, String)> = HashMap::new();
+        for (in_scope_name, prov) in &scope.definitions {
+            let target_mod = file_to_mod_name
+                .get(&prov.originating_file)
+                .cloned()
+                .unwrap_or(None);
+            symbol_origins.insert(in_scope_name.clone(), (target_mod, prov.item.name.clone()));
+        }
+        for (in_scope_name, prov) in &scope.extern_functions {
+            let target_mod = file_to_mod_name
+                .get(&prov.originating_file)
+                .cloned()
+                .unwrap_or(None);
+            symbol_origins.insert(in_scope_name.clone(), (target_mod, prov.item.name.clone()));
+        }
+
+        compiled_modules.push(CompiledModule {
+            name: module.name.clone(),
+            extern_functions: compiled_externs,
+            definitions: compiled_definitions,
+            type_aliases: compiled_aliases.into_values().collect(),
+            symbol_origins,
+        });
     }
 
     if !has_main {
         return Err("error: missing entry point 'main'".to_string());
     }
-
-    let program = Program {
-        variables: Vec::new(),
-        extern_functions: compiled_externs,
-        definitions: compiled_definitions,
-        type_aliases: compiled_aliases.into_values().collect(),
-    };
 
     Target::initialize_all(&InitializationConfig::default());
 
@@ -823,9 +857,9 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
             )
         })?;
 
-    let main_span = program
-        .definitions
+    let main_span = compiled_modules
         .iter()
+        .flat_map(|m| m.definitions.iter())
         .find(|definition| definition.name == "main")
         .and_then(|definition| match &definition.value {
             Expression::Spanned { span, .. } => Some(span),
@@ -835,7 +869,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
     // Generate x86_64 module & object file
     let context_x86 = Context::create();
     let codegen_x86 = Codegen::new(&context_x86, "main_x86", &x86_target_machine);
-    let module_x86 = codegen_x86.generate(&program)?;
+    let module_x86 = codegen_x86.generate_modules(&compiled_modules)?;
     let ir_path = output_dir.join("main.ll");
     let _ = module_x86.print_to_file(&ir_path);
     if let Err(err) = module_x86.verify() {
@@ -850,7 +884,7 @@ pub fn compile_project_to(project_dir: &Path, output_dir: &Path) -> Result<PathB
     // Generate aarch64 module & object file
     let context_aarch64 = Context::create();
     let codegen_aarch64 = Codegen::new(&context_aarch64, "main_aarch64", &aarch64_target_machine);
-    let module_aarch64 = codegen_aarch64.generate(&program)?;
+    let module_aarch64 = codegen_aarch64.generate_modules(&compiled_modules)?;
     if let Err(err) = module_aarch64.verify() {
         let message = format!("LLVM verification failed (aarch64): {}", err);
         return Err(main_span.map_or(message.clone(), |span| format_error(span, &message)));
